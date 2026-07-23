@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag (for example: v0.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate Release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    outputs:
+      release_tag: ${{ steps.resolve_tag.outputs.release_tag }}
+      release_version: ${{ steps.resolve_tag.outputs.release_version }}
+    steps:
+      - name: Resolve tag
+        id: resolve_tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          release_tag="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            release_tag="${INPUT_TAG}"
+          fi
+          if ! [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release tag: ${release_tag}"
+            exit 1
+          fi
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+          echo "release_version=${release_tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout release tag
+        env:
+          RELEASE_TAG: ${{ steps.resolve_tag.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}" || true
+          git checkout --detach "${RELEASE_TAG}" 2>/dev/null || git checkout --detach "tags/${RELEASE_TAG}" 2>/dev/null || true
+          # On first push of the tag, GITHUB_REF already points at it
+          git rev-parse HEAD
+
+      - name: Ensure metadata matches tag
+        env:
+          RELEASE_VERSION: ${{ steps.resolve_tag.outputs.release_version }}
+        run: |
+          set -euo pipefail
+          file_version="$(tr -d '[:space:]' < VERSION)"
+          if [ "${file_version}" != "${RELEASE_VERSION}" ]; then
+            echo "VERSION (${file_version}) != tag (${RELEASE_VERSION})"
+            exit 1
+          fi
+          grep -q "static let version = \"${RELEASE_VERSION}\"" Sources/ZephyrFlow/Utilities/Constants.swift
+          grep -q "<string>${RELEASE_VERSION}</string>" Resources/Info.plist
+          grep -q "^## \\[${RELEASE_VERSION}\\]" CHANGELOG.md
+
+  build-macos:
+    name: Build macOS arm64
+    # macos-15 ships Swift 6.x required by WhisperKit → swift-jinja 2.x
+    runs-on: macos-15
+    timeout-minutes: 60
+    needs: validate
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.validate.outputs.release_tag }}
+          persist-credentials: false
+
+      - name: Build release app
+        run: |
+          set -euo pipefail
+          chmod +x Scripts/build_app.sh
+          ./Scripts/build_app.sh release
+
+      - name: Package
+        env:
+          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist-release
+          ditto -c -k --sequesterRsrc --keepParent Dist/ZephyrFlow.app \
+            "dist-release/ZephyrFlow-macos-arm64.app.zip"
+          shasum -a 256 dist-release/*.zip > dist-release/SHA256SUMS
+          cat dist-release/SHA256SUMS
+          # Extract changelog section
+          version="${RELEASE_TAG#v}"
+          awk -v ver="${version}" '
+            $0 ~ "^## \\[" ver "\\]" {p=1; print; next}
+            p && $0 ~ /^## \[/ {exit}
+            p {print}
+          ' CHANGELOG.md > dist-release/RELEASE_NOTES.md
+          cat dist-release/RELEASE_NOTES.md
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-macos-arm64
+          path: dist-release/
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    needs: [validate, build-macos]
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v8
+        with:
+          name: release-macos-arm64
+          path: dist-release
+
+      - name: Create release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.validate.outputs.release_tag }}
+          name: ZephyrFlow ${{ needs.validate.outputs.release_tag }}
+          body_path: dist-release/RELEASE_NOTES.md
+          files: |
+            dist-release/ZephyrFlow-macos-arm64.app.zip
+            dist-release/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

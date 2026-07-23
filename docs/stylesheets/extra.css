@@ -1,0 +1,14 @@
+:root {
+  --md-primary-fg-color: #5b3fd6;
+  --md-accent-fg-color: #f59e0b;
+}
+
+.md-typeset code {
+  border-radius: 4px;
+}
+
+/* Soft callout for privacy-first messaging */
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-color: #5b3fd6;
+}
