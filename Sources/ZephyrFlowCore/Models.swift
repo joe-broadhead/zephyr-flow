@@ -130,7 +130,9 @@ public struct ModelReadiness: Sendable, Equatable {
 
 public enum FlowBackend: String, Codable, CaseIterable, Identifiable, Sendable {
     case regex
-    case neural
+    /// On-device **rule-enhanced** cleanup (not an LLM). Kept raw value `neural` only for
+    /// forward-compat with early settings; display name is honest.
+    case enhanced = "neural"
     case auto
 
     public var id: String { rawValue }
@@ -138,10 +140,13 @@ public enum FlowBackend: String, Codable, CaseIterable, Identifiable, Sendable {
     public var displayName: String {
         switch self {
         case .regex: return "Classic (instant)"
-        case .neural: return "Neural (on-device)"
-        case .auto: return "Auto (neural when ready)"
+        case .enhanced: return "Enhanced (on-device rules)"
+        case .auto: return "Auto (enhanced when available)"
         }
     }
+
+    /// Legacy alias — same as `.enhanced`.
+    public static var neural: FlowBackend { .enhanced }
 }
 
 // MARK: - Insertion mode / strategy

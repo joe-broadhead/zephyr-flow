@@ -1,19 +1,18 @@
 import Foundation
 
-/// Routes Flow styles to regex and/or optional neural backend with deadline + guardrails.
+/// Routes Flow styles to regex and/or optional enhanced backend with deadline + guardrails.
 public actor FlowRouter: FlowProcessorProtocol {
     public static let shared = FlowRouter()
 
     private let regex: any FlowProcessorProtocol
-    private var neural: (any FlowProcessorProtocol)?
+    private var enhanced: (any FlowProcessorProtocol)?
     private var backendProvider: @Sendable () async -> FlowBackend = { .regex }
-    private var neuralReadyProvider: @Sendable () async -> Bool = { false }
+    private var enhancedReadyProvider: @Sendable () async -> Bool = { false }
 
-    /// Styles that may use neural under neural/auto backends.
-    public static let neuralEligible: Set<FlowStyle> = [.professional, .summary, .bullets]
+    public static let enhancedEligible: Set<FlowStyle> = [.professional, .summary, .bullets]
 
-    /// Soft deadline for neural rewrite (protects sessionChain).
-    public var neuralTimeoutNanoseconds: UInt64 = 1_000_000_000
+    /// Soft deadline for enhanced rewrite (protects sessionChain).
+    public var enhancedTimeoutNanoseconds: UInt64 = 1_000_000_000
 
     public init(regex: any FlowProcessorProtocol = FlowProcessor.shared) {
         self.regex = regex
@@ -21,16 +20,21 @@ public actor FlowRouter: FlowProcessorProtocol {
 
     public func configure(
         backend: @escaping @Sendable () async -> FlowBackend,
+        enhancedReady: @escaping @Sendable () async -> Bool,
+        enhanced: (any FlowProcessorProtocol)?
+    ) {
+        self.backendProvider = backend
+        self.enhancedReadyProvider = enhancedReady
+        self.enhanced = enhanced
+    }
+
+    /// App wiring alias (historical name).
+    public func configure(
+        backend: @escaping @Sendable () async -> FlowBackend,
         neuralReady: @escaping @Sendable () async -> Bool,
         neural: (any FlowProcessorProtocol)?
     ) {
-        self.backendProvider = backend
-        self.neuralReadyProvider = neuralReady
-        self.neural = neural
-    }
-
-    public func setNeural(_ processor: (any FlowProcessorProtocol)?) {
-        self.neural = processor
+        configure(backend: backend, enhancedReady: neuralReady, enhanced: neural)
     }
 
     public func process(_ text: String, style: FlowStyle) async -> String {
@@ -38,47 +42,45 @@ public actor FlowRouter: FlowProcessorProtocol {
         guard !trimmed.isEmpty else { return "" }
 
         let backend = await backendProvider()
-        let ready = await neuralReadyProvider()
-        let eligible = Self.neuralEligible.contains(style)
-        let wantNeural =
+        let ready = await enhancedReadyProvider()
+        let eligible = Self.enhancedEligible.contains(style)
+        // Accept legacy `.neural` raw value as enhanced.
+        let wantEnhanced =
             eligible
             && ready
-            && (backend == .neural || backend == .auto)
-            && neural != nil
+            && (backend == .enhanced || backend == .auto || backend == .neural)
+            && enhanced != nil
 
-        guard wantNeural, let neural else {
+        guard wantEnhanced, let enhanced else {
             return await regex.process(text, style: style)
         }
 
-        let timeout = neuralTimeoutNanoseconds
-        let neuralResult: String? = await withTaskGroup(of: String?.self) { group in
+        let timeout = enhancedTimeoutNanoseconds
+        let outcome: String? = await withTaskGroup(of: String?.self) { group in
             group.addTask {
-                await neural.process(text, style: style)
+                let value = await enhanced.process(text, style: style)
+                if Task.isCancelled { return nil }
+                return value
             }
             group.addTask {
                 try? await Task.sleep(nanoseconds: timeout)
                 return nil
             }
-            var first: String?
+
+            // First finished child wins. Cancel the other.
+            // Enhanced path must honor cancellation so the group can unwind quickly.
+            var winner: String??
             for await value in group {
-                if let value {
-                    first = value
-                    group.cancelAll()
-                    break
-                } else {
-                    // timeout
-                    group.cancelAll()
-                    break
-                }
+                winner = value
+                group.cancelAll()
+                break
             }
-            return first
+            return winner ?? nil
         }
 
-        if let neuralResult,
-           let accepted = FlowGuardrails.accept(input: trimmed, output: neuralResult) {
+        if let outcome, let accepted = FlowGuardrails.accept(input: trimmed, output: outcome) {
             return accepted
         }
-
         return await regex.process(text, style: style)
     }
 }

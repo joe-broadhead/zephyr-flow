@@ -42,9 +42,14 @@ actor InsertionService: InsertionServiceProtocol {
             mode: mode
         )
         // Honor preferPaste=false by trying AX before paste when automatic.
+        // Keep copyOnly strictly last so paste remains a fallback.
         if mode == .automatic, !preferPaste {
-            strategies = strategies.filter { $0 != .clipboardPaste && $0 != .terminalPaste }
-                + strategies.filter { $0 == .clipboardPaste || $0 == .terminalPaste }
+            let copyTail = strategies.filter { $0 == .copyOnly }
+            let paste = strategies.filter { $0 == .clipboardPaste || $0 == .terminalPaste }
+            let ax = strategies.filter {
+                $0 != .copyOnly && $0 != .clipboardPaste && $0 != .terminalPaste
+            }
+            strategies = ax + paste + copyTail
         }
 
         for strategy in strategies {

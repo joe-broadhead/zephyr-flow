@@ -57,6 +57,7 @@ final class FloatingPanelController {
         panel.appearance = NSAppearance(named: .darkAqua)
         panel.contentView = hosting
         panel.acceptsMouseMovedEvents = true
+        panel.isMovableByWindowBackground = true
 
         self.panel = panel
         self.hostingView = hosting
@@ -118,11 +119,20 @@ final class FloatingPanelController {
         return o
     }
 
-    /// Call when user finishes dragging the panel.
+    /// Persist current frame origin after the user may have dragged the panel
+    /// (`isMovableByWindowBackground`). Only locks once origin is non-nil save.
     @MainActor
     func persistPositionIfNeeded() {
         guard let panel else { return }
         let origin = panel.frame.origin
+        let prevX = SettingsStore.shared.settings.panelOriginX
+        let prevY = SettingsStore.shared.settings.panelOriginY
+        // Skip no-op writes when still at auto-placed first show without drag history
+        // and nothing was ever locked — still save so next show can restore after move.
+        if SettingsStore.shared.settings.panelPositionLocked,
+           prevX == origin.x, prevY == origin.y {
+            return
+        }
         SettingsStore.shared.update {
             $0.panelOriginX = origin.x
             $0.panelOriginY = origin.y
@@ -180,14 +190,7 @@ struct FloatingPanelRoot: View {
         .onChange(of: controller.interimText) { _, _ in
             FloatingPanelController.shared.resizeToFit()
         }
-        .onAppear { installPanelKeyMonitor() }
         .onDisappear { removePanelKeyMonitor() }
-        .gesture(
-            DragGesture(minimumDistance: 4)
-                .onEnded { _ in
-                    FloatingPanelController.shared.persistPositionIfNeeded()
-                }
-        )
     }
 
     private func installPanelKeyMonitor() {
@@ -226,9 +229,12 @@ struct FloatingPanelRoot: View {
     private func handleStateChange(_ state: PanelState) {
         switch state {
         case .hidden:
+            FloatingPanelController.shared.persistPositionIfNeeded()
             FloatingPanelController.shared.hide()
+            removePanelKeyMonitor()
         case .listening, .processing, .success, .error:
             FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
+            installPanelKeyMonitor()
             DispatchQueue.main.async {
                 FloatingPanelController.shared.resizeToFit()
             }

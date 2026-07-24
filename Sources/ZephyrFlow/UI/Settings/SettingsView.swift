@@ -102,11 +102,7 @@ struct SettingsView: View {
             Section("Engine") {
                 LabeledContent("Active engine", value: controller.engineLabel)
                 if controller.isModelLoading {
-                    if let frac = controller.modelDownloadFraction {
-                        ProgressView(value: frac) { Text("Downloading model…") }
-                    } else {
-                        ProgressView("Loading model…")
-                    }
+                    ProgressView("Loading model…")
                 }
                 if let banner = modelReadiness.bannerMessage {
                     Text(banner)
@@ -234,14 +230,9 @@ struct SettingsView: View {
                         Text(backend.displayName).tag(backend)
                     }
                 }
-                Text("Classic is instant regex (default). Neural improves Professional / Bullets / Summary on-device; Clean and Raw always stay classic.")
+                Text("Classic is instant regex (default). Enhanced adds extra on-device rule cleanup for Professional / Bullets / Summary (not a language model). Clean and Raw always stay Classic.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                if !settings.settings.neuralRAMSatisfied {
-                    Text("Under 16 GB RAM — neural Flow unavailable; Classic is used.")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
-                }
             }
             Section("Default style") {
                 Picker("Style", selection: binding(\.defaultFlowStyle)) {
@@ -429,8 +420,7 @@ struct SettingsView: View {
         switch r.state {
         case .notApplicable: return "Built-in"
         case .missing: return "Not downloaded"
-        case .downloading(let p):
-            if let p { return "Downloading… \(Int(p * 100))%" }
+        case .downloading:
             return "Downloading…"
         case .ready:
             if let b = r.bytesOnDisk, b > 0 {

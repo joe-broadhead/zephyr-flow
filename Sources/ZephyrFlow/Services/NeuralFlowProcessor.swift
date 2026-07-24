@@ -1,28 +1,24 @@
 import Foundation
 import ZephyrFlowCore
 
-/// On-device neural Flow backend.
+/// On-device **enhanced** Flow backend (deterministic rules — not an LLM).
 ///
-/// v1 ships the full routing/guardrail contract. Inference uses a **local enhanced
-/// rewriter** (no cloud) when a neural model weight pack is not linked; when weights
-/// are present under Application Support, the same entrypoint is used so MLX can be
-/// plugged in without API churn. Default installs never enable this path
-/// (`flowBackend == .regex`).
+/// Routed only for Professional / Bullets / Summary via `FlowRouter`.
+/// Clean / Raw never use this path. No network. No model weights.
+/// Honors `Task` cancellation so router timeouts can unwind.
 actor NeuralFlowProcessor: FlowProcessorProtocol {
     static let shared = NeuralFlowProcessor()
 
     private(set) var isReady = false
     private let regex = FlowProcessor.shared
 
-    /// Minimum RAM gate for advertising neural as available.
     var meetsRAMGate: Bool {
-        ProcessInfo.processInfo.physicalMemory >= AppSettings.neuralMinimumRAMBytes
+        // Light CPU work only — no large model. Gate kept modest so Auto isn't blocked
+        // on small machines for a rules path.
+        ProcessInfo.processInfo.physicalMemory >= 4 * 1024 * 1024 * 1024
     }
 
     func refreshAvailability() {
-        // Weight pack optional — enhanced local rewriter is always "ready" if RAM OK.
-        // This keeps Auto/Neural usable for soak without a multi‑GB download, while
-        // still going through FlowRouter deadlines + guardrails.
         isReady = meetsRAMGate
     }
 
@@ -32,11 +28,12 @@ actor NeuralFlowProcessor: FlowProcessorProtocol {
             return await regex.process(text, style: style)
         }
 
-        // Always start from regex clean/professional baseline, then lightly upgrade
-        // structure for bullets/summary — still on-device, no network.
+        if Task.isCancelled {
+            return await regex.process(text, style: style)
+        }
+
         switch style {
         case .clean, .raw:
-            // Router should not call neural for these; belt-and-suspenders.
             return await regex.process(text, style: style)
         case .professional:
             return await enhancedProfessional(text)
@@ -51,20 +48,18 @@ actor NeuralFlowProcessor: FlowProcessorProtocol {
 
     private func enhancedProfessional(_ text: String) async -> String {
         var base = await regex.process(text, style: .professional)
-        // Extra idioms beyond stock regex table
+        if Task.isCancelled { return base }
         let extras: [(String, String)] = [
             (#"(?i)\bcircle back\b"#, "follow up"),
             (#"(?i)\bloop in\b"#, "include"),
             (#"(?i)\bsync up\b"#, "meet"),
-            (#"(?i)\bbandwidth\b"#, "capacity"),
             (#"(?i)\btouch base\b"#, "connect"),
-            (#"(?i)\blow-hanging fruit\b"#, "easy wins"),
-            (#"(?i)\bmove the needle\b"#, "make a meaningful difference"),
             (#"(?i)\bbusted\b"#, "broken"),
             (#"(?i)\bkinda\b"#, "somewhat"),
             (#"(?i)\blgtm\b"#, "looks good to me"),
         ]
         for (pat, rep) in extras {
+            if Task.isCancelled { break }
             if let regex = try? NSRegularExpression(pattern: pat) {
                 let range = NSRange(base.startIndex..., in: base)
                 base = regex.stringByReplacingMatches(in: base, range: range, withTemplate: rep)
@@ -76,7 +71,8 @@ actor NeuralFlowProcessor: FlowProcessorProtocol {
 
     private func enhancedBullets(_ text: String) async -> String {
         let cleaned = await regex.process(text, style: .clean)
-        // Split on " and " / ";" when few sentence boundaries — multi-clause lists
+        if Task.isCancelled { return await regex.process(text, style: .bullets) }
+
         var parts = cleaned.components(separatedBy: CharacterSet(charactersIn: ".!;"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
@@ -107,7 +103,8 @@ actor NeuralFlowProcessor: FlowProcessorProtocol {
 
     private func enhancedSummary(_ text: String) async -> String {
         let cleaned = await regex.process(text, style: .clean)
-        // Prefer sentences with negation/constraint markers, else first + longest
+        if Task.isCancelled { return await regex.process(text, style: .summary) }
+
         let sentences = cleaned
             .components(separatedBy: CharacterSet(charactersIn: ".!?"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }

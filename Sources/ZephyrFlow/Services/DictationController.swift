@@ -51,14 +51,14 @@ final class DictationController: ObservableObject {
         Task {
             await flow.configure(
                 backend: { await MainActor.run { SettingsStore.shared.settings.flowBackend } },
-                neuralReady: {
+                enhancedReady: {
                     await MainActor.run {
                         let s = SettingsStore.shared.settings
-                        guard s.neuralRAMSatisfied else { return false }
-                        return s.flowBackend == .neural || s.flowBackend == .auto
+                        // Enhanced path is lightweight rules — available whenever selected.
+                        return s.flowBackend == .enhanced || s.flowBackend == .auto || s.flowBackend == .neural
                     }
                 },
-                neural: NeuralFlowProcessor.shared
+                enhanced: NeuralFlowProcessor.shared
             )
             await NeuralFlowProcessor.shared.refreshAvailability()
         }
