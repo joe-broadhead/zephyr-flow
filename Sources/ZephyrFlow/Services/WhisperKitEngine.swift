@@ -4,19 +4,27 @@ import WhisperKit
 import ZephyrFlowCore
 
 /// WhisperKit-backed engine. Network only when `allowDownload` is true.
+///
+/// Live partials use a **single-flight** rolling-window decode loop so we never
+/// run concurrent `transcribe` calls (WhisperKit/NSProgress races → SIGSEGV).
 actor WhisperKitEngine: WhisperEngineProtocol {
     private(set) var isReady = false
     private(set) var modelName = "WhisperKit"
 
     private var kit: WhisperKit?
+    private var onPartial: (@Sendable (PartialTranscription) -> Void)?
     private var audioSamples: [Float] = []
     private var isStreaming = false
+    private var isFinalizing = false
+    private var decodeInFlight = false
     private var startTime: Date?
+    private var lastPartialText = ""
+    private var partialLoopTask: Task<Void, Never>?
 
     /// Soft cap for in-memory PCM (~60s @ 16 kHz). Longer dictations keep the most recent audio only.
-    private static let maxSampleCount = 16_000 * 60
+    private static let maxSampleCount = StreamingPartialWindow.sampleRate * 60
 
-    /// Decode once, on-device, with Whisper's own quality gates (not string filters).
+    /// Shared quality gates. `concurrentWorkerCount: 1` avoids internal parallel races.
     private static let decodeOptions = DecodingOptions(
         verbose: false,
         task: .transcribe,
@@ -34,8 +42,32 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         logProbThreshold: -1.0,
         firstTokenLogProbThreshold: -1.5,
         noSpeechThreshold: 0.6,
-        concurrentWorkerCount: 4
+        concurrentWorkerCount: 1
     )
+
+    /// Faster partial pass (fewer temperature fallbacks).
+    private static let partialDecodeOptions = DecodingOptions(
+        verbose: false,
+        task: .transcribe,
+        temperature: 0.0,
+        temperatureFallbackCount: 1,
+        usePrefillPrompt: true,
+        usePrefillCache: true,
+        detectLanguage: true,
+        skipSpecialTokens: true,
+        withoutTimestamps: true,
+        wordTimestamps: false,
+        windowClipTime: 1.0,
+        suppressBlank: true,
+        compressionRatioThreshold: 2.4,
+        logProbThreshold: -1.0,
+        firstTokenLogProbThreshold: -1.5,
+        noSpeechThreshold: 0.6,
+        concurrentWorkerCount: 1
+    )
+
+    /// Minimum RMS to bother decoding a partial (skip near-silence).
+    private static let minPartialRMS: Float = 0.0008
 
     /// - Parameter allowDownload: Must be false when downloads are disabled in settings.
     func load(model: ModelIdentifier, allowDownload: Bool) async throws {
@@ -76,17 +108,26 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     ) async throws {
         // Whisper path is on-device once loaded; localOnly only gates downloads at load time.
         _ = localOnly
-        _ = onPartial // hold-to-talk finalizes once; live partials would race WhisperKit/NSProgress
         guard isReady, kit != nil else { throw WhisperEngineError.notReady }
         guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
 
+        self.onPartial = onPartial
         audioSamples = []
+        lastPartialText = ""
+        isFinalizing = false
+        decodeInFlight = false
         startTime = Date()
         isStreaming = true
+
+        partialLoopTask?.cancel()
+        partialLoopTask = Task { [weak self] in
+            await self?.runPartialLoop()
+        }
+        ZFLog.info("Whisper streaming started (single-flight partials)")
     }
 
     func appendAudio(_ samples: [Float]) async {
-        guard isStreaming else { return }
+        guard isStreaming, !isFinalizing else { return }
         audioSamples.append(contentsOf: samples)
         if audioSamples.count > Self.maxSampleCount {
             audioSamples.removeFirst(audioSamples.count - Self.maxSampleCount)
@@ -97,21 +138,25 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     func stopAndFinalize() async throws -> FinalTranscription {
         guard isStreaming else { throw WhisperEngineError.notStreaming }
 
+        isFinalizing = true
+        partialLoopTask?.cancel()
+        partialLoopTask = nil
+        await waitForDecodeIdle(timeoutNs: StreamingPartialWindow.finalizeWaitNanoseconds)
+
         let duration = Date().timeIntervalSince(startTime ?? Date())
         let samples = audioSamples
         let rms = Self.rms(of: samples)
-        let seconds = Double(samples.count) / 16_000.0
+        let seconds = Double(samples.count) / Double(StreamingPartialWindow.sampleRate)
         ZFLog.info(
-            "Whisper finalize samples=\(samples.count) (~\(String(format: "%.2f", seconds))s) rms=\(String(format: "%.5f", rms))"
+            "Whisper finalize samples=\(samples.count) (~\(String(format: "%.2f", seconds))s) rms=\(String(format: "%.5f", rms)) lastPartialLen=\(lastPartialText.count)"
         )
 
-        // Need a meaningful amount of audio before calling the model.
-        // Threshold is signal quality (duration + energy), not content filtering.
         guard samples.count >= 1_600 else {
+            let fallback = lastPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
             cleanup()
             return FinalTranscription(
-                rawText: "",
-                processedText: "",
+                rawText: fallback,
+                processedText: fallback,
                 duration: duration,
                 modelUsed: modelName
             )
@@ -124,6 +169,8 @@ actor WhisperKitEngine: WhisperEngineProtocol {
 
         let raw: String
         do {
+            decodeInFlight = true
+            defer { decodeInFlight = false }
             let results = try await kit.transcribe(
                 audioArray: samples,
                 decodeOptions: Self.decodeOptions
@@ -133,21 +180,99 @@ actor WhisperKitEngine: WhisperEngineProtocol {
                 .joined(separator: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
+            // Prefer last good partial over hard fail when finalize decode errors.
+            let fallback = lastPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !fallback.isEmpty {
+                ZFLog.info("Whisper finalize failed; using last partial len=\(fallback.count)")
+                cleanup()
+                return FinalTranscription(
+                    rawText: fallback,
+                    processedText: fallback,
+                    duration: duration,
+                    modelUsed: modelName
+                )
+            }
             cleanup()
             throw WhisperEngineError.transcriptionFailed(error.localizedDescription)
         }
 
+        let finalText = raw.isEmpty ? lastPartialText.trimmingCharacters(in: .whitespacesAndNewlines) : raw
         cleanup()
         return FinalTranscription(
-            rawText: raw,
-            processedText: raw,
+            rawText: finalText,
+            processedText: finalText,
             duration: duration,
             modelUsed: modelName
         )
     }
 
     func cancel() async {
+        isFinalizing = true
+        partialLoopTask?.cancel()
+        partialLoopTask = nil
+        await waitForDecodeIdle(timeoutNs: 1_000_000_000)
         cleanup()
+    }
+
+    // MARK: - Partials
+
+    private func runPartialLoop() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: StreamingPartialWindow.intervalNanoseconds)
+            guard !Task.isCancelled else { break }
+            guard isStreaming, !isFinalizing else { break }
+            await emitPartialIfPossible()
+        }
+    }
+
+    private func emitPartialIfPossible() async {
+        guard isStreaming, !isFinalizing else { return }
+        guard !decodeInFlight else { return }
+        guard StreamingPartialWindow.canRunPartial(sampleCount: audioSamples.count) else { return }
+        guard let kit else { return }
+
+        let slice = StreamingPartialWindow.sliceForPartial(audioSamples)
+        let energy = Self.rms(of: slice)
+        guard energy >= Self.minPartialRMS else { return }
+
+        decodeInFlight = true
+        defer { decodeInFlight = false }
+
+        do {
+            let results = try await kit.transcribe(
+                audioArray: slice,
+                decodeOptions: Self.partialDecodeOptions
+            )
+            // Drop result if session ended while we were decoding.
+            guard isStreaming, !isFinalizing else { return }
+
+            let text = results
+                .map(\.text)
+                .joined(separator: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            guard !text.isEmpty, text != lastPartialText else { return }
+            lastPartialText = text
+            // Length only — never log body
+            ZFLog.debug("Whisper partial len=\(text.count)")
+            onPartial?(PartialTranscription(text: text, isFinal: false))
+        } catch {
+            if !Task.isCancelled, isStreaming, !isFinalizing {
+                ZFLog.debug("Whisper partial decode skipped: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func waitForDecodeIdle(timeoutNs: UInt64) async {
+        let step: UInt64 = 20_000_000
+        var waited: UInt64 = 0
+        while decodeInFlight, waited < timeoutNs {
+            try? await Task.sleep(nanoseconds: step)
+            waited += step
+        }
+        if decodeInFlight {
+            ZFLog.info("Whisper decode still in flight after wait (\(waited / 1_000_000)ms)")
+        }
     }
 
     // MARK: - Helpers
@@ -160,7 +285,14 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     }
 
     private func cleanup() {
+        partialLoopTask?.cancel()
+        partialLoopTask = nil
         audioSamples = []
+        onPartial = nil
         isStreaming = false
+        isFinalizing = false
+        decodeInFlight = false
+        lastPartialText = ""
+        startTime = nil
     }
 }

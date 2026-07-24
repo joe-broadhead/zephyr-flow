@@ -322,8 +322,10 @@ struct FloatingPanelView: View {
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(ZephyrTheme.textPrimary)
                     .lineLimit(6)
-                    .frame(maxWidth: 260, alignment: .leading)
+                    .frame(maxWidth: 260, minHeight: 18, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
                     .animation(.easeOut(duration: 0.12), value: text)
+                    .accessibilityLabel(text.isEmpty ? "Listening" : "Interim transcription")
             }
         }
     }

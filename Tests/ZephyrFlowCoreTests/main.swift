@@ -100,6 +100,29 @@ struct CoreTests {
         check("copied message", InsertionResult.copiedToClipboard.userMessage == "Copied to clipboard")
         check("failed fails", !InsertionResult.failed("x").succeeded)
 
+        // Streaming partial window policy (Whisper progressive decode)
+        do {
+            check(
+                "partial needs >= 1s audio",
+                !StreamingPartialWindow.canRunPartial(sampleCount: StreamingPartialWindow.minPartialSamples - 1)
+            )
+            check(
+                "partial ok at 1s",
+                StreamingPartialWindow.canRunPartial(sampleCount: StreamingPartialWindow.minPartialSamples)
+            )
+            let short = [Float](repeating: 0.1, count: 100)
+            let slicedShort = StreamingPartialWindow.sliceForPartial(short)
+            check("short slice is identity", slicedShort.count == short.count)
+
+            let longCount = StreamingPartialWindow.windowSamples + 500
+            var long = [Float](repeating: 0, count: longCount)
+            long[longCount - 1] = 0.99
+            let sliced = StreamingPartialWindow.sliceForPartial(long)
+            check("long slice capped", sliced.count == StreamingPartialWindow.windowSamples)
+            check("long slice keeps newest", abs(sliced.last! - 0.99) < 0.0001)
+            check("interval positive", StreamingPartialWindow.intervalNanoseconds > 0)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

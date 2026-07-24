@@ -4,6 +4,15 @@
 
 Backed by [WhisperKit](https://github.com/argmaxinc/WhisperKit). Downloads once (~75 MB) into Application Support, then runs fully on-device.
 
+### Live partials
+
+While you hold the hotkey, Whisper runs **single-flight** progressive decodes on a rolling ~15 s audio window (~1.2 s apart) so the panel can show interim text before you release.
+
+- Very short holds (under ~1 s of audio) may show only “Listening…” until finalize.
+- Near-silence skips partial passes (energy gate).
+- Only one `transcribe` runs at a time — concurrent decodes are unsafe in WhisperKit and are not used.
+- Release always runs one final decode on the full buffered utterance (capped ~60 s).
+
 ## Apple Speech (built-in fallback)
 
 - No download  
@@ -28,4 +37,4 @@ Files land once in Application Support and run on-device (Neural Engine on Apple
     Local Only still applies to **your audio and transcripts**. Model download is a separate one-time file fetch.
 
 !!! note "Long dictations"
-    The WhisperKit path keeps roughly the **most recent 60 seconds** of audio in memory for the final pass. Prefer Apple Speech or shorter segments for long-form.
+    The WhisperKit path keeps roughly the **most recent 60 seconds** of audio in memory for the final pass (and partials use the most recent ~15 s window). Prefer Apple Speech or shorter segments for long-form.
