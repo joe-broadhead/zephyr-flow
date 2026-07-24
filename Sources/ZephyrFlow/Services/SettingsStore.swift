@@ -40,6 +40,9 @@ final class SettingsStore: ObservableObject {
         if obj["allowModelDownloads"] == nil { obj["allowModelDownloads"] = defaults.allowModelDownloads }
         if obj["debugLogging"] == nil { obj["debugLogging"] = defaults.debugLogging }
         if obj["saveHistory"] == nil { obj["saveHistory"] = defaults.saveHistory }
+        if obj["flowBackend"] == nil { obj["flowBackend"] = defaults.flowBackend.rawValue }
+        if obj["insertionMode"] == nil { obj["insertionMode"] = defaults.insertionMode.rawValue }
+        if obj["panelPositionLocked"] == nil { obj["panelPositionLocked"] = defaults.panelPositionLocked }
         // Drop legacy no-op key if present
         obj.removeValue(forKey: "playSounds")
         guard let fixed = try? JSONSerialization.data(withJSONObject: obj),

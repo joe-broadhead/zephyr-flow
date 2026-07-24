@@ -108,6 +108,7 @@ nav:
       - Models: guide/models.md
   - Operations:
       - Troubleshooting: operations/troubleshooting.md
+      - Insertion matrix: operations/insertion-matrix.md
       - Security: operations/security.md
   - Development:
       - Contributing: development/contributing.md

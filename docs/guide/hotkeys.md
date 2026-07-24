@@ -34,3 +34,13 @@ While Fn is the hotkey, ZephyrFlow temporarily sets the system **Globe key** act
 - Grant **Accessibility** or the hotkey tap stays limited  
 - Menu **Start Dictation** always works as a fallback  
 - Enable **Debug logging** in Privacy settings if Fn seems dead, then check `~/Library/Logs/ZephyrFlow/zephyrflow.log`
+
+## Panel keys (while listening / processing)
+
+| Key | Action |
+|-----|--------|
+| **Esc** | Cancel session |
+| **⌘.** | Cancel session |
+| **Return** | Stop & insert |
+
+These are handled only while the floating panel is in an active session state so they do not leak into the target app after insert.

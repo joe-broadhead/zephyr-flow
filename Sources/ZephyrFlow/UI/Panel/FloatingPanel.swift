@@ -65,10 +65,21 @@ final class FloatingPanelController {
 
     @MainActor
     private func position(_ panel: NSPanel, near point: NSPoint?) {
-        let mouse = point ?? NSEvent.mouseLocation
         let size = panel.frame.size
         let margin: CGFloat = 16
+        let settings = SettingsStore.shared.settings
 
+        // Honor user-dragged position when locked
+        if settings.panelPositionLocked,
+           let x = settings.panelOriginX,
+           let y = settings.panelOriginY {
+            var origin = NSPoint(x: x, y: y)
+            origin = clamp(origin, size: size, margin: margin)
+            panel.setFrameOrigin(origin)
+            return
+        }
+
+        let mouse = point ?? NSEvent.mouseLocation
         let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
@@ -94,6 +105,32 @@ final class FloatingPanelController {
     }
 
     @MainActor
+    private func clamp(_ origin: NSPoint, size: NSSize, margin: CGFloat) -> NSPoint {
+        var o = origin
+        let screen = NSScreen.screens.first { NSMouseInRect(o, $0.frame, false) }
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let visible = screen?.visibleFrame else { return o }
+        if o.x < visible.minX + margin { o.x = visible.minX + margin }
+        if o.x + size.width > visible.maxX - margin { o.x = visible.maxX - size.width - margin }
+        if o.y < visible.minY + margin { o.y = visible.minY + margin }
+        if o.y + size.height > visible.maxY - margin { o.y = visible.maxY - size.height - margin }
+        return o
+    }
+
+    /// Call when user finishes dragging the panel.
+    @MainActor
+    func persistPositionIfNeeded() {
+        guard let panel else { return }
+        let origin = panel.frame.origin
+        SettingsStore.shared.update {
+            $0.panelOriginX = origin.x
+            $0.panelOriginY = origin.y
+            $0.panelPositionLocked = true
+        }
+    }
+
+    @MainActor
     func resizeToFit() {
         guard let panel, let hosting = hostingView else { return }
         let fitting = hosting.fittingSize
@@ -115,6 +152,7 @@ final class FloatingPanelController {
 
 struct FloatingPanelRoot: View {
     @ObservedObject private var controller = DictationController.shared
+    @State private var keyMonitor: Any?
 
     var body: some View {
         Group {
@@ -142,6 +180,47 @@ struct FloatingPanelRoot: View {
         .onChange(of: controller.interimText) { _, _ in
             FloatingPanelController.shared.resizeToFit()
         }
+        .onAppear { installPanelKeyMonitor() }
+        .onDisappear { removePanelKeyMonitor() }
+        .gesture(
+            DragGesture(minimumDistance: 4)
+                .onEnded { _ in
+                    FloatingPanelController.shared.persistPositionIfNeeded()
+                }
+        )
+    }
+
+    private func installPanelKeyMonitor() {
+        removePanelKeyMonitor()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            let controller = DictationController.shared
+            guard controller.panelState == .listening
+                    || controller.panelState == .processing
+                    || {
+                        if case .error = controller.panelState { return true }
+                        return false
+                    }() else {
+                return event
+            }
+            // Esc or ⌘.
+            if event.keyCode == 53 || (event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == ".") {
+                controller.cancelSession()
+                return nil
+            }
+            // Return / ⌘Return → stop & insert
+            if event.keyCode == 36 {
+                controller.stopAndInsert()
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func removePanelKeyMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+        }
+        keyMonitor = nil
     }
 
     private func handleStateChange(_ state: PanelState) {
@@ -313,6 +392,15 @@ struct FloatingPanelView: View {
                     .foregroundStyle(ZephyrTheme.danger.opacity(0.95))
                     .frame(maxWidth: 260, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
+                if message.localizedCaseInsensitiveContains("microphone") {
+                    Text("Open Microphone settings from the menu bar → Setup")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(ZephyrTheme.textSecondary)
+                } else if message.localizedCaseInsensitiveContains("accessib") {
+                    Text("Open Accessibility settings from the menu bar → Setup")
+                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                        .foregroundStyle(ZephyrTheme.textSecondary)
+                }
             } else if state == .processing && text.isEmpty {
                 Text("Processing…")
                     .font(.system(size: 13, weight: .medium, design: .rounded))

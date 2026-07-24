@@ -14,16 +14,20 @@ final class DictationController: ObservableObject {
     @Published var audioLevels: [Float] = Array(repeating: 0.05, count: 24)
     @Published var statusMessage: String?
     @Published var isModelLoading = false
+    @Published var modelDownloadFraction: Double?
     @Published var activeFlowStyle: FlowStyle = .clean
     @Published var engineLabel: String = "—"
+    /// Bundle id captured at session start for insertion strategies.
+    private(set) var sessionTargetBundleID: String?
 
     private let audio = AudioCapture.shared
     private let insertion = InsertionService.shared
-    private let flow = FlowProcessor.shared
+    private let flow = FlowRouter.shared
     private let settings = SettingsStore.shared
     private let history = HistoryStore.shared
     private let privacy = PrivacyService.shared
     private let hotkey = HotkeyService.shared
+    private let modelReadiness = ModelReadinessStore.shared
 
     private var appleEngine = AppleSpeechEngine()
     private var whisperEngine = WhisperKitEngine()
@@ -40,6 +44,24 @@ final class DictationController: ObservableObject {
         activeEngine = whisperEngine
         usingAppleEngine = false
         activeFlowStyle = SettingsStore.shared.settings.defaultFlowStyle
+        configureFlowRouter()
+    }
+
+    private func configureFlowRouter() {
+        Task {
+            await flow.configure(
+                backend: { await MainActor.run { SettingsStore.shared.settings.flowBackend } },
+                neuralReady: {
+                    await MainActor.run {
+                        let s = SettingsStore.shared.settings
+                        guard s.neuralRAMSatisfied else { return false }
+                        return s.flowBackend == .neural || s.flowBackend == .auto
+                    }
+                },
+                neural: NeuralFlowProcessor.shared
+            )
+            await NeuralFlowProcessor.shared.refreshAvailability()
+        }
     }
 
     // MARK: - Lifecycle
@@ -168,20 +190,41 @@ final class DictationController: ObservableObject {
 
         await MainActor.run {
             isModelLoading = true
+            modelDownloadFraction = nil
             ZFLog.debugEnabled = snapshot.debugLogging
+            ModelReadinessStore.shared.refreshAll()
         }
         defer {
-            Task { @MainActor in self.isModelLoading = false }
+            Task { @MainActor in
+                self.isModelLoading = false
+                self.modelDownloadFraction = nil
+            }
         }
 
         do {
             if model.isWhisperKit {
+                let cached = WhisperModelLocator.readiness(for: model).state.isReady
+                if !cached, mayDownload {
+                    await MainActor.run {
+                        ModelReadinessStore.shared.markDownloading(model, progress: nil)
+                        self.modelDownloadFraction = nil
+                        self.statusMessage = "Downloading \(model.displayName)…"
+                    }
+                    ZFLog.info("model_download_start model=\(model.rawValue)")
+                }
+                let t0 = Date()
                 try await whisperEngine.load(model: model, allowDownload: mayDownload)
                 let name = await whisperEngine.modelName
                 await MainActor.run {
                     self.activeEngine = self.whisperEngine
                     self.usingAppleEngine = false
                     self.engineLabel = name
+                    ModelReadinessStore.shared.markReady(model)
+                    if !cached, mayDownload {
+                        let ms = Int(Date().timeIntervalSince(t0) * 1000)
+                        ZFLog.info("model_download_finish model=\(model.rawValue) ms=\(ms)")
+                    }
+                    self.statusMessage = nil
                 }
             } else {
                 try await appleEngine.load(model: model)
@@ -196,6 +239,12 @@ final class DictationController: ObservableObject {
             ZFLog.info("Engine loaded: \(label) mayDownload=\(mayDownload)")
         } catch {
             ZFLog.error("Engine load failed: \(error.localizedDescription)")
+            if model.isWhisperKit {
+                await MainActor.run {
+                    ModelReadinessStore.shared.markFailed(model, message: error.localizedDescription)
+                }
+                ZFLog.info("model_download_fail model=\(model.rawValue)")
+            }
             do {
                 try await appleEngine.load(model: .appleSpeech)
                 let name = await appleEngine.modelName
@@ -240,6 +289,19 @@ final class DictationController: ObservableObject {
 
         // Remember where the user was typing BEFORE any of our UI steals focus
         FocusStore.shared.captureNow()
+        sessionTargetBundleID = FocusStore.shared.lastBundleID
+
+        // Surface model download state if Whisper isn't ready yet
+        if !usingAppleEngine {
+            let model = settings.settings.preferredModel
+            let ready = ModelReadinessStore.shared.readiness(for: model)
+            if case .downloading = ready.state {
+                interimText = ModelReadinessStore.shared.bannerMessage ?? "Downloading model…"
+            } else if case .failed(let msg) = ready.state {
+                showError(msg)
+                return
+            }
+        }
 
         sessionGeneration &+= 1
         let generation = sessionGeneration
@@ -330,14 +392,24 @@ final class DictationController: ObservableObject {
             }
 
             let style = activeFlowStyle
+            let flowT0 = Date()
             let processed = await flow.process(final.rawText, style: style)
+            let flowMs = Int(Date().timeIntervalSince(flowT0) * 1000)
             // Lengths only — never log transcript body
-            ZFLog.info("Processed len=\(processed.count) raw len=\(final.rawText.count)")
+            ZFLog.info(
+                "Processed len=\(processed.count) raw len=\(final.rawText.count) flowMs=\(flowMs) style=\(style.rawValue) backend=\(settings.settings.flowBackend.rawValue)"
+            )
 
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 showError("No speech detected — try again")
                 ZFLog.info("Empty transcription")
+                return
+            }
+
+            // Stale session check after flow (may have taken up to neural timeout)
+            guard sessionGeneration == generation else {
+                ZFLog.info("endSession discarded after flow — stale generation")
                 return
             }
 
@@ -347,7 +419,12 @@ final class DictationController: ObservableObject {
             let restored = await FocusStore.shared.restore()
             ZFLog.info("Pre-insert focus restored=\(restored)")
 
-            let result = await insertion.insert(trimmed, preferPaste: restored)
+            let result = await insertion.insert(
+                trimmed,
+                preferPaste: restored,
+                mode: settings.settings.insertionMode,
+                targetBundleID: sessionTargetBundleID ?? FocusStore.shared.lastBundleID
+            )
             ZFLog.info("Insertion result: \(String(describing: result))")
 
             if settings.settings.saveHistory {

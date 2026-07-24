@@ -6,53 +6,90 @@ import ZephyrFlowCore
 actor InsertionService: InsertionServiceProtocol {
     static let shared = InsertionService()
 
-    /// Protocol entry — defaults to balanced strategy.
     func insert(_ text: String) async -> InsertionResult {
-        await insert(text, preferPaste: true)
+        await insert(text, preferPaste: true, mode: .automatic, targetBundleID: nil)
     }
 
-    /// - Parameter preferPaste: When true (after focus restore), try Cmd+V first.
-    func insert(_ text: String, preferPaste: Bool) async -> InsertionResult {
+    /// - Parameters:
+    ///   - preferPaste: Legacy hint when mode is automatic (after focus restore).
+    ///   - mode: User insertion mode from settings.
+    ///   - targetBundleID: Bundle id captured before panel focus steal.
+    func insert(
+        _ text: String,
+        preferPaste: Bool,
+        mode: InsertionMode = .automatic,
+        targetBundleID: String? = nil
+    ) async -> InsertionResult {
         guard !text.isEmpty else { return .failed("Empty text") }
-        ZFLog.info("Insert request len=\(text.count) ax=\(AXIsProcessTrusted()) preferPaste=\(preferPaste)")
 
-        // Password / secure fields – never inject, copy instead
-        if AXIsProcessTrusted(), await isSecureFieldFocused() {
+        let role = await focusedRole()
+        let frontBundle = await frontmostBundleID()
+        let bundle = targetBundleID ?? frontBundle
+        ZFLog.info(
+            "Insert request len=\(text.count) ax=\(AXIsProcessTrusted()) mode=\(mode.rawValue) bundle=\(bundle ?? "nil") role=\(role ?? "nil")"
+        )
+
+        let secureFocused = AXIsProcessTrusted() ? await isSecureFieldFocused() : false
+        if InsertionStrategyResolver.isSecureRole(role) || secureFocused {
             await copyToClipboard(text)
-            ZFLog.info("Secure field — copied")
+            ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=secure")
             return .copiedToClipboard
         }
 
-        if preferPaste {
-            // 1) Clipboard + Cmd+V into restored frontmost app
-            if await pasteViaClipboard(text) {
-                ZFLog.info("Inserted via paste")
-                return .pasted
-            }
-            // 2) AX fallback
-            if AXIsProcessTrusted(), await insertViaAccessibility(text) {
-                ZFLog.info("Inserted via AX (after paste fail)")
-                return .inserted
-            }
-        } else {
-            if AXIsProcessTrusted(), await insertViaAccessibility(text) {
-                ZFLog.info("Inserted via AX")
-                return .inserted
-            }
-            if await pasteViaClipboard(text) {
-                ZFLog.info("Inserted via paste")
-                return .pasted
+        var strategies = InsertionStrategyResolver.strategies(
+            bundleID: bundle,
+            role: role,
+            mode: mode
+        )
+        // Honor preferPaste=false by trying AX before paste when automatic.
+        if mode == .automatic, !preferPaste {
+            strategies = strategies.filter { $0 != .clipboardPaste && $0 != .terminalPaste }
+                + strategies.filter { $0 == .clipboardPaste || $0 == .terminalPaste }
+        }
+
+        for strategy in strategies {
+            switch strategy {
+            case .copyOnly:
+                await copyToClipboard(text)
+                ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=ok")
+                return .copiedToClipboard
+
+            case .clipboardPaste, .terminalPaste:
+                let settle: UInt64 = InsertionStrategyResolver.isTerminal(bundle ?? "")
+                    ? 40_000_000 : 16_000_000
+                try? await Task.sleep(nanoseconds: settle)
+                if await pasteViaClipboard(text) {
+                    ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=ok")
+                    return .pasted
+                }
+                ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=fail")
+
+            case .axSelectedText:
+                guard AXIsProcessTrusted() else { continue }
+                if await insertViaAccessibility(text, allowValueFallback: false) {
+                    ZFLog.info("insert strategy=axSelectedText bundle=\(bundle ?? "nil") result=ok")
+                    return .inserted
+                }
+                ZFLog.info("insert strategy=axSelectedText bundle=\(bundle ?? "nil") result=fail")
+
+            case .axValue:
+                guard AXIsProcessTrusted() else { continue }
+                if await insertViaAccessibility(text, allowValueFallback: true) {
+                    ZFLog.info("insert strategy=axValue bundle=\(bundle ?? "nil") result=ok")
+                    return .inserted
+                }
+                ZFLog.info("insert strategy=axValue bundle=\(bundle ?? "nil") result=fail")
             }
         }
 
         await copyToClipboard(text)
-        ZFLog.info("Fell back to clipboard only")
+        ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=fallback")
         return .copiedToClipboard
     }
 
     // MARK: - Accessibility path
 
-    private func insertViaAccessibility(_ text: String) async -> Bool {
+    private func insertViaAccessibility(_ text: String, allowValueFallback: Bool) async -> Bool {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         let focusedResult = AXUIElementCopyAttributeValue(
@@ -67,21 +104,19 @@ actor InsertionService: InsertionServiceProtocol {
         }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
 
-        // Refuse to "insert" into our own UI
         var pid: pid_t = 0
         if AXUIElementGetPid(element, &pid) == .success, pid == getpid() {
             ZFLog.info("AX: focused element is our own process — skip")
             return false
         }
 
-        // Log role for debugging
         var roleRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
            let role = roleRef as? String {
             ZFLog.info("AX focused role=\(role) pid=\(pid)")
+            if InsertionStrategyResolver.isSecureRole(role) { return false }
         }
 
-        // Prefer selected text attribute (inserts / replaces selection)
         var selectedRef: CFTypeRef?
         let hasSelected = AXUIElementCopyAttributeValue(
             element,
@@ -99,9 +134,11 @@ actor InsertionService: InsertionServiceProtocol {
                 return true
             }
             ZFLog.info("AX set selectedText failed \(setResult.rawValue)")
+            if !allowValueFallback { return false }
+        } else if !allowValueFallback {
+            return false
         }
 
-        // Fallback: value + selected range splicing
         var valueRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
             element,
@@ -162,7 +199,6 @@ actor InsertionService: InsertionServiceProtocol {
             guard let data = pasteboard.data(forType: type) else { return nil }
             return (type, data)
         }
-        // changeCount lets us detect if the user copied something else mid-restore.
         let changeBefore = pasteboard.changeCount
 
         pasteboard.clearContents()
@@ -176,15 +212,12 @@ actor InsertionService: InsertionServiceProtocol {
             return false
         }
 
-        // Let the target app consume the paste
         try? await Task.sleep(nanoseconds: 250_000_000)
 
         let savedCopy = saved
         Task {
             try? await Task.sleep(nanoseconds: 400_000_000)
             let pb = NSPasteboard.general
-            // Only restore if clipboard still holds what we posted (user didn't copy).
-            // changeCount == ourChange means nothing else wrote; string match is belt-and-suspenders.
             if pb.changeCount == ourChange || pb.string(forType: .string) == text {
                 self.restorePasteboard(savedCopy)
                 ZFLog.debug("Clipboard restored (prior changeCount=\(changeBefore))")
@@ -198,7 +231,6 @@ actor InsertionService: InsertionServiceProtocol {
 
     private nonisolated func postCommandV() -> Bool {
         let source = CGEventSource(stateID: .combinedSessionState)
-        // 0x09 = kVK_ANSI_V
         guard
             let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
             let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
@@ -212,9 +244,16 @@ actor InsertionService: InsertionServiceProtocol {
         return true
     }
 
-    // MARK: - Secure field detection
+    // MARK: - Focus helpers
 
-    private func isSecureFieldFocused() async -> Bool {
+    private func frontmostBundleID() async -> String? {
+        await MainActor.run {
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        }
+    }
+
+    private func focusedRole() async -> String? {
+        guard AXIsProcessTrusted() else { return nil }
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
@@ -224,22 +263,18 @@ actor InsertionService: InsertionServiceProtocol {
         ) == .success,
               let focused = focusedRef,
               CFGetTypeID(focused) == AXUIElementGetTypeID() else {
-            return false
+            return nil
         }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
-
         var roleRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
-           let role = roleRef as? String {
-            if role == "AXSecureTextField" { return true }
-            var subroleRef: CFTypeRef?
-            if AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleRef) == .success,
-               let subrole = subroleRef as? String,
-               subrole == (kAXSecureTextFieldSubrole as String) || subrole == "AXSecureTextField" {
-                return true
-            }
+        guard AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success else {
+            return nil
         }
-        return false
+        return roleRef as? String
+    }
+
+    private func isSecureFieldFocused() async -> Bool {
+        InsertionStrategyResolver.isSecureRole(await focusedRole())
     }
 
     // MARK: - Clipboard helpers

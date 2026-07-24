@@ -123,6 +123,46 @@ struct CoreTests {
             check("interval positive", StreamingPartialWindow.intervalNanoseconds > 0)
         }
 
+        // Insertion strategy resolver
+        do {
+            let term = InsertionStrategyResolver.strategies(
+                bundleID: "com.apple.Terminal", role: nil, mode: .automatic
+            )
+            check("terminal leads with terminalPaste", term.first == .terminalPaste)
+            let secure = InsertionStrategyResolver.strategies(
+                bundleID: "com.apple.Notes", role: "AXSecureTextField", mode: .automatic
+            )
+            check("secure is copyOnly only", secure == [.copyOnly])
+            let copyMode = InsertionStrategyResolver.strategies(
+                bundleID: "com.apple.Notes", role: nil, mode: .alwaysCopy
+            )
+            check("alwaysCopy", copyMode == [.copyOnly])
+        }
+
+        // Flow guardrails
+        do {
+            check(
+                "guard accepts same numbers",
+                FlowGuardrails.accept(input: "pay 12000 now", output: "Pay 12,000 now.") != nil
+            )
+            check(
+                "guard rejects novel number",
+                FlowGuardrails.accept(input: "pay 100 now", output: "Pay 999 now.") == nil
+            )
+            check(
+                "guard rejects preamble",
+                FlowGuardrails.accept(input: "hello", output: "Sure, hello there") == nil
+            )
+        }
+
+        // Settings defaults for new fields
+        do {
+            let s = AppSettings.default
+            check("flow backend regex default", s.flowBackend == .regex)
+            check("insertion automatic default", s.insertionMode == .automatic)
+            check("panel not locked default", !s.panelPositionLocked)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
