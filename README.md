@@ -60,7 +60,7 @@ ZephyrFlow is a macOS menu-bar dictation app:
 2. A glass panel appears near the cursor with live waveform + interim text
 3. Release → text is cleaned and inserted at the caret
 
-> Public preview (`v0.x`): **v0.0.0** is on [GitHub Releases](https://github.com/joe-broadhead/zephyr-flow/releases). Builds are **ad-hoc signed** (not Developer ID / notarized) until Apple Developer validation is configured.
+> Public preview (`v0.x`): latest is on [GitHub Releases](https://github.com/joe-broadhead/zephyr-flow/releases). Builds are **ad-hoc signed** (not Developer ID / notarized) until Apple Developer validation is configured.
 
 ## Highlights
 

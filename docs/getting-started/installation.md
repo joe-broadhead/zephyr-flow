@@ -7,7 +7,7 @@ Assets ship from GitHub Releases as a zip of `ZephyrFlow.app` plus checksums.
 ```bash
 # Example — replace VERSION
 curl -L -o ZephyrFlow.app.zip \
-  https://github.com/joe-broadhead/zephyr-flow/releases/download/v0.0.0/ZephyrFlow-macos-arm64.app.zip
+  https://github.com/joe-broadhead/zephyr-flow/releases/latest/download/ZephyrFlow-macos-arm64.app.zip
 
 unzip ZephyrFlow.app.zip
 xattr -cr ZephyrFlow.app
