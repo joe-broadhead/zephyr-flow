@@ -163,6 +163,16 @@ struct CoreTests {
             check("panel not locked default", !s.panelPositionLocked)
         }
 
+        // App version compare (update checker)
+        do {
+            check("parse v-prefix", AppVersion.parse("v1.2.3").map { $0 == (1, 2, 3) } == true)
+            check("parse plain", AppVersion.parse("0.0.0").map { $0 == (0, 0, 0) } == true)
+            check("newer patch", AppVersion.isNewer(candidate: "0.0.1", than: "0.0.0"))
+            check("not newer same", !AppVersion.isNewer(candidate: "0.0.0", than: "0.0.0"))
+            check("not older major", !AppVersion.isNewer(candidate: "0.9.9", than: "1.0.0"))
+            check("newer minor", AppVersion.isNewer(candidate: "v1.1.0", than: "1.0.9"))
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

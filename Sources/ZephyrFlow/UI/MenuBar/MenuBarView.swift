@@ -27,6 +27,10 @@ struct MenuBarView: View {
             }
 
             Button("Settings…") { WindowRouter.openSettings() }
+            Button("Check for Updates…") {
+                WindowRouter.openSettings()
+                Task { await UpdateChecker.shared.checkForUpdates() }
+            }
                 .keyboardShortcut(",", modifiers: [.command])
 
             Divider()
