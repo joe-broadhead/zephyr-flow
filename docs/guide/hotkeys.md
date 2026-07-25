@@ -34,3 +34,15 @@ While Fn is the hotkey, ZephyrFlow temporarily sets the system **Globe key** act
 - Grant **Accessibility** or the hotkey tap stays limited  
 - Menu **Start Dictation** always works as a fallback  
 - Enable **Debug logging** in Privacy settings if Fn seems dead, then check `~/Library/Logs/ZephyrFlow/zephyrflow.log`
+
+## Panel keys
+
+While a dictation session is active **and ZephyrFlow can receive key events** (e.g. you clicked the panel, or the menu bar extra is focused):
+
+| Key | Action |
+|-----|--------|
+| **Esc** | Cancel session |
+| **⌘.** | Cancel session |
+| **Return** | Stop & insert |
+
+During normal hold-to-talk, keyboard focus stays in the target app (by design for caret insert), so these shortcuts apply when the panel itself is key — not while typing in Notes mid-hold. Release the hotkey to finalize without using Return.

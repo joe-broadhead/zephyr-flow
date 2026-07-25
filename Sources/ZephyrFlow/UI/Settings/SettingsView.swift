@@ -9,17 +9,19 @@ struct SettingsView: View {
     @ObservedObject private var privacy = PrivacyService.shared
     @ObservedObject private var history = HistoryStore.shared
     @ObservedObject private var controller = DictationController.shared
+    @ObservedObject private var modelReadiness = ModelReadinessStore.shared
 
     @State private var selectedTab: Tab = .general
 
     enum Tab: String, CaseIterable, Identifiable {
-        case general, hotkey, model, privacy, history, about
+        case general, hotkey, model, flow, privacy, history, about
         var id: String { rawValue }
         var label: String {
             switch self {
             case .general: return "General"
             case .hotkey: return "Hotkey"
             case .model: return "Model"
+            case .flow: return "Flow"
             case .privacy: return "Privacy"
             case .history: return "History"
             case .about: return "About"
@@ -30,6 +32,7 @@ struct SettingsView: View {
             case .general: return "gearshape"
             case .hotkey: return "keyboard"
             case .model: return "cpu"
+            case .flow: return "wind"
             case .privacy: return "lock.shield"
             case .history: return "clock"
             case .about: return "info.circle"
@@ -51,6 +54,7 @@ struct SettingsView: View {
                 case .general: generalPane
                 case .hotkey: hotkeyPane
                 case .model: modelPane
+                case .flow: flowPane
                 case .privacy: privacyPane
                 case .history: historyPane
                 case .about: aboutPane
@@ -99,6 +103,32 @@ struct SettingsView: View {
                 LabeledContent("Active engine", value: controller.engineLabel)
                 if controller.isModelLoading {
                     ProgressView("Loading model…")
+                }
+                if let banner = modelReadiness.bannerMessage {
+                    Text(banner)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("Insertion") {
+                Picker("Mode", selection: binding(\.insertionMode)) {
+                    ForEach(InsertionMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                Text("Automatic picks paste vs Accessibility per app. Copy only never types keystrokes.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Panel") {
+                Button("Reset panel position") {
+                    settings.update {
+                        $0.panelOriginX = nil
+                        $0.panelOriginY = nil
+                        $0.panelPositionLocked = false
+                    }
                 }
             }
         }
@@ -152,8 +182,12 @@ struct SettingsView: View {
                             Text(model.detail)
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            Text(readinessLabel(for: model))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        readinessIcon(for: model)
                         if settings.settings.preferredModel == model {
                             Image(systemName: "checkmark.circle.fill")
                                 .foregroundStyle(.tint)
@@ -170,7 +204,7 @@ struct SettingsView: View {
 
             Section {
                 if settings.settings.allowModelDownloads {
-                    Text("Default is Whisper Tiny. Models download once into Application Support and run on-device (Neural Engine).")
+                    Text("Default is Whisper Tiny. Models download once and run on-device. Status reflects local cache.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
@@ -178,10 +212,38 @@ struct SettingsView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+                Button("Refresh model status") {
+                    modelReadiness.refreshAll()
+                }
             }
         }
         .formStyle(.grouped)
         .navigationTitle("Model")
+        .onAppear { modelReadiness.refreshAll() }
+    }
+
+    private var flowPane: some View {
+        Form {
+            Section("Cleanup backend") {
+                Picker("Flow backend", selection: binding(\.flowBackend)) {
+                    ForEach(FlowBackend.allCases) { backend in
+                        Text(backend.displayName).tag(backend)
+                    }
+                }
+                Text("Classic is instant regex (default). Enhanced adds extra on-device rule cleanup for Professional / Bullets / Summary (not a language model). Clean and Raw always stay Classic.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Default style") {
+                Picker("Style", selection: binding(\.defaultFlowStyle)) {
+                    ForEach(FlowStyle.allCases) { style in
+                        Label(style.displayName, systemImage: style.systemImage).tag(style)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("Flow")
     }
 
     // MARK: - Privacy
@@ -351,6 +413,38 @@ struct SettingsView: View {
 
     private func modelBlocked(_ model: ModelIdentifier) -> Bool {
         model.isWhisperKit && !settings.settings.allowModelDownloads
+    }
+
+    private func readinessLabel(for model: ModelIdentifier) -> String {
+        let r = modelReadiness.readiness(for: model)
+        switch r.state {
+        case .notApplicable: return "Built-in"
+        case .missing: return "Not downloaded"
+        case .downloading:
+            return "Downloading…"
+        case .ready:
+            if let b = r.bytesOnDisk, b > 0 {
+                return "Ready · \(ByteCountFormatter.string(fromByteCount: b, countStyle: .file))"
+            }
+            return "Ready"
+        case .failed(let m): return "Failed — \(m)"
+        }
+    }
+
+    @ViewBuilder
+    private func readinessIcon(for model: ModelIdentifier) -> some View {
+        switch modelReadiness.readiness(for: model).state {
+        case .ready:
+            Image(systemName: "checkmark.circle").foregroundStyle(.green)
+        case .downloading:
+            ProgressView().controlSize(.small)
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        case .missing:
+            Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
+        case .notApplicable:
+            EmptyView()
+        }
     }
 
     private func selectModel(_ model: ModelIdentifier) {

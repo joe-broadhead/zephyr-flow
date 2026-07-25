@@ -89,6 +89,90 @@ public enum ModelIdentifier: String, Codable, CaseIterable, Identifiable, Sendab
     }
 
     public var isWhisperKit: Bool { self != .appleSpeech }
+
+    /// Folder name under WhisperKit / Hugging Face caches.
+    public var whisperKitFolderName: String? {
+        switch self {
+        case .appleSpeech: return nil
+        case .whisperTiny, .whisperBase, .whisperSmall: return rawValue
+        }
+    }
+}
+
+// MARK: - Model readiness
+
+public enum ModelReadinessState: Sendable, Equatable {
+    case notApplicable
+    case missing
+    case downloading(Double?) // 0...1 when known; nil = indeterminate
+    case ready
+    case failed(String)
+
+    public var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+}
+
+public struct ModelReadiness: Sendable, Equatable {
+    public var state: ModelReadinessState
+    public var bytesOnDisk: Int64?
+
+    public init(state: ModelReadinessState, bytesOnDisk: Int64? = nil) {
+        self.state = state
+        self.bytesOnDisk = bytesOnDisk
+    }
+
+    public static let notApplicable = ModelReadiness(state: .notApplicable)
+}
+
+// MARK: - Flow backend
+
+public enum FlowBackend: String, Codable, CaseIterable, Identifiable, Sendable {
+    case regex
+    /// On-device **rule-enhanced** cleanup (not an LLM). Kept raw value `neural` only for
+    /// forward-compat with early settings; display name is honest.
+    case enhanced = "neural"
+    case auto
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .regex: return "Classic (instant)"
+        case .enhanced: return "Enhanced (on-device rules)"
+        case .auto: return "Auto (enhanced when available)"
+        }
+    }
+
+    /// Legacy alias — same as `.enhanced`.
+    public static var neural: FlowBackend { .enhanced }
+}
+
+// MARK: - Insertion mode / strategy
+
+public enum InsertionMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case automatic
+    case alwaysPaste
+    case alwaysCopy
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .automatic: return "Automatic"
+        case .alwaysPaste: return "Always paste"
+        case .alwaysCopy: return "Always copy only"
+        }
+    }
+}
+
+public enum InsertionStrategy: String, Sendable, CaseIterable {
+    case clipboardPaste
+    case axSelectedText
+    case axValue
+    case terminalPaste
+    case copyOnly
 }
 
 // MARK: - Hotkey
@@ -178,6 +262,15 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var saveHistory: Bool
     /// Verbose hotkey/engine diagnostics written to the local log file.
     public var debugLogging: Bool
+    /// Post-STT cleanup backend. Default regex keeps Clean path instant.
+    public var flowBackend: FlowBackend
+    /// How text is delivered to the target app.
+    public var insertionMode: InsertionMode
+    /// Persisted panel origin (screen coords); nil = auto near cursor.
+    public var panelOriginX: Double?
+    public var panelOriginY: Double?
+    /// User dragged the panel; honor saved origin until reset.
+    public var panelPositionLocked: Bool
 
     public init(
         hotkey: HotkeyConfig,
@@ -190,7 +283,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
         listeningMode: ListeningMode,
         hasCompletedOnboarding: Bool,
         saveHistory: Bool = true,
-        debugLogging: Bool = false
+        debugLogging: Bool = false,
+        flowBackend: FlowBackend = .regex,
+        insertionMode: InsertionMode = .automatic,
+        panelOriginX: Double? = nil,
+        panelOriginY: Double? = nil,
+        panelPositionLocked: Bool = false
     ) {
         self.hotkey = hotkey
         self.preferredModel = preferredModel
@@ -203,6 +301,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.hasCompletedOnboarding = hasCompletedOnboarding
         self.saveHistory = saveHistory
         self.debugLogging = debugLogging
+        self.flowBackend = flowBackend
+        self.insertionMode = insertionMode
+        self.panelOriginX = panelOriginX
+        self.panelOriginY = panelOriginY
+        self.panelPositionLocked = panelPositionLocked
     }
 
     public static let `default` = AppSettings(
@@ -216,8 +319,20 @@ public struct AppSettings: Codable, Equatable, Sendable {
         listeningMode: .holdToTalk,
         hasCompletedOnboarding: false,
         saveHistory: true,
-        debugLogging: false
+        debugLogging: false,
+        flowBackend: .regex,
+        insertionMode: .automatic,
+        panelOriginX: nil,
+        panelOriginY: nil,
+        panelPositionLocked: false
     )
+
+    /// Neural Flow needs ~16 GB to coexist with Whisper comfortably.
+    public static let neuralMinimumRAMBytes: UInt64 = 16 * 1024 * 1024 * 1024
+
+    public var neuralRAMSatisfied: Bool {
+        ProcessInfo.processInfo.physicalMemory >= Self.neuralMinimumRAMBytes
+    }
 
     /// Model file fetch only — never implies uploading user audio.
     public var mayDownloadModels: Bool {
