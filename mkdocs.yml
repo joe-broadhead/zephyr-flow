@@ -116,3 +116,4 @@ nav:
       - CI & Quality: development/ci.md
       - Release: development/release.md
       - Audits policy: development/audits.md
+      - Aurum bake-off: development/aurum-ffi-bakeoff.md
