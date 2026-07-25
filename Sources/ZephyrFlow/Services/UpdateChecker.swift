@@ -36,10 +36,13 @@ final class UpdateChecker: ObservableObject {
         status = .checking
         ZFLog.info("update_check_start current=\(currentVersion)")
 
-        var request = URLRequest(url: releasesAPI)
+        var request = URLRequest(
+            url: releasesAPI,
+            cachePolicy: .reloadIgnoringLocalCacheData,
+            timeoutInterval: 20
+        )
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("ZephyrFlow/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 20
 
         do {
             let (data, response) = try await session.data(for: request)

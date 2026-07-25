@@ -60,15 +60,16 @@ ZephyrFlow is a macOS menu-bar dictation app:
 2. A glass panel appears near the cursor with live waveform + interim text
 3. Release → text is cleaned and inserted at the caret
 
-> Public preview (`v0.x`): builds are **ad-hoc signed** (not Developer ID / notarized) until Apple Developer validation is in place. First public release target: **v0.0.0**.
+> Public preview (`v0.x`): **v0.0.0** is on [GitHub Releases](https://github.com/joe-broadhead/zephyr-flow/releases). Builds are **ad-hoc signed** (not Developer ID / notarized) until Apple Developer validation is configured.
 
 ## Highlights
 
 - **Hold-to-talk Fn** — Wispr-style global hotkey on a dedicated event-tap thread  
-- **Whisper Tiny by default** — downloads once, then runs fully on-device (Neural Engine)  
+- **Whisper Tiny by default** — downloads once, then runs fully on-device (Neural Engine), with **live interim text** while you hold  
 - **Local Only** — your voice/transcripts stay on this Mac; Apple Speech remains a built-in fallback  
-- **Focus restore + paste** — reliable insert across apps  
-- **Flow styles** — clean, bullets, professional, summary, raw  
+- **Focus restore + smart insert** — per-app paste/AX strategies; secure fields stay copy-only  
+- **Flow styles** — clean, bullets, professional, summary, raw (optional Enhanced on-device rules)  
+- **Check for Updates** — on-demand GitHub Releases (no background pings)  
 - **Auditable** — greppable privacy posture + core tests  
 
 ## 30-second install (from source)

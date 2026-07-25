@@ -2,7 +2,7 @@
 
 ## Whisper Tiny (default)
 
-Backed by [WhisperKit](https://github.com/argmaxinc/WhisperKit). Downloads once (~75 MB) into Application Support, then runs fully on-device.
+Backed by [WhisperKit](https://github.com/argmaxinc/WhisperKit). Downloads once (~75 MB) into the local Hugging Face / WhisperKit model cache (commonly under `~/Documents/huggingface/…` or `~/.cache/huggingface/hub`), then runs fully on-device.
 
 ### Live partials
 
@@ -31,10 +31,21 @@ While you hold the hotkey, Whisper runs **single-flight** progressive decodes on
 
 Downloads are **on by default** for Whisper Tiny. Toggle under Settings → **Privacy** → Allow Whisper model downloads.
 
-Files land once in Application Support and run on-device (Neural Engine on Apple Silicon).
+Files land once in the model cache (see `WhisperModelLocator` roots) and run on-device (Neural Engine on Apple Silicon). Settings → **Model** shows Ready / Not downloaded / size when known.
 
 !!! note
     Local Only still applies to **your audio and transcripts**. Model download is a separate one-time file fetch.
 
 !!! note "Long dictations"
     The WhisperKit path keeps roughly the **most recent 60 seconds** of audio in memory for the final pass (and partials use the most recent ~15 s window). Prefer Apple Speech or shorter segments for long-form.
+
+
+## Flow cleanup (after transcription)
+
+| Backend | Default | What it does |
+|---------|---------|----------------|
+| **Classic** | Yes | `FlowProcessor` regex/heuristics |
+| **Enhanced** | Opt-in | Extra on-device **rules** for Professional / Bullets / Summary (not an LLM, no network) |
+| **Auto** | Opt-in | Uses Enhanced when available |
+
+Clean and Raw **always** use Classic. Enhanced output is gated by `FlowGuardrails` (reject novel numbers / chat preambles → fall back to Classic).

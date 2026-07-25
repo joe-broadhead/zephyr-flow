@@ -18,11 +18,13 @@ HotkeyService (dedicated tap thread)
         → WhisperEngine.startStreaming  (WhisperKit default | AppleSpeech fallback)
         → FocusStore.restore (user keeps typing focus)
 Hotkey release / Stop
-    → stopAndFinalize → FlowProcessor
+    → stopAndFinalize → FlowRouter (Classic / Enhanced rules)
     → panel hide → FocusStore.restore
-    → InsertionService (paste preferred, AX fallback)
+    → InsertionService (per-app strategy order)
     → HistoryStore
 ```
+
+While listening (Whisper path), a **single-flight** rolling partial decode may update `interimText`.
 
 ## Privacy controls
 
@@ -43,9 +45,14 @@ Local Only does **not** block model-file downloads. WhisperKit is constructed wi
 | AppleSpeechEngine | Built-in STT fallback |
 | WhisperKitEngine | Default STT (Whisper Tiny) |
 | AudioCapture | PCM for Whisper path |
-| InsertionService | AX + Cmd+V |
+| InsertionService | Per-app strategies (paste / AX / copy-only) |
 | FocusStore | Frontmost app memory |
 | DictationController | Orchestrator |
+| FlowRouter + FlowProcessor | Post-STT cleanup (classic default) |
+| NeuralFlowProcessor | Opt-in enhanced **rules** (not an LLM) |
+| FlowGuardrails | Reject novel numbers / preambles on Enhanced output |
+| ModelReadinessStore / WhisperModelLocator | Cache status |
+| UpdateChecker | On-demand GitHub Releases check |
 | PrivacyService | TCC status |
 | SettingsStore / HistoryStore | Persistence |
 | WindowRouter | Settings + onboarding |

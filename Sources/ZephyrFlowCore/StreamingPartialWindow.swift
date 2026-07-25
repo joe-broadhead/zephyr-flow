@@ -15,8 +15,8 @@ public enum StreamingPartialWindow: Sendable {
     /// Spacing between partial attempts.
     public static let intervalNanoseconds: UInt64 = 1_200_000_000
 
-    /// How long finalize will wait for an in-flight partial decode to finish.
-    public static let finalizeWaitNanoseconds: UInt64 = 3_000_000_000
+    /// Finalize waits for the in-flight partial via the engine single-flight gate
+    /// (not a fixed short timeout — concurrent decode is unsafe).
 
     public static func canRunPartial(sampleCount: Int) -> Bool {
         sampleCount >= minPartialSamples
