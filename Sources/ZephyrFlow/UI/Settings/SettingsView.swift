@@ -10,6 +10,7 @@ struct SettingsView: View {
     @ObservedObject private var history = HistoryStore.shared
     @ObservedObject private var controller = DictationController.shared
     @ObservedObject private var modelReadiness = ModelReadinessStore.shared
+    @ObservedObject private var updates = UpdateChecker.shared
 
     @State private var selectedTab: Tab = .general
 
@@ -387,8 +388,52 @@ struct SettingsView: View {
             LabeledContent("License", value: "MIT")
             LabeledContent("Bundle ID", value: "dev.zephyrflow.app")
 
-            Link("Contribute on GitHub", destination: URL(string: "https://github.com/joe-broadhead/zephyr-flow")!)
+            GroupBox("Updates") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(updateStatusText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 10) {
+                        Button {
+                            Task { await updates.checkForUpdates() }
+                        } label: {
+                            if case .checking = updates.status {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Checking…")
+                            } else {
+                                Text("Check for Updates")
+                            }
+                        }
+                        .disabled({
+                            if case .checking = updates.status { return true }
+                            return false
+                        }())
+
+                        if case .updateAvailable = updates.status {
+                            Button("Download") {
+                                updates.openDownload()
+                            }
+                            .keyboardShortcut(.defaultAction)
+                            Button("Release Notes") {
+                                updates.openReleasePage()
+                            }
+                        }
+                    }
+
+                    Text("Checks GitHub Releases only when you click the button. No background update pings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(4)
+            }
+
+            Link("Contribute on GitHub", destination: ZephyrFlowConstants.githubURL)
             Link("Report an Issue", destination: URL(string: "https://github.com/joe-broadhead/zephyr-flow/issues")!)
+            Link("All Releases", destination: ZephyrFlowConstants.releasesURL)
 
             Text("Built for privacy-conscious knowledge workers and developers. Whisper Tiny on-device after a one-time model download; Local Only keeps your audio here.")
                 .font(.callout)
@@ -398,6 +443,28 @@ struct SettingsView: View {
             Spacer()
         }
         .navigationTitle("About")
+    }
+
+    private var updateStatusText: String {
+        switch updates.status {
+        case .idle:
+            return "Current version \(ZephyrFlowConstants.version)."
+        case .checking:
+            return "Contacting GitHub Releases…"
+        case .upToDate(let current):
+            return "You’re on the latest version (\(current))."
+        case .updateAvailable(let latest, let notes, _, _):
+            if let notes, !notes.isEmpty {
+                let preview = notes
+                    .components(separatedBy: .newlines)
+                    .prefix(4)
+                    .joined(separator: "\n")
+                return "Version \(latest) is available.\n\n\(preview)"
+            }
+            return "Version \(latest) is available."
+        case .failed(let message):
+            return "Couldn’t check for updates: \(message)"
+        }
     }
 
     // MARK: - Helpers

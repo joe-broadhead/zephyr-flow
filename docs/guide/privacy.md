@@ -32,3 +32,8 @@ swift run ZephyrFlowCoreTests
 ```
 
 See also [Security](../operations/security.md). Full audit dumps are not kept in-repo (see [Audits policy](../development/audits.md)).
+
+
+## Check for Updates
+
+Settings → **About** → **Check for Updates** (also in the menu bar) contacts **GitHub Releases only when you click the button**. There is no background update polling or telemetry. The request uses HTTPS to `api.github.com` for this repository’s latest release tag and asset list.
