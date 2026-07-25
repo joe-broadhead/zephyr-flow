@@ -2,7 +2,7 @@
 
 **Private voice-to-text that appears at your cursor.**
 
-ZephyrFlow is a macOS menu-bar dictation app. Hold **Fn**, speak, release — polished text lands exactly where you were typing. **Local Only is on by default** so your audio and transcripts stay on this Mac.
+ZephyrFlow is a macOS menu-bar dictation app. Hold **Fn**, speak (live interim text on Whisper), release — polished text lands exactly where you were typing. **Local Only is on by default** so your audio and transcripts stay on this Mac.
 
 !!! tip "Privacy first"
     Default engine is **Whisper Tiny** (one-time ~75 MB model download, then fully on-device). No analytics. No telemetry. No crash reporter. Local Only governs **your voice** — not the optional model-file fetch.

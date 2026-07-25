@@ -58,3 +58,17 @@ rm -rf .build
 swift package resolve
 ./Scripts/build_app.sh release
 ```
+
+
+## Model won’t download / stays “Not downloaded”
+
+1. Settings → **Privacy** → ensure **Allow Whisper model downloads** is on  
+2. Settings → **Model** → select Whisper Tiny → watch status  
+3. Check network access to Hugging Face (model host)  
+4. Or switch to **Apple Speech** (needs Speech Recognition + system Dictation On)
+
+## Check for Updates fails
+
+- Requires network to `api.github.com`  
+- Only runs when you click the button (Settings → About or menu bar)  
+- If you’re already on the latest tag, you’ll see “latest version”

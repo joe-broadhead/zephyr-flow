@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Live Whisper partials** — single-flight progressive decode while holding Fn so the panel shows interim text before release (safe against WhisperKit concurrent-transcribe crashes)
+- **Model readiness UI** — Settings → Model shows Ready / Not downloaded / Failed; load path surfaces download/fail banners
+- **Per-app insertion strategies** — Automatic / Always paste / Always copy; terminal & Electron-aware order; secure fields stay copy-only
+- **Enhanced Flow (opt-in)** — Settings → Flow: Classic (default) or Enhanced on-device **rules** for Professional / Bullets / Summary (Clean & Raw always Classic). Not a cloud or LLM path
+- **Check for Updates** — Settings → About and menu bar; on-demand GitHub Releases check only (no background pings)
+- Optional **Developer ID + notarization** path in release CI when Apple secrets are configured (otherwise ad-hoc)
+- Docs: live partials, insertion matrix, hotkeys panel keys, update privacy note, Aurum bake-off memo (engine no-go)
+
+### Fixed
+
+- Listening **orb waveform animation** — TimelineView pulse + mic-reactive bars (SwiftUI `repeatForever` froze under frequent redraws)
+- Insertion `preferPaste=false` path no longer skips paste by placing copy-only first
+- Flow backend user-facing naming honesty (Enhanced rules, not “neural LLM”)
+
+### Changed
+
+- Whisper finalize waits for any in-flight partial before the final decode (single-flight guarantee)
+- Panel: movable by background, optional position memory, Esc/Return when ZephyrFlow can receive keys
+
 ## [0.0.0] - 2026-07-23
 
 ### Added
