@@ -311,47 +311,48 @@ struct FloatingPanelView: View {
     // MARK: Orb
 
     private var orb: some View {
-        ZStack {
-            Circle()
-                .fill(orbGradient)
+        // TimelineView keeps the listening pulse alive even when `levels`/`text`
+        // invalidate the parent body every frame (repeatForever + value: was freezing).
+        TimelineView(.animation(minimumInterval: reduceMotion ? 1.0 : 1.0 / 30.0)) { context in
+            let pulse: CGFloat = {
+                guard !reduceMotion, state == .listening else { return 1.0 }
+                let t = context.date.timeIntervalSinceReferenceDate
+                return 1.0 + 0.07 * CGFloat(sin(t * 2 * Double.pi / 0.85))
+            }()
 
-            // Waveform stays *inside* the orb — clipped so bars never spill into text.
-            if state == .listening {
-                waveform
-            }
+            ZStack {
+                Circle()
+                    .fill(orbGradient)
 
-            if state == .processing {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.white)
-            }
+                // Waveform stays *inside* the orb — clipped so bars never spill into text.
+                if state == .listening {
+                    waveform
+                }
 
-            if state == .success {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-            }
+                if state == .processing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                }
 
-            if case .error = state {
-                Image(systemName: "exclamationmark")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
+                if state == .success {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+
+                if case .error = state {
+                    Image(systemName: "exclamationmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                }
             }
+            .frame(width: 46, height: 46)
+            .clipShape(Circle())
+            .scaleEffect(pulse)
+            .shadow(color: glowColor.opacity(0.55), radius: reduceMotion ? 0 : 12)
         }
-        .frame(width: 46, height: 46)
-        .clipShape(Circle())
-        .scaleEffect(orbScale)
-        .shadow(color: glowColor.opacity(0.55), radius: reduceMotion ? 0 : 12)
-        .animation(
-            reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
-            value: state == .listening
-        )
         .accessibilityLabel(orbAccessibilityLabel)
-    }
-
-    private var orbScale: CGFloat {
-        if reduceMotion { return 1.0 }
-        return state == .listening ? 1.08 : 1.0
     }
 
     private var orbGradient: LinearGradient {
@@ -384,7 +385,8 @@ struct FloatingPanelView: View {
             ForEach(Array(bars.enumerated()), id: \.offset) { _, level in
                 RoundedRectangle(cornerRadius: 1)
                     .fill(Color.white.opacity(0.92))
-                    .frame(width: 2, height: max(4, min(20, CGFloat(level) * 20)))
+                    .frame(width: 2, height: max(5, min(22, CGFloat(level) * 26)))
+                    .animation(.easeOut(duration: 0.06), value: level)
             }
         }
         .frame(width: 30, height: 22)

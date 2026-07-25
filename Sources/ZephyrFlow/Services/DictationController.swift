@@ -343,8 +343,14 @@ final class DictationController: ObservableObject {
             } else {
                 try await audio.start { [weak self] samples in
                     guard let self else { return }
+                    // Drive waveform on MainActor from the same PCM we send to Whisper
+                    // (avoids AudioCapture actor latency starving the UI meter).
+                    Task { @MainActor in
+                        self.pushWaveformLevels(from: samples)
+                    }
                     Task { await self.activeEngine.appendAudio(samples) }
                 }
+                // Keep a slow poll as backup if callbacks pause
                 startAudioLevelsPolling()
             }
 
@@ -505,14 +511,50 @@ final class DictationController: ObservableObject {
 
     // MARK: - Levels
 
+    /// Rolling meter for the orb waveform (MainActor).
+    private func pushWaveformLevels(from samples: [Float]) {
+        guard !samples.isEmpty else { return }
+        // Cheap RMS (stride) — fine for UI, not for ASR.
+        var sum: Float = 0
+        let step = max(1, samples.count / 256)
+        var n = 0
+        var i = 0
+        while i < samples.count {
+            let s = samples[i]
+            sum += s * s
+            n += 1
+            i += step
+        }
+        let rms = n > 0 ? sqrt(sum / Float(n)) : 0
+        // Higher gain than capture path so quiet mics still move the bars.
+        let level = min(1.0, max(0.04, rms * 14))
+        var next = audioLevels
+        if next.count != 24 {
+            next = Array(repeating: 0.05, count: 24)
+        }
+        next.removeFirst()
+        next.append(level)
+        if next.count >= 2 {
+            let j = next.count - 1
+            next[j] = next[j] * 0.55 + next[j - 1] * 0.45
+        }
+        audioLevels = next
+    }
+
     private func startAudioLevelsPolling() {
         levelsTask?.cancel()
         levelsTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { break }
                 let levels = await self.audio.levels()
-                await MainActor.run { self.audioLevels = levels }
-                try? await Task.sleep(nanoseconds: 50_000_000)
+                await MainActor.run {
+                    // Only use poll if callback path hasn't moved the meter recently.
+                    // Prefer fresher callback-driven levels when both run.
+                    if levels.contains(where: { $0 > 0.06 }) {
+                        self.audioLevels = levels
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 80_000_000)
             }
         }
     }
