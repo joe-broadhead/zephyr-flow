@@ -343,6 +343,10 @@ final class DictationController: ObservableObject {
             } else {
                 try await audio.start { [weak self] samples in
                     guard let self else { return }
+                    // UI meter from the same PCM Whisper gets (MainActor, no actor hop lag).
+                    Task { @MainActor in
+                        self.applyMicLevels(samples)
+                    }
                     Task { await self.activeEngine.appendAudio(samples) }
                 }
                 startAudioLevelsPolling()
@@ -505,14 +509,45 @@ final class DictationController: ObservableObject {
 
     // MARK: - Levels
 
+    /// Update orb waveform from mono PCM (already on MainActor).
+    private func applyMicLevels(_ samples: [Float]) {
+        guard !samples.isEmpty else { return }
+        var sum: Float = 0
+        let step = max(1, samples.count / 128)
+        var n = 0
+        var i = 0
+        while i < samples.count {
+            let s = samples[i]
+            sum += s * s
+            n += 1
+            i += step
+        }
+        let rms = n > 0 ? (sum / Float(n)).squareRoot() : 0
+        let level = min(1, max(0.05, rms * 18))
+        var next = audioLevels
+        if next.count != 24 { next = Array(repeating: 0.08, count: 24) }
+        next.removeFirst()
+        next.append(level)
+        let j = next.count - 1
+        if j >= 1 {
+            next[j] = next[j] * 0.5 + next[j - 1] * 0.5
+        }
+        audioLevels = next
+    }
+
     private func startAudioLevelsPolling() {
         levelsTask?.cancel()
         levelsTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { break }
                 let levels = await self.audio.levels()
-                await MainActor.run { self.audioLevels = levels }
-                try? await Task.sleep(nanoseconds: 50_000_000)
+                await MainActor.run {
+                    // Backup path if callback levels are quiet/stuck
+                    if levels.contains(where: { $0 > 0.08 }) {
+                        self.audioLevels = levels
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 80_000_000)
             }
         }
     }
