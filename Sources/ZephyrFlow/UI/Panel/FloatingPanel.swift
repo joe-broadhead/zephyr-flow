@@ -21,6 +21,8 @@ final class FloatingPanelController {
     @MainActor
     func show(near point: NSPoint?) {
         let panel = ensurePanel()
+        // Re-bind root so @ObservedObject subscriptions stay live across show cycles.
+        hostingView?.rootView = FloatingPanelRoot()
         position(panel, near: point)
         panel.alphaValue = 1
         panel.orderFrontRegardless()
@@ -311,47 +313,47 @@ struct FloatingPanelView: View {
     // MARK: Orb
 
     private var orb: some View {
-        ZStack {
-            Circle()
-                .fill(orbGradient)
+        // TimelineView owns the pulse + bar clock so frequent parent redraws
+        // (interim text / levels) cannot freeze SwiftUI repeatForever animations.
+        TimelineView(.animation(minimumInterval: reduceMotion ? 60 : 1.0 / 30.0)) { context in
+            let t = context.date.timeIntervalSinceReferenceDate
+            let pulse: CGFloat = {
+                guard !reduceMotion, state == .listening else { return 1.0 }
+                return 1.0 + 0.08 * CGFloat(sin(t * 2 * Double.pi / 0.9))
+            }()
 
-            // Waveform stays *inside* the orb — clipped so bars never spill into text.
-            if state == .listening {
-                waveform
-            }
+            ZStack {
+                Circle()
+                    .fill(orbGradient)
 
-            if state == .processing {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(.white)
-            }
+                if state == .listening {
+                    listeningWaveform(time: t)
+                }
 
-            if state == .success {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
-            }
+                if state == .processing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                }
 
-            if case .error = state {
-                Image(systemName: "exclamationmark")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(.white)
+                if state == .success {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+
+                if case .error = state {
+                    Image(systemName: "exclamationmark")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                }
             }
+            .frame(width: 46, height: 46)
+            .clipShape(Circle())
+            .scaleEffect(pulse)
+            .shadow(color: glowColor.opacity(0.55), radius: reduceMotion ? 0 : 12)
         }
-        .frame(width: 46, height: 46)
-        .clipShape(Circle())
-        .scaleEffect(orbScale)
-        .shadow(color: glowColor.opacity(0.55), radius: reduceMotion ? 0 : 12)
-        .animation(
-            reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
-            value: state == .listening
-        )
         .accessibilityLabel(orbAccessibilityLabel)
-    }
-
-    private var orbScale: CGFloat {
-        if reduceMotion { return 1.0 }
-        return state == .listening ? 1.08 : 1.0
     }
 
     private var orbGradient: LinearGradient {
@@ -377,14 +379,21 @@ struct FloatingPanelView: View {
         }
     }
 
-    private var waveform: some View {
-        // Fewer, shorter bars so the mark stays inside the 46pt orb diameter.
+    /// Mic-reactive bars with a light idle bob so listening always *looks* live
+    /// even when the meter is quiet; amplitude scales up with real levels.
+    private func listeningWaveform(time: TimeInterval) -> some View {
         let bars = Array(levels.suffix(12))
+        let count = max(bars.count, 12)
         return HStack(spacing: 1.5) {
-            ForEach(Array(bars.enumerated()), id: \.offset) { _, level in
+            ForEach(0..<count, id: \.self) { i in
+                let mic = CGFloat(i < bars.count ? bars[i] : 0.05)
+                let bob = reduceMotion ? 0 : 0.2 * sin(time * 5.5 + Double(i) * 0.55)
+                // Idle motion always visible while listening; voice raises the floor.
+                let unit = min(1.0, max(0.0, 0.22 + mic * 0.95 + CGFloat(bob) * (0.25 + mic)))
+                let height = max(4, min(22, unit * 22))
                 RoundedRectangle(cornerRadius: 1)
                     .fill(Color.white.opacity(0.92))
-                    .frame(width: 2, height: max(4, min(20, CGFloat(level) * 20)))
+                    .frame(width: 2, height: height)
             }
         }
         .frame(width: 30, height: 22)
