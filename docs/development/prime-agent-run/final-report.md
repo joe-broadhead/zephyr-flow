@@ -13,7 +13,7 @@ external completion gate.
   - 8 `parent_summary` (epics 2232-2239)
   - 8 `deferred_by_contract` (release-supply-chain + Aurum lanes blocked by
     human/credential/real-device gates; provisional assumptions P2-P5)
-- **Integration head:** `97dcd87` on `agent/zephyr-production-run-20260808T103416Z`
+- **Integration head:** `d6e580bf` (gate-passed head) on `agent/zephyr-production-run-20260808T103416Z`
   (pushed; master/main untouched; no tags/releases).
 - Every autonomous acceptance criterion has retained deterministic evidence;
   no microphone/AX/factory/notarization/independent-review evidence was
@@ -67,3 +67,14 @@ enforces discovery).
 - provisional-decisions.md · refinements.jsonl
 - docs/development/evidence/JOE-XXXX/REPORT.md per issue
 - Scripts/qual/* (runbooks) · Scripts/release/* (prepared, dry-run)
+
+## Final gate
+
+- `FINAL_GATE_REQUESTED` committed; both branches pushed.
+- `/usr/local/libexec/zephyr-prime-final-gate-20260808T103416Z` ran manually:
+  **FINAL GATE PASSED** `d6e580bf…` (Zephyr) / `2d80982c…` (Aurum), exit 0
+  (log retained: `/tmp/final_gate4.log`; ledger records the exact heads).
+- Child worktrees removed; single clean worktree each repo; no tags.
+- 9/9 `Scripts/ci_checks.sh` gates green at the final head (XCTest enforced on
+  CI; CLT parity suite green locally; strict-concurrency baseline 88 and
+  shrinking; ASan clean).
