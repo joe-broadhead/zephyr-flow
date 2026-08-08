@@ -104,6 +104,13 @@ public enum FlowFidelityCorpus {
         .init(id: "i18n-002", category: "i18n", language: .frFR, style: .professional,
               input: "je ne peux pas venir, mais nous nous verrons demain",
               forbiddenTokens: []),
+        // ---- summary: multi-sentence inputs (real transformation) ----
+        .init(id: "sum-001", category: "summary", language: .enUS, style: .summary,
+              input: "The team shipped the release on Tuesday. It includes the new Flow rules and the guardrails. The build was green and we updated the docs. We did not skip the tests.",
+              forbiddenTokens: []),
+        .init(id: "sum-002", category: "summary", language: .enUS, style: .summary,
+              input: "Revenue grew by 10 percent this quarter. Costs stayed flat at $5,000. We did not cut the engineering budget. The forecast for next quarter is 12 percent growth.",
+              forbiddenTokens: []),
         // ---- edge: empty/short/long/adversarial ----
         .init(id: "edge-001", category: "edge", language: .enUS, style: .clean,
               input: "ok",

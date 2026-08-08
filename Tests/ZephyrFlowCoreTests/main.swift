@@ -1615,6 +1615,56 @@ struct CoreTests {
                 }
             }
             check("2280 all corpus cases pass", failures.isEmpty)
+
+            // JOE-2281: preregistered release gate over the corpus run.
+            var perStyle: [FlowStyle: FlowStyleStats] = [:]
+            for style in FlowStyle.allCases {
+                let cases = FlowFidelityCorpus.cases.filter { $0.style == style }
+                var critical = 0, fallbackCount = 0, noop = 0, stable = 0
+                for c in cases {
+                    let request = FlowRequest(sessionID: SessionID(token: "gate", sequence: 0, createdAtUptimeNanos: 0),
+                                              text: c.input, style: c.style, language: c.language,
+                                              sensitivity: .normal)
+                    let a = await FlowProcessor.shared.process(request)
+                    let b = await FlowProcessor.shared.process(request)
+                    if a.text == b.text { stable += 1 }
+                    // Critical = any input protected token lost from output.
+                    if !FlowGuardrails.inputCovered(
+                        input: FlowGuardrails.tokens(in: c.input),
+                        output: FlowGuardrails.tokens(in: a.text)).ok { critical += 1 }
+                    // Fallback = guardrails rejected output.
+                    switch FlowGuardrails.evaluate(input: c.input, output: a.text,
+                                                   conservativeFallback: c.input) {
+                    case .approved: break
+                    case .rejected: fallbackCount += 1
+                    }
+                    if a.text == c.input.trimmingCharacters(in: .whitespacesAndNewlines) { noop += 1 }
+                }
+                if !cases.isEmpty {
+                    perStyle[style] = FlowStyleStats(style: style, totalCases: cases.count,
+                                                     criticalViolations: critical,
+                                                     fallbackCount: fallbackCount,
+                                                     noopCount: noop, deterministicCount: stable)
+                }
+            }
+            let gateResult = FlowReleaseGate.evaluate(
+                corpusVersion: FlowFidelityCorpus.version,
+                stats: perStyle,
+                policy: FlowReleasePolicy.current)
+            check("2281 release gate passes", gateResult == .pass)
+            if case .fail(let reason) = gateResult { print("GATE-FAIL:", reason) }
+            // The candidate cannot modify its own thresholds: policy + corpus
+            // versions are fixed constants.
+            check("2281 policy versioned + baseline named",
+                  FlowReleasePolicy.current.version >= 1
+                    && FlowReleasePolicy.current.baselineCommit.contains("3059542")
+                    && FlowReleasePolicy.current.corpusVersion == FlowFidelityCorpus.version)
+            // Corpus mismatch must block (regression guard).
+            let mismatch = FlowReleaseGate.evaluate(corpusVersion: FlowFidelityCorpus.version + 1,
+                                                    stats: perStyle,
+                                                    policy: FlowReleasePolicy.current)
+            check("2281 corpus mismatch blocks",
+                  mismatch != .pass && FlowReleaseGateResult.fail(reason: "") != mismatch)
             // Structured report (content-free summaries).
             let report: [String: Any] = [
                 "corpusVersion": FlowFidelityCorpus.version,

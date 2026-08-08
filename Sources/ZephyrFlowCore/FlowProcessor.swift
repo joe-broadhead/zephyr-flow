@@ -278,16 +278,32 @@ public actor FlowProcessor: FlowProcessorProtocol {
 
     // MARK: - Summary
 
+    /// Fact-preserving summary (JOE-2281): selects the first + longest
+    /// sentences, then adds any sentence carrying a protected token (number/
+    /// negation/identifier/…) not yet covered so critical facts are never
+    /// dropped by the semantic path.
     private func summarize(_ text: String) -> String {
         let sentences = splitSentences(text)
         guard sentences.count > 2 else { return text }
         let first = sentences[0]
         let rest = Array(sentences.dropFirst())
         let longest = rest.max(by: { $0.count < $1.count }) ?? ""
-        if longest.isEmpty || longest == first {
-            return first
+        var selected = [first]
+        if !longest.isEmpty && longest != first {
+            selected.append(longest)
         }
-        return "\(first) \(longest)"
+        // Cover every protected token (facts) across the selected sentences.
+        let inputTokens = Set(FlowGuardrails.tokens(in: text))
+        var covered = Set(FlowGuardrails.tokens(in: selected.joined(separator: " ")))
+        for sentence in rest where covered.count < inputTokens.count {
+            let sentenceTokens = Set(FlowGuardrails.tokens(in: sentence))
+            let newFacts = sentenceTokens.subtracting(covered)
+            if !newFacts.isEmpty, !selected.contains(sentence) {
+                selected.append(sentence)
+                covered.formUnion(newFacts)
+            }
+        }
+        return selected.joined(separator: " ")
     }
 
     // MARK: - Helpers

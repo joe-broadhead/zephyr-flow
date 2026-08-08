@@ -1181,12 +1181,24 @@
     "JOE-2280"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (release gate on corpus, policy versioned + baseline named, corpus mismatch blocks; summary made fact-preserving)",
+    "swift build: pass",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/FlowReleasePolicy.swift",
+    "Sources/ZephyrFlowCore/FlowFidelityCorpus.swift",
+    "Sources/ZephyrFlowCore/FlowProcessor.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2281/REPORT.md"
+   ],
+   "remaining_action": "Human review scorecard for semantic modes + threshold-change rationale process (human-gate runbook)."
   },
   {
    "id": "JOE-2282",
