@@ -379,12 +379,26 @@
     "JOE-2249"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (exclusive ownership, deadline-keeps-gate, cancel-retains-until-finish, stuck-decode blocks second decode, 10k partial/final race single-flight)",
+    "swift build: pass (WhisperKit decodeInFlight+sleep-polling removed; ownership gate in partial/final paths; sessionID threaded through protocol)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/DecodeOwnership.swift",
+    "Sources/ZephyrFlowCore/Protocols.swift",
+    "Sources/ZephyrFlow/Services/WhisperKitEngine.swift",
+    "Sources/ZephyrFlow/Services/AppleSpeechEngine.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2250/REPORT.md"
+   ],
+   "remaining_action": "Real WhisperKit stress (long dictations, rapid cancel/final) + max-concurrency/cancellation-deadline reports (human-gate runbook)."
   },
   {
    "id": "JOE-2251",

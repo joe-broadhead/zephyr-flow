@@ -7,7 +7,10 @@ public protocol WhisperEngineProtocol: Actor {
     var modelName: String { get }
     func load(model: ModelIdentifier) async throws
     /// - Parameter localOnly: When true, must not use any network path (fail closed).
+    /// - Parameter sessionID: immutable session this stream belongs to
+    ///   (JOE-2249/2250: session-scoped callbacks and decode ownership).
     func startStreaming(
+        sessionID: SessionID,
         localOnly: Bool,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws
@@ -22,6 +25,8 @@ public enum WhisperEngineError: LocalizedError, Sendable {
     case notStreaming
     case modelLoadFailed(String)
     case transcriptionFailed(String)
+    /// A native decode is still executing (single-flight, JOE-2250).
+    case decodeBusy
 
     public var errorDescription: String? {
         switch self {
@@ -30,6 +35,7 @@ public enum WhisperEngineError: LocalizedError, Sendable {
         case .notStreaming: return "Not currently listening"
         case .modelLoadFailed(let m): return "Failed to load model: \(m)"
         case .transcriptionFailed(let m): return "Transcription failed: \(m)"
+        case .decodeBusy: return "Speech engine is still decoding"
         }
     }
 }

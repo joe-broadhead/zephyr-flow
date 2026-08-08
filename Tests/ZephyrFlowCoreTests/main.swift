@@ -1232,6 +1232,86 @@ struct CoreTests {
                   !g4.accepts(binding: bindA, currentSessionID: sidA, currentEngineToken: tok1))
         }
 
+        // ===== JOE-2250: exclusive cancellable decode ownership =====
+        do {
+            let sid = SessionID(token: "wk", sequence: 1, createdAtUptimeNanos: 0)
+            var gate = DecodeOwnership()
+            check("2250 idle is reusable", gate.reusable && !gate.isBusy)
+            let op1 = gate.begin(purpose: .partial, sessionID: sid, nowNanos: 0)
+            check("2250 first op acquires ownership", op1 != nil && gate.isBusy)
+            // No second decode while busy.
+            check("2250 second op rejected while busy",
+                  gate.begin(purpose: .final, sessionID: sid, nowNanos: 10) == nil
+                    && gate.rejectedWhileBusy == 1)
+            // Deadline records typed outcome but RETAINS ownership (native
+            // inference still running) — reuse still blocked.
+            check("2250 deadline keeps ownership",
+                  gate.timeoutIfExpired(nowNanos: 10_000_000_000) == .deadlineExceeded
+                    && gate.isBusy && !gate.reusable)
+            check("2250 deadline cannot start second decode",
+                  gate.begin(purpose: .final, sessionID: sid, nowNanos: 10_000_000_001) == nil)
+            // Only the owner can finish; ownership released when native ends.
+            let stranger = DecodeOperation(operationID: 999, purpose: .partial, sessionID: sid,
+                                           startedAtNanos: 0, deadlineNanosAhead: 1000)
+            check("2250 stranger cannot finish", !gate.finish(stranger, outcome: .completed))
+            check("2250 owner finish releases", gate.finish(op1!, outcome: .completed) && gate.reusable)
+            check("2250 outcome recorded once", gate.outcomes.filter { $0 == .completed }.count == 1)
+            // Cancellation retains ownership until native end.
+            var g2 = DecodeOwnership()
+            let op2 = g2.begin(purpose: .partial, sessionID: sid, nowNanos: 0)!
+            check("2250 cancel marks but retains ownership",
+                  g2.cancel(op2) && g2.isBusy && !g2.reusable)
+            check("2250 cancelled cannot reuse engine",
+                  g2.begin(purpose: .final, sessionID: sid, nowNanos: 5) == nil)
+            check("2250 finish after cancel releases",
+                  g2.finish(op2, outcome: .cancelled) && g2.reusable)
+            // Stuck fake decode cannot cause a second decode after timeout.
+            var fake = FakeDecode()
+            var stuck = DecodeOwnership()
+            let s1 = stuck.begin(purpose: .partial, sessionID: sid, nowNanos: 0)!
+            fake.start()
+            _ = stuck.timeoutIfExpired(nowNanos: 10_000_000_000)
+            check("2250 stuck decode blocks second decode",
+                  stuck.begin(purpose: .final, sessionID: sid, nowNanos: 10_000_000_001) == nil)
+            // Native call eventually ends => ownership released, engine reusable.
+            fake.end()
+            _ = stuck.finish(s1, outcome: .deadlineExceeded)
+            check("2250 engine reusable after native end",
+                  stuck.reusable && fake.maxConcurrent == 1 && fake.started == 1)
+        }
+        do {
+            // Stress: 10k partial/final races never exceed concurrency 1.
+            let sid = SessionID(token: "stress", sequence: 1, createdAtUptimeNanos: 0)
+            var fake = FakeDecode()
+            var ownership = DecodeOwnership()
+            var racesOK = true
+            for i in 0..<10_000 {
+                let purpose: DecodePurpose = i % 2 == 0 ? .partial : .final
+                if let op = ownership.begin(purpose: purpose, sessionID: sid, nowNanos: UInt64(i)) {
+                    fake.start()
+                    // sometimes cancel, sometimes deadline, sometimes complete
+                    let r = i % 3
+                    switch r {
+                    case 0:
+                        _ = ownership.cancel(op)
+                    case 1:
+                        _ = ownership.timeoutIfExpired(nowNanos: UInt64(i) + 10_000_000_000)
+                    default:
+                        break
+                    }
+                    fake.end()
+                    let outcome: DecodeOperationOutcome = r == 0 ? .cancelled
+                        : (r == 1 ? .deadlineExceeded : .completed)
+                    if !ownership.finish(op, outcome: outcome) { racesOK = false }
+                } else {
+                    // busy — that's allowed; but must never exceed 1 running
+                    if fake.currentRunning > 1 { racesOK = false }
+                }
+            }
+            check("2250 10k races stay single-flight", racesOK && fake.maxConcurrent == 1)
+            check("2250 stress ends reusable", ownership.reusable)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

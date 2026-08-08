@@ -47,6 +47,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     }
 
     func startStreaming(
+        sessionID: SessionID,
         localOnly: Bool,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws {
