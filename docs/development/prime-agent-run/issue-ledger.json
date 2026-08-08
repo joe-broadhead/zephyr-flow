@@ -732,7 +732,7 @@
    "status": "Backlog",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "9e287d8"
    ],
    "aurum_commits": [],
    "tests": [
