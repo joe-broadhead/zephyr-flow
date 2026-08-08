@@ -180,6 +180,10 @@ public actor FlowProcessor: FlowProcessorProtocol {
             }
             line = line.replacingOccurrences(of: #"\s+([,.!?;:])"#, with: "$1",
                                              options: .regularExpression)
+            // Filler removal can leave double spaces — collapse intra-line
+            // only (paragraph newlines are preserved separately).
+            line = line.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ",
+                                             options: .regularExpression)
             cleanedLines.append(line.trimmingCharacters(in: .whitespaces))
         }
         var result = cleanedLines.joined(separator: "\n")

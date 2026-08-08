@@ -117,9 +117,18 @@ public enum FlowGuardrails: Sendable {
             }
         }
 
-        // Broader kinds first (URL/path/code/quoted cover inner numbers).
-        addMatches(urlPattern ?? numberPattern, kind: .url)
-        addMatches(emailPattern ?? numberPattern, kind: .email)
+        // Broader kinds first (URL/path/code/quoted cover inner numbers);
+        // trailing sentence punctuation is NOT part of a URL/email/path.
+        func trimTrailingPunct(_ raw: String) -> String {
+            var r = raw
+            while let last = r.last, ".,;:!?".contains(last) {
+                r.removeLast()
+            }
+            return r
+        }
+        addMatches(urlPattern ?? numberPattern, kind: .url, canonicalize: trimTrailingPunct)
+        addMatches(emailPattern ?? numberPattern, kind: .email, canonicalize: trimTrailingPunct)
+        addMatches(pathPattern ?? numberPattern, kind: .path, canonicalize: trimTrailingPunct)
         addMatches(codePattern ?? numberPattern, kind: .code)
         addMatches(quotedPattern ?? numberPattern, kind: .quoted)
         addMatches(pathPattern ?? numberPattern, kind: .path)
@@ -169,7 +178,7 @@ public enum FlowGuardrails: Sendable {
     }
 
     /// True when every input token (with multiplicity) appears in output.
-    private static func inputCovered(input: [ProtectedToken],
+    public static func inputCovered(input: [ProtectedToken],
                                      output: [ProtectedToken]) -> (ok: Bool, missing: [ProtectedToken]) {
         let outSet = multiset(output)
         var missing: [ProtectedToken] = []

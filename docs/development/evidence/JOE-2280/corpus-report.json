@@ -1,0 +1,11 @@
+{
+  "protectedSpansPreserved" : 24,
+  "corpusVersion" : 1,
+  "deterministicRuns" : 24,
+  "forbiddenChangesAbsent" : 24,
+  "failures" : [
+
+  ],
+  "goldenExact" : 2,
+  "totalCases" : 24
+}

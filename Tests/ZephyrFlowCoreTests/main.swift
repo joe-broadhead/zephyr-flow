@@ -1583,6 +1583,54 @@ struct CoreTests {
                                                 conservativeFallback: "the value is -5") == gOut)
         }
 
+        // ===== JOE-2280: versioned Flow fidelity corpus + harness =====
+        do {
+            check("2280 corpus versioned", FlowFidelityCorpus.version >= 1)
+            check("2280 corpus non-empty", FlowFidelityCorpus.cases.count >= 20)
+            var failures: [String] = []
+            var stats = (protected: 0, forbidden: 0, golden: 0, deterministic: 0, total: FlowFidelityCorpus.cases.count)
+            for c in FlowFidelityCorpus.cases {
+                let request = FlowRequest(sessionID: SessionID(token: "corpus", sequence: 0, createdAtUptimeNanos: 0),
+                                          text: c.input, style: c.style, language: c.language,
+                                          sensitivity: .normal)
+                let out1 = await FlowProcessor.shared.process(request)
+                let out2 = await FlowProcessor.shared.process(request)
+                // Deterministic stability.
+                if out1.text == out2.text { stats.deterministic += 1 } else { failures.append("\(c.id): nondeterministic") }
+                // Protected spans preserved (no missing input tokens).
+                let preserved = FlowGuardrails.inputCovered(
+                    input: FlowGuardrails.tokens(in: c.input),
+                    output: FlowGuardrails.tokens(in: out1.text)).ok
+                if preserved { stats.protected += 1 } else { failures.append("\(c.id): protected span lost") }
+                // Forbidden tokens absent.
+                let lower = out1.text.lowercased()
+                var forbiddenViolated = false
+                for tok in c.forbiddenTokens where lower.contains(tok.lowercased()) {
+                    forbiddenViolated = true
+                }
+                if !forbiddenViolated { stats.forbidden += 1 } else { failures.append("\(c.id): forbidden token present") }
+                // Golden output equality.
+                if let golden = c.goldenOutput {
+                    if out1.text == golden { stats.golden += 1 } else { failures.append("\(c.id): golden mismatch got=\(out1.text) want=\(golden)") }
+                }
+            }
+            check("2280 all corpus cases pass", failures.isEmpty)
+            // Structured report (content-free summaries).
+            let report: [String: Any] = [
+                "corpusVersion": FlowFidelityCorpus.version,
+                "totalCases": stats.total,
+                "protectedSpansPreserved": stats.protected,
+                "forbiddenChangesAbsent": stats.forbidden,
+                "goldenExact": stats.golden,
+                "deterministicRuns": stats.deterministic,
+                "failures": failures,
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]),
+               let text = String(data: data, encoding: .utf8) {
+                try? text.write(toFile: "/tmp/flow-fidelity-report.json", atomically: true, encoding: .utf8)
+            }
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

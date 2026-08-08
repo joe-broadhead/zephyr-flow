@@ -1151,12 +1151,25 @@
     "JOE-2279"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (24-case corpus: protected spans preserved, forbidden changes absent, golden exact, deterministic stability; structured report)",
+    "swift build: pass",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/FlowFidelityCorpus.swift",
+    "Sources/ZephyrFlowCore/FlowProcessor.swift",
+    "Sources/ZephyrFlowCore/FlowGuardrails.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2280/REPORT.md",
+    "docs/development/evidence/JOE-2280/corpus-report.json"
+   ],
+   "remaining_action": "Human semantic-review scorecards for caution/i18n/adversarial cases + real-device differential run (human-gate runbook)."
   },
   {
    "id": "JOE-2281",
