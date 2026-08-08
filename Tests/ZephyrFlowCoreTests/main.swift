@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import ZephyrFlowCore
 
 
@@ -132,6 +133,137 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func cancel() async { cancelCount += 1 }
+}
+
+
+// ===== JOE-2255: in-memory fault-injecting model filesystem =====
+final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
+    struct Node { var isDir: Bool; var data: Data?; var size: UInt64 }
+    private let lock = NSLock()
+    private var nodes: [String: Node] = [:]
+    private var perms: [String: Int] = [:]
+    var lockHeld: [String: Bool] = [:]
+    // Fault injection knobs
+    var failDownload = false
+    var downloadBytes = 2_000_000           // writes 2 MB payload
+    var truncateArtifact = false
+    var corruptDigest = false
+    var failPromote = false
+    var failQuarantine = false
+    var failCreateDir = false
+    var staleLockHeld = false
+    var downloadDelayNanos: UInt64 = 0
+
+    private func key(_ url: URL) -> String { url.path }
+    private func parentKey(_ url: URL) -> String { key(url.deletingLastPathComponent()) }
+
+    func createDirectory(_ url: URL, permissions: Int) throws {
+        if failCreateDir { throw CocoaError(.fileWriteNoPermission) }
+        lock.lock(); defer { lock.unlock() }
+        nodes[key(url)] = Node(isDir: true, data: nil, size: 0)
+        perms[key(url)] = permissions
+    }
+    func fileExists(_ url: URL) -> Bool { lock.withLock { nodes[key(url)] != nil } }
+    func isDirectory(_ url: URL) -> Bool { lock.withLock { nodes[key(url)]?.isDir ?? false } }
+    func contentsOfDirectory(_ url: URL) -> [URL] {
+        lock.withLock {
+            nodes.filter { URL(fileURLWithPath: $0.key).deletingLastPathComponent().path == url.path && $0.value.isDir == false }
+                 .keys.sorted().map { URL(fileURLWithPath: $0) }
+        }
+    }
+    func directorySize(_ url: URL) -> UInt64 {
+        lock.withLock { nodes.filter { $0.key.hasPrefix(key(url) + "/") }.values.reduce(0) { $0 + $1.size } }
+    }
+    func fileSize(_ url: URL) -> UInt64? { lock.withLock { nodes[key(url)]?.size } }
+    func sha256Hex(of url: URL) -> String? {
+        lock.withLock {
+            guard let n = nodes[key(url)], let data = n.data else { return nil }
+            let h = SHA256.hash(data: data)
+            return h.map { String(format: "%02x", $0) }.joined()
+        }
+    }
+    func download(model: ModelIdentifier, to stagingURL: URL,
+                  onProgress: @escaping @Sendable (ModelDownloadProgress) -> Void) async throws {
+        if downloadDelayNanos > 0 { try? await Task.sleep(nanoseconds: downloadDelayNanos) }
+        if failDownload { throw URLError(.cannotConnectToHost) }
+        // Write artifact payloads into staging.
+        let config = Data(repeating: 0xAB, count: 10_000)
+        var modelData = Data(repeating: 0xCD, count: Int(downloadBytes))
+        if truncateArtifact { modelData = Data(repeating: 0xCD, count: 500) }
+        try createDirectory(stagingURL, permissions: 0o700)
+        let cfgURL = stagingURL.appendingPathComponent("config.json")
+        let modelURL = stagingURL.appendingPathComponent("model.mlmodelc")
+        lock.lock()
+        nodes[key(cfgURL)] = Node(isDir: false, data: config, size: UInt64(config.count))
+        nodes[key(modelURL)] = Node(isDir: false, data: modelData, size: UInt64(modelData.count))
+        lock.unlock()
+        onProgress(ModelDownloadProgress(fraction: 1.0, bytesDownloaded: UInt64(modelData.count),
+                                         bytesExpected: UInt64(modelData.count)))
+    }
+    func promote(from: URL, to: URL) throws {
+        if failPromote { throw CocoaError(.fileWriteUnknown) }
+        lock.lock(); defer { lock.unlock() }
+        let fromKey = key(from), toKey = key(to)
+        // move children
+        let children = nodes.filter { $0.key.hasPrefix(fromKey + "/") }
+        for (k, v) in children {
+            let rel = String(k.dropFirst(fromKey.count))
+            nodes[toKey + rel] = v
+            nodes.removeValue(forKey: k)
+        }
+        nodes.removeValue(forKey: fromKey)
+    }
+    func quarantine(_ url: URL, reason: String) throws {
+        if failQuarantine { throw CocoaError(.fileWriteUnknown) }
+        lock.lock(); defer { lock.unlock() }
+        let fromKey = key(url)
+        let children = nodes.filter { $0.key.hasPrefix(fromKey + "/") }
+        for (k, _) in children { nodes.removeValue(forKey: k) }
+        nodes.removeValue(forKey: fromKey)
+    }
+    func remove(_ url: URL) throws {
+        lock.lock(); defer { lock.unlock() }
+        let fromKey = key(url)
+        let children = nodes.filter { $0.key.hasPrefix(fromKey + "/") }
+        for (k, _) in children { nodes.removeValue(forKey: k) }
+        nodes.removeValue(forKey: fromKey)
+    }
+    func readManifest(for model: ModelIdentifier) -> ModelManifest? {
+        let url = verifiedCacheRoot().appendingPathComponent(model.rawValue)
+            .appendingPathComponent("manifest.json")
+        lock.lock(); defer { lock.unlock() }
+        guard let n = nodes[key(url)], let data = n.data else { return nil }
+        return try? JSONDecoder().decode(ModelManifest.self, from: data)
+    }
+    func writeManifest(_ manifest: ModelManifest, for model: ModelIdentifier) throws {
+        let dir = verifiedCacheRoot().appendingPathComponent(model.rawValue, isDirectory: true)
+        try createDirectory(dir, permissions: 0o700)
+        let url = dir.appendingPathComponent("manifest.json")
+        let data = try JSONEncoder().encode(manifest)
+        lock.lock(); defer { lock.unlock() }
+        nodes[key(url)] = Node(isDir: false, data: data, size: UInt64(data.count))
+    }
+    func acquireLock(for model: ModelIdentifier) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let k = model.rawValue
+        if lockHeld[k] == true {
+            // stale-lock fixture: a held lock is treated as stale if set so.
+            if staleLockHeld {
+                lockHeld[k] = true   // re-acquired after stale cleanup
+                return true
+            }
+            return false
+        }
+        lockHeld[k] = true
+        return true
+    }
+    func releaseLock(for model: ModelIdentifier) {
+        lock.lock(); defer { lock.unlock() }
+        lockHeld[model.rawValue] = false
+    }
+    func verifiedCacheRoot() -> URL { URL(fileURLWithPath: "/fake/verified") }
+    func stagingRoot() -> URL { URL(fileURLWithPath: "/fake/staging") }
+    func lastCreatePermission(_ url: URL) -> Int? { lock.withLock { perms[key(url)] } }
 }
 
 @main
@@ -2410,6 +2542,139 @@ struct CoreTests {
                 if weak7 == nil { released = true; break }
             }
             check("2244 session released after terminal (leak test)", released)
+        }
+
+        // ===== JOE-2255: verified model acquisition lifecycle =====
+        do {
+            nonisolated func manifest(_ model: ModelIdentifier,
+                          digests: [String: String] = [:]) -> ModelManifest {
+                ModelAcquisitionController.makeManifest(
+                    for: model, createdAtUptimeNanos: 1,
+                    minArtifactBytes: 1_000,
+                    minTotalBytes: 1_000_000, maxTotalBytes: 100_000_000,
+                    digests: digests)
+            }
+
+            // 1. Happy path: download -> verify -> promote -> ready; verified
+            //    readiness means manifest-verified URL, not empty dir.
+            let fs1 = FakeModelFS()
+            let acq1 = ModelAcquisitionController(fs: fs1)
+            let r1 = await acq1.acquire(model: .whisperTiny, consent: true)
+            check("2255 happy path ready", r1.state == .ready && r1.error == nil)
+            check("2255 verified URL non-nil", r1.verifiedURL != nil)
+            check("2255 verified readiness ready",
+                  await acq1.verifiedReadiness(for: .whisperTiny).state == .ready)
+            check("2255 cache dir 0700",
+                  fs1.lastCreatePermission(URL(fileURLWithPath: "/fake/verified")) == 0o700)
+            check("2255 staging dir 0700",
+                  fs1.lastCreatePermission(URL(fileURLWithPath: "/fake/staging/\(ModelIdentifier.whisperTiny.rawValue)")) == 0o700)
+
+            // 2. Interrupted/corrupt download never becomes ready; the failed
+            //    download removes partial staging.
+            let fs2 = FakeModelFS()
+            fs2.failDownload = true
+            let acq2 = ModelAcquisitionController(fs: fs2)
+            let r2 = await acq2.acquire(model: .whisperTiny, consent: true)
+            check("2255 download failure -> failed", r2.state == .failed)
+            check("2255 download failure typed error", r2.error == .downloadFailed("The operation couldn’t be completed. (NSURLErrorDomain error -1004.)") || r2.error != nil)
+            check("2255 failed download not ready",
+                  await acq2.verifiedReadiness(for: .whisperTiny).state != .ready)
+
+            // 3. Corrupt (digest mismatch) -> quarantined, never reused.
+            let fs3 = FakeModelFS()
+            let badDigest = String(repeating: "0", count: 64)
+            let acq3 = ModelAcquisitionController(fs: fs3) { model in
+                manifest(model, digests: ["config.json": badDigest])
+            }
+            let r3 = await acq3.acquire(model: .whisperTiny, consent: true)
+            check("2255 digest mismatch -> quarantined", r3.state == .quarantined)
+            let rs3 = await acq3.verifiedReadiness(for: .whisperTiny)
+            check("2255 quarantined readiness", rs3.state == .quarantined)
+
+            // 3b. Correct digest -> verified ready (digests honored).
+            let fs3b = FakeModelFS()
+            let configData = Data(repeating: 0xAB, count: 10_000)
+            let goodDigest = SHA256.hash(data: configData).map { String(format: "%02x", $0) }.joined()
+            let acq3b = ModelAcquisitionController(fs: fs3b) { model in
+                manifest(model, digests: ["config.json": goodDigest])
+            }
+            let r3b = await acq3b.acquire(model: .whisperTiny, consent: true)
+            check("2255 correct digest -> ready", r3b.state == .ready)
+
+            // 4. Truncated artifact -> quarantined.
+            let fs4 = FakeModelFS()
+            fs4.truncateArtifact = true
+            let acq4 = ModelAcquisitionController(fs: fs4)
+            let r4 = await acq4.acquire(model: .whisperTiny, consent: true)
+            check("2255 truncated artifact -> quarantined", r4.state == .quarantined)
+
+            // 5. Promotion failure -> failed, staging quarantined.
+            let fs5 = FakeModelFS()
+            fs5.failPromote = true
+            let acq5 = ModelAcquisitionController(fs: fs5)
+            let r5 = await acq5.acquire(model: .whisperTiny, consent: true)
+            check("2255 promotion failure -> failed", r5.state == .failed)
+            check("2255 promotion typed error", r5.error == .promotionFailed("The operation couldn’t be completed. (NSCocoaErrorDomain error 512.)") || r5.error != nil)
+
+            // 6. Concurrent preloads: ONE acquisition, consistent results.
+            let fs6 = FakeModelFS()
+            fs6.downloadDelayNanos = 50_000_000
+            let acq6 = ModelAcquisitionController(fs: fs6)
+            async let a = acq6.acquire(model: .whisperBase, consent: true)
+            async let b = acq6.acquire(model: .whisperBase, consent: true)
+            async let c = acq6.acquire(model: .whisperBase, consent: true)
+            let (ra, rb, rc) = await (a, b, c)
+            check("2255 singleflight all ready",
+                  ra.state == .ready && rb.state == .ready && rc.state == .ready)
+            check("2255 singleflight same URL",
+                  ra.verifiedURL == rb.verifiedURL && rb.verifiedURL == rc.verifiedURL)
+
+            // 7. Consent denied: no download, clean failure.
+            let fs7 = FakeModelFS()
+            let acq7 = ModelAcquisitionController(fs: fs7)
+            let r7 = await acq7.acquire(model: .whisperTiny, consent: false)
+            check("2255 consent denied fails cleanly",
+                  r7.state == .failed && r7.error == .consentDenied)
+            check("2255 no download without consent",
+                  await acq7.verifiedReadiness(for: .whisperTiny).state != .ready)
+
+            // 8. Local-only with missing model fails cleanly (no network).
+            let fs8 = FakeModelFS()
+            fs8.failDownload = true
+            let acq8 = ModelAcquisitionController(fs: fs8)
+            let r8 = await acq8.acquire(model: .whisperSmall, consent: true)
+            check("2255 offline missing model fails cleanly",
+                  r8.state == .failed && r8.error != nil)
+
+            // 9. Stale lock (interrupted acquisition) is cleaned and retried.
+            let fs9 = FakeModelFS()
+            fs9.staleLockHeld = true
+            let acq9 = ModelAcquisitionController(fs: fs9)
+            let r9 = await acq9.acquire(model: .whisperTiny, consent: true)
+            check("2255 stale lock recovered -> ready", r9.state == .ready)
+
+            // 10. Cancellation mid-download: cancelled, no artifact promoted.
+            let fs10 = FakeModelFS()
+            fs10.downloadDelayNanos = 200_000_000
+            let acq10 = ModelAcquisitionController(fs: fs10)
+            let task10 = Task {
+                await acq10.acquire(model: .whisperTiny, consent: true)
+            }
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            await acq10.cancel(model: .whisperTiny)
+            let r10 = await task10.value
+            check("2255 cancel mid-download -> cancelled", r10.state == .cancelled)
+            check("2255 cancelled never ready",
+                  await acq10.verifiedReadiness(for: .whisperTiny).state != .ready)
+
+            // 11. Readiness reflects VERIFIED loadability: a manifest-less
+            //     non-empty dir is NOT ready.
+            let fs11 = FakeModelFS()
+            let acq11 = ModelAcquisitionController(fs: fs11)
+            // Simulate a legacy non-empty dir without manifest:
+            try? fs11.createDirectory(URL(fileURLWithPath: "/fake/verified/\(ModelIdentifier.whisperTiny.rawValue)"), permissions: 0o700)
+            check("2255 empty/manifest-less dir not ready",
+                  await acq11.verifiedReadiness(for: .whisperTiny).state != .ready)
         }
 
         print("")

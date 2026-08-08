@@ -266,8 +266,12 @@ public enum ModelIdentifier: String, Codable, CaseIterable, Identifiable, Sendab
 public enum ModelReadinessState: Sendable, Equatable {
     case notApplicable
     case missing
+    case queued
     case downloading(Double?) // 0...1 when known; nil = indeterminate
+    case verifying
     case ready
+    case cancelled
+    case quarantined
     case failed(String)
 
     public var isReady: Bool {

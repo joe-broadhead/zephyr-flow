@@ -488,20 +488,60 @@ final class DictationController: ObservableObject {
         ZFLog.info("Engine switched to \(engineLabel)")
     }
 
+    /// JOE-2255: preload through the VERIFIED acquisition lifecycle.
+    /// Readiness = verified loadability (manifest+digest), never a non-empty
+    /// dir. Local Only mode fails cleanly when a verified model is absent and
+    /// download consent is denied; consent is independent of Local Only.
     private func preloadEngine() async {
         guard !usingAppleEngine else { return }
         let model = settingsStore.settings.preferredModel
         isModelLoading = true
         modelDownloadFraction = nil
-        ModelReadinessStore.shared.markDownloading(model, progress: nil)
+
+        let store = ModelReadinessStore.shared
+        let verified = await store.verifiedReadiness(for: model)
+        if verified.state.isReady {
+            // Verified cache hit: load directly.
+            do {
+                try await activeEngine.load(model: model)
+                self.isModelLoading = false
+                store.markReady(model)
+            } catch {
+                ZFLog.error("Model load failed: \(error.localizedDescription)")
+                self.isModelLoading = false
+                store.markFailed(model, message: error.localizedDescription)
+            }
+            return
+        }
+
+        // No verified model. Explicit download consent gates acquisition
+        // (independent of Local Only audio policy).
+        let consent = settingsStore.settings.allowModelDownloads
+        guard consent else {
+            self.isModelLoading = false
+            store.markFailed(model,
+                message: settingsStore.settings.localOnlyMode
+                    ? "Model not downloaded and downloads are disabled — enable Model Downloads in Settings."
+                    : "Model not downloaded — enable Model Downloads in Settings to acquire it.")
+            return
+        }
+
+        store.markDownloading(model, progress: nil)
+        let result = await store.acquire(model, consent: true)
+        guard result.state == .ready else {
+            self.isModelLoading = false
+            let msg = result.error?.localizedDescription ?? "Model acquisition failed"
+            store.markFailed(model, message: msg)
+            return
+        }
         do {
             try await activeEngine.load(model: model)
             self.isModelLoading = false
-            ModelReadinessStore.shared.markReady(model)
+            store.markReady(model)
         } catch {
             ZFLog.error("Model load failed: \(error.localizedDescription)")
             self.isModelLoading = false
-            ModelReadinessStore.shared.markFailed(model, message: error.localizedDescription)
+            store.markFailed(model, message: error.localizedDescription)
         }
     }
 

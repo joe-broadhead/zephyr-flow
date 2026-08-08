@@ -514,6 +514,10 @@ struct SettingsView: View {
                 return "Ready · \(ByteCountFormatter.string(fromByteCount: b, countStyle: .file))"
             }
             return "Ready"
+        case .queued: return "Queued…"
+        case .verifying: return "Verifying…"
+        case .cancelled: return "Cancelled"
+        case .quarantined: return "Quarantined — corrupt content"
         case .failed(let m): return "Failed — \(m)"
         }
     }
@@ -531,6 +535,12 @@ struct SettingsView: View {
             Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
         case .notApplicable:
             EmptyView()
+        case .queued, .verifying:
+            ProgressView().controlSize(.small)
+        case .cancelled:
+            Image(systemName: "xmark.circle").foregroundStyle(.secondary)
+        case .quarantined:
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         }
     }
 

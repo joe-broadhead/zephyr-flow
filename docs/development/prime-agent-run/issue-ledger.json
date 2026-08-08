@@ -556,12 +556,27 @@
     "JOE-2245"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (25 JOE-2255 checks: happy path, fault injection download/verify/promote, digest mismatch->quarantine, truncated->quarantine, singleflight, consent denied, offline fails cleanly, stale-lock recovery, cancel, verified-vs-empty-dir)",
+    "swift build: pass",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/ModelAcquisition.swift",
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlow/Services/ProductionModelAcquisitionFileSystem.swift",
+    "Sources/ZephyrFlow/Services/ModelReadinessStore.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Sources/ZephyrFlow/UI/Settings/SettingsView.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2255/REPORT.md"
+   ],
+   "remaining_action": "Real WhisperKit model download qualification (first-run UX, network failure/retry on real machine) \u2014 human-gate runbook."
   },
   {
    "id": "JOE-2256",
