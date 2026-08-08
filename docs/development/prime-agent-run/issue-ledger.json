@@ -292,7 +292,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "38b9e57"
    ],
    "aurum_commits": [],
    "tests": [
@@ -525,12 +525,26 @@
     "JOE-2258"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (review lifecycle, explicit-copy audit, conservative style routing, fail-closed gates)",
+    "swift build: pass (review-only panel, InsertionService domain gate, history gate)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/SecureSessionReview.swift",
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlow/Services/InsertionService.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Sources/ZephyrFlow/UI/Panel/FloatingPanel.swift",
+    "docs/development/evidence/JOE-2259/REPORT.md",
+    "docs/development/prime-agent-run/provisional-decisions.md"
+   ],
+   "remaining_action": "Wire AX target evidence (JOE-2268/2290) as the sensitivity source; AX-less runtime stays review-only by policy."
   },
   {
    "id": "JOE-2260",

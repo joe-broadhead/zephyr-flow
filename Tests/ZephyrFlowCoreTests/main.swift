@@ -526,6 +526,40 @@ struct CoreTests {
             check("reordered counted", !seq.accept(c2) && seq.reordered == 1 && seq.isDegraded)
         }
 
+        // ===== JOE-2259: secure/unknown review-only sessions =====
+        do {
+            let sid = SessionID(token: "r", sequence: 1, createdAtUptimeNanos: 0)
+            let review = SecureSessionReview(sessionID: sid, text: "private draft", nowNanos: 1000, deadlineNanosAhead: 30_000)
+            check("review holds content in memory only", review.text == "private draft")
+            check("not expired before deadline", !review.expired(nowNanos: 1000 + 29_999))
+            check("expired at deadline", review.expired(nowNanos: 1000 + 30_000))
+            review.clear(reason: .deadlineExpired)
+            check("content cleared on deadline", review.text == nil && review.clearReason == .deadlineExpired)
+            let again = review.consumeForExplicitCopy(decision: SessionSensitivityDecision(sensitivity: .secure, source: .noEvidence, upgradedBeforeInsertion: false), nowNanos: 5000)
+            check("cleared review cannot be copied", again == nil)
+        }
+        do {
+            let sid = SessionID(token: "r", sequence: 2, createdAtUptimeNanos: 0)
+            let review = SecureSessionReview(sessionID: sid, text: "private", nowNanos: 0, deadlineNanosAhead: 30_000)
+            let decision = SessionSensitivityDecision(sensitivity: .secure, source: .noEvidence, upgradedBeforeInsertion: false)
+            let taken = review.consumeForExplicitCopy(decision: decision, nowNanos: 1_500_000_000)
+            check("explicit copy returns content once", taken?.text == "private" && taken?.audit.sensitivity == .secure)
+            check("consumed review has no content", review.text == nil && review.clearReason == .consumedByExplicitCopy)
+            check("second copy attempt refused", review.consumeForExplicitCopy(decision: decision, nowNanos: 2_000_000_000) == nil)
+        }
+        do {
+            // conservative flow policy: professional/bullets/summary route to clean
+            check("secure routes professional to clean", SensitiveSessionPolicy.conservativeStyle(for: .professional) == .clean)
+            check("secure routes bullets to clean", SensitiveSessionPolicy.conservativeStyle(for: .bullets) == .clean)
+            check("secure keeps clean", SensitiveSessionPolicy.conservativeStyle(for: .clean) == .clean)
+            check("secure keeps raw", SensitiveSessionPolicy.conservativeStyle(for: .raw) == .raw)
+            // automatic side effects fail closed for secure/unknown
+            check("no auto paste for secure", !SensitiveSessionPolicy.autoPasteAllowed(sensitivity: .secure))
+            check("no auto paste for unknown", !SensitiveSessionPolicy.autoPasteAllowed(sensitivity: .unknown))
+            check("no history for unknown", !SensitiveSessionPolicy.historyWriteAllowed(sensitivity: .unknown))
+            check("normal allows history", SensitiveSessionPolicy.historyWriteAllowed(sensitivity: .normal))
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

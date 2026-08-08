@@ -388,6 +388,7 @@ public enum PanelState: Equatable, Sendable {
     case hidden
     case listening
     case processing
+    case reviewing
     case success
     case error(String)
 }

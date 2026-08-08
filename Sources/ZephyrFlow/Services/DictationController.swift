@@ -50,6 +50,11 @@ final class DictationController: ObservableObject {
     private var audioSequencer = AudioChunkSequencer()
     private var audioDegraded = false
     private var pcmConverter: SessionAudioConverter?
+    // JOE-2259: session sensitivity (fail-closed unknown until JOE-2268/2290
+    // wire AX target evidence) + in-process review surface.
+    private var sessionSensitivity: SessionSensitivity = .unknown
+    private var reviewSession: SecureSessionReview?
+    private var reviewClearTask: Task<Void, Never>?
 
     private init() {
         activeEngine = whisperEngine
@@ -128,11 +133,79 @@ final class DictationController: ObservableObject {
         }
     }
 
+
+    // MARK: Sensitivity + review (JOE-2259)
+
+    /// Session decision: fail-closed unknown until target evidence wiring
+    /// (JOE-2268/2290). Until then every session is review-only by policy.
+    private func sensitivityDecision() -> SessionSensitivityDecision {
+        SessionSensitivityDecision(sensitivity: sessionSensitivity,
+                                   source: .noEvidence,
+                                   upgradedBeforeInsertion: false)
+    }
+
+    /// Review-only surface for secure/unknown sessions. The text lives ONLY
+    /// in the SecureSessionReview object (in-process memory); it is never
+    /// logged, persisted, or exposed to history/clipboard automatically.
+    private func presentSecureReview(_ text: String) {
+        guard let sid = currentSessionID else { return }
+        let review = SecureSessionReview(sessionID: sid, text: text,
+                                         nowNanos: DispatchTime.now().uptimeNanoseconds,
+                                         deadlineNanosAhead: 30_000_000_000)
+        reviewSession = review
+        interimText = text
+        panelState = .reviewing
+        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
+        reviewClearTask?.cancel()
+        reviewClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self else { return }
+            await MainActor.run { self.clearReview(reason: .deadlineExpired) }
+        }
+    }
+
+    /// Explicit, informed user copy for secure/unknown sessions. Consumes the
+    /// review content and writes ONLY then; audit stays content-free.
+    func copyReviewContent() {
+        guard let review = reviewSession else { return }
+        let decision = sensitivityDecision()
+        guard let taken = review.consumeForExplicitCopy(decision: decision,
+                                                        nowNanos: DispatchTime.now().uptimeNanoseconds) else {
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(taken.text, forType: .string)
+        ZFLog.info("Secure explicit copy sensitivity=\(taken.audit.sensitivity.rawValue) upgraded=\(taken.audit.upgradedBeforeInsertion)")
+        reviewSession = nil
+        reviewClearTask?.cancel()
+        reviewClearTask = nil
+        panelState = .success
+    }
+
+    func clearReview(reason: SecureSessionReview.ClearReason) {
+        reviewSession?.clear(reason: reason)
+        reviewSession = nil
+        reviewClearTask?.cancel()
+        reviewClearTask = nil
+        panelState = .hidden
+        interimText = ""
+    }
+
+    private var sessionAllowsAutomaticSideEffects: Bool {
+        sessionSensitivity.allowsAutomaticSideEffects
+    }
+
     func stop() {
         hotkey.stop()
         levelsTask?.cancel()
         // Close admission and abandon any active session honestly (JOE-2246).
         control.shutdown()
+        // JOE-2259: never leave review content resident at termination.
+        reviewSession?.clear(reason: .appTerminating)
+        reviewSession = nil
+        reviewClearTask?.cancel()
+        reviewClearTask = nil
         currentSessionID = nil
         Task {
             await audio.stop()
@@ -504,7 +577,8 @@ final class DictationController: ObservableObject {
                 trimmed,
                 preferPaste: restored,
                 mode: settings.settings.insertionMode,
-                targetBundleID: sessionTargetBundleID ?? FocusStore.shared.lastBundleID
+                targetBundleID: sessionTargetBundleID ?? FocusStore.shared.lastBundleID,
+                sensitivity: sessionSensitivity
             )
             ZFLog.info("Insertion result: \(String(describing: result))")
             switch result {
@@ -519,7 +593,10 @@ final class DictationController: ObservableObject {
                 _ = control.stage(.insertionFailed)
             }
 
-            if settings.settings.saveHistory {
+            // JOE-2259: history is a transcript-bearing mutation; secure/unknown
+            // sessions never write history even when save-history is on.
+            if settings.settings.saveHistory,
+               SensitiveSessionPolicy.historyWriteAllowed(sensitivity: sessionSensitivity) {
                 history.add(
                     HistoryEntry(
                         originalText: final.rawText,
@@ -528,6 +605,8 @@ final class DictationController: ObservableObject {
                         modelUsed: final.modelUsed
                     )
                 )
+            } else if settings.settings.saveHistory {
+                ZFLog.info("History skipped — sensitive session sensitivity=\(sessionSensitivity.rawValue)")
             }
 
             switch result {
@@ -570,6 +649,10 @@ final class DictationController: ObservableObject {
             self.audioDeliveryTask = nil
             self.audioChannel = nil
             self.pcmConverter = nil
+            self.reviewSession?.clear(reason: .sessionCancelled)
+            self.reviewSession = nil
+            self.reviewClearTask?.cancel()
+            self.reviewClearTask = nil
             await self.activeEngine.cancel()
             self.panelState = .hidden
             self.interimText = ""

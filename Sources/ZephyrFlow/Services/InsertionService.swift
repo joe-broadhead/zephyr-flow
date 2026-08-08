@@ -18,9 +18,16 @@ actor InsertionService: InsertionServiceProtocol {
         _ text: String,
         preferPaste: Bool,
         mode: InsertionMode = .automatic,
-        targetBundleID: String? = nil
+        targetBundleID: String? = nil,
+        sensitivity: SessionSensitivity = .normal
     ) async -> InsertionResult {
         guard !text.isEmpty else { return .failed("Empty text") }
+        // JOE-2259: domain rejection of automatic insertion for secure/unknown
+        // sessions — cannot be bypassed by calling this service directly.
+        guard SensitiveSessionPolicy.autoPasteAllowed(sensitivity: sensitivity) else {
+            ZFLog.info("insert rejected by sensitivity policy sensitivity=\(sensitivity.rawValue)")
+            return .failed("Sensitivity policy blocks automatic insertion")
+        }
 
         let role = await focusedRole()
         let frontBundle = await frontmostBundleID()

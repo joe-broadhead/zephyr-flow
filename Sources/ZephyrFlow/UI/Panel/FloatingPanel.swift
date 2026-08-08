@@ -179,7 +179,8 @@ struct FloatingPanelRoot: View {
                     activeStyle: controller.activeFlowStyle,
                     onStyle: { controller.applyQuickAction($0) },
                     onStop: { controller.stopAndInsert() },
-                    onCancel: { controller.cancelSession() }
+                    onCancel: { controller.cancelSession() },
+                    onReviewCopy: { controller.copyReviewContent() }
                 )
                 .transition(.scale(scale: 0.88).combined(with: .opacity))
             }
@@ -201,20 +202,29 @@ struct FloatingPanelRoot: View {
             let controller = DictationController.shared
             guard controller.panelState == .listening
                     || controller.panelState == .processing
+                    || controller.panelState == .reviewing
                     || {
                         if case .error = controller.panelState { return true }
                         return false
                     }() else {
                 return event
             }
-            // Esc or ⌘.
+            // Esc or ⌘. clears review / cancels session
             if event.keyCode == 53 || (event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == ".") {
-                controller.cancelSession()
+                if controller.panelState == .reviewing {
+                    controller.clearReview(reason: .userDismissed)
+                } else {
+                    controller.cancelSession()
+                }
                 return nil
             }
-            // Return / ⌘Return → stop & insert
+            // Return / ⌘Return → stop & insert; in review it is the explicit copy.
             if event.keyCode == 36 {
-                controller.stopAndInsert()
+                if controller.panelState == .reviewing {
+                    controller.copyReviewContent()
+                } else {
+                    controller.stopAndInsert()
+                }
                 return nil
             }
             return event
@@ -234,7 +244,7 @@ struct FloatingPanelRoot: View {
             FloatingPanelController.shared.persistPositionIfNeeded()
             FloatingPanelController.shared.hide()
             removePanelKeyMonitor()
-        case .listening, .processing, .success, .error:
+        case .listening, .processing, .reviewing, .success, .error:
             FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
             installPanelKeyMonitor()
             DispatchQueue.main.async {
@@ -254,11 +264,25 @@ struct FloatingPanelView: View {
     let onStyle: (FlowStyle) -> Void
     let onStop: () -> Void
     let onCancel: () -> Void
+    let onReviewCopy: () -> Void
+
+    init(state: PanelState, text: String, levels: [Float], activeStyle: FlowStyle,
+         onStyle: @escaping (FlowStyle) -> Void, onStop: @escaping () -> Void,
+         onCancel: @escaping () -> Void, onReviewCopy: @escaping () -> Void) {
+        self.state = state
+        self.text = text
+        self.levels = levels
+        self.activeStyle = activeStyle
+        self.onStyle = onStyle
+        self.onStop = onStop
+        self.onCancel = onCancel
+        self.onReviewCopy = onReviewCopy
+    }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var showText: Bool {
-        !text.isEmpty || state == .processing || isError
+        !text.isEmpty || state == .processing || state == .reviewing || isError
     }
 
     private var isError: Bool {
@@ -275,6 +299,10 @@ struct FloatingPanelView: View {
 
             if state == .listening || state == .processing {
                 quickActions
+            }
+
+            if state == .reviewing {
+                reviewActions
             }
         }
         .padding(.horizontal, showText ? 18 : 14)
@@ -430,6 +458,25 @@ struct FloatingPanelView: View {
                     .animation(.easeOut(duration: 0.12), value: text)
                     .accessibilityLabel(text.isEmpty ? "Listening" : "Interim transcription")
             }
+        }
+    }
+
+    private var reviewActions: some View {
+        VStack(spacing: 8) {
+            Text("Secure target — review only. Nothing is pasted or saved automatically.")
+                .font(.system(size: 11))
+                .foregroundColor(ZephyrTheme.warning)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+            Button(action: onReviewCopy) {
+                Label("Copy", systemImage: "doc.on.doc")
+                    .font(.system(size: 13, weight: .semibold))
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 8)
+                    .background(ZephyrTheme.warning.opacity(0.9), in: Capsule())
+                    .foregroundColor(.black)
+            }
+            .buttonStyle(.plain)
         }
     }
 
