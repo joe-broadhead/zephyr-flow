@@ -782,6 +782,18 @@ final class DictationController: ObservableObject {
             // JOE-2249: finalize on the SESSION-captured engine, never a
             // mutable global selection (engine reload affects future sessions).
             let final = try await (sessionEngine ?? activeEngine).stopAndFinalize()
+            // JOE-2284: partial/degraded/truncated transcripts must not proceed
+            // to the normal success path — show persistent review/warning.
+            if final.completeness != .complete {
+                let pres = UIStatePolicy.presentation(engineCompleteness: final.completeness,
+                                                      flowStatus: .accepted,
+                                                      insertion: .cancelled)
+                _ = control.stage(.targetUnknown)
+                showError(pres.title ?? pres.message ?? "Transcript incomplete")
+                ZFLog.info("engine result not complete completeness=\(final.completeness.rawValue)")
+                await (sessionEngine ?? activeEngine).cancel()
+                return
+            }
             // Discard if a newer session already started
             guard sessionGeneration == generation, control.isCurrent(sid) else {
                 ZFLog.info("endSession discarded — stale generation")
@@ -929,33 +941,36 @@ final class DictationController: ObservableObject {
                     ZFLog.info("History skipped — outcome=\(String(describing: result)) sens=\(validation.effectiveSensitivity.rawValue)")
                 }
 
-                // Central outcome policy (JOE-2269): green success UI, panel
-                // dismissal and status text all derive from the outcome.
-                switch result {
-                case .verifiedInserted:
-                    interimText = trimmed
+                // JOE-2284: truthful rendering — panel state, message, dismiss
+                // behavior and VoiceOver label all derive from one tested
+                // policy over (completeness × flowStatus × insertion outcome).
+                let presentation = UIStatePolicy.presentation(
+                    engineCompleteness: final.completeness,
+                    flowStatus: flowOutcome.status,
+                    insertion: result)
+                interimText = trimmed
+                statusMessage = presentation.message
+                switch presentation.semantic {
+                case .verifiedSuccess:
                     panelState = .success
-                    statusMessage = nil
                     dismissPanelSoon()
-                case .explicitlyCopiedByUser:
-                    interimText = trimmed
+                case .unverifiedPosted:
+                    // Distinct language ("Paste sent — verify destination");
+                    // never green, never "Inserted".
+                    panelState = .warning
+                case .review:
+                    // Persistent review UX (JOE-2272) — already routed earlier
+                    // for target states; here it is the same presentation.
+                    presentReview(outcome: result, text: trimmed)
+                case .warning:
+                    panelState = .warning
+                case .error:
+                    panelState = .error(presentation.title ?? result.userFacingMessage)
+                case .neutral:
                     panelState = .success
-                    statusMessage = result.userFacingMessage
-                    clearStatusLater()
                     dismissPanelSoon()
-                case .eventPostedUnverified:
-                    // Never present unverified posting as green success.
-                    interimText = trimmed
-                    panelState = .success
-                    statusMessage = result.userFacingMessage
-                    clearStatusLater()
-                    dismissPanelSoon()
-                case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
-                     .notEditable, .clipboardNotRestoredBecauseChanged,
-                     .clipboardRestoreFailed, .deadlineExceeded, .cancelled:
-                    showError(result.userFacingMessage)
-                case .failed(let msg):
-                    showError(msg)
+                case .processing:
+                    panelState = .processing
                 }
             case .targetChanged, .targetGone, .notEditable:
                 // Controlled abort: no write, honest terminal outcome; the

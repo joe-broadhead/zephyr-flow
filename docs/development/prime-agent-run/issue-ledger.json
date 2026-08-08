@@ -1252,12 +1252,25 @@
     "JOE-2279"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (combination policy: green only complete+verified, distinct unverified language, persistent partial/degraded/truncated, review states, VoiceOver everywhere)",
+    "swift build: pass (policy-driven panel rendering + .warning state + engine-completeness gate)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/UIStatePolicy.swift",
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Sources/ZephyrFlow/UI/Panel/FloatingPanel.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2284/REPORT.md"
+   ],
+   "remaining_action": "VoiceOver/keyboard review of every state + dogfood recordings (human-gate runbook)."
   },
   {
    "id": "JOE-2285",

@@ -1681,6 +1681,72 @@ struct CoreTests {
             }
         }
 
+        // ===== JOE-2284: truthful UI rendering policy =====
+        do {
+            func pres(_ eng: EngineResultCompleteness, _ flow: FlowOutcomeStatus,
+                      _ ins: InsertionOutcome) -> PanelPresentation {
+                UIStatePolicy.presentation(engineCompleteness: eng, flowStatus: flow, insertion: ins)
+            }
+            let verified = InsertionOutcome.verifiedInserted(strategy: .axSelectedText, evidence: .postWriteSelectionReRead, warnings: [])
+            let unverified = InsertionOutcome.eventPostedUnverified(strategy: .clipboardPaste, warnings: [.noPostWriteVerification])
+            let copied = InsertionOutcome.explicitlyCopiedByUser
+            let changed = InsertionOutcome.targetChanged
+            let unknown = InsertionOutcome.targetUnknown
+            let secure = InsertionOutcome.secureTarget
+            let notEditable = InsertionOutcome.notEditable
+            let clipboardChanged = InsertionOutcome.clipboardNotRestoredBecauseChanged
+            let deadline = InsertionOutcome.deadlineExceeded
+            let cancelled = InsertionOutcome.cancelled
+            let failed = InsertionOutcome.failed("boom")
+
+            // Green success requires complete + accepted + verifiedInserted.
+            check("2284 complete+verified => green success",
+                  pres(.complete, .accepted, verified).semantic == .verifiedSuccess
+                    && pres(.complete, .accepted, verified).colorToken == "green")
+            check("2284 complete+unverified NOT green, distinct language",
+                  pres(.complete, .accepted, unverified).semantic == .unverifiedPosted
+                    && pres(.complete, .accepted, unverified).title == "Paste sent — verify destination"
+                    && pres(.complete, .accepted, unverified).colorToken != "green")
+            // Partial/degraded/truncated: persistent, no green, no auto-dismiss.
+            check("2284 partial persistent warning",
+                  pres(.partial, .accepted, verified).semantic == .warning
+                    && pres(.partial, .accepted, verified).isPersistent)
+            check("2284 degraded persistent error",
+                  pres(.degraded, .accepted, verified).semantic == .error
+                    && pres(.degraded, .accepted, verified).isPersistent)
+            check("2284 truncated persistent warning",
+                  pres(.truncated, .accepted, verified).semantic == .warning
+                    && pres(.truncated, .accepted, verified).isPersistent)
+            // Flow fallback visible when it changes the style.
+            check("2284 flow fallback visible",
+                  pres(.complete, .rejected, verified).semantic == .warning
+                    && pres(.complete, .deadlineExceeded, verified).semantic == .warning)
+            // Review UX for target states; no automatic side effect.
+            check("2284 review states persistent",
+                  pres(.complete, .accepted, changed).semantic == .review
+                    && pres(.complete, .accepted, unknown).semantic == .review
+                    && pres(.complete, .accepted, secure).semantic == .review
+                    && pres(.complete, .accepted, notEditable).semantic == .review
+                    && pres(.complete, .accepted, changed).isPersistent)
+            // Clipboard hygiene + deadline + cancelled + failed distinct.
+            check("2284 clipboard/deadline/cancel/fail distinct",
+                  pres(.complete, .accepted, clipboardChanged).semantic == .warning
+                    && pres(.complete, .accepted, deadline).semantic == .warning
+                    && pres(.complete, .accepted, cancelled).semantic == .neutral
+                    && pres(.complete, .accepted, failed).semantic == .error)
+            // No uncertain case shares verified-success presentation.
+            check("2284 no uncertain case green",
+                  !UIStatePolicy.isVerifiedSuccess(engineCompleteness: .partial, flowStatus: .accepted, insertion: verified)
+                    && !UIStatePolicy.isVerifiedSuccess(engineCompleteness: .complete, flowStatus: .accepted, insertion: unverified)
+                    && !UIStatePolicy.isVerifiedSuccess(engineCompleteness: .complete, flowStatus: .accepted, insertion: changed)
+                    && !UIStatePolicy.isVerifiedSuccess(engineCompleteness: .complete, flowStatus: .accepted, insertion: secure))
+            // VoiceOver label present on every presentation (not color alone).
+            check("2284 voiceover labels everywhere",
+                  !pres(.complete, .accepted, verified).voiceOverLabel.isEmpty
+                    && !pres(.complete, .accepted, changed).voiceOverLabel.isEmpty
+                    && !pres(.partial, .accepted, verified).voiceOverLabel.isEmpty)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

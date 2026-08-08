@@ -697,6 +697,7 @@ public enum PanelState: Equatable, Sendable {
     case processing
     case reviewing
     case success
+    case warning
     case error(String)
 }
 

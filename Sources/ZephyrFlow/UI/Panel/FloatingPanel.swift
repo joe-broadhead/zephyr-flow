@@ -167,10 +167,14 @@ struct FloatingPanelRoot: View {
     @State private var keyMonitor: Any?
 
     var body: some View {
-        Group {
+        ZStack {
             switch controller.panelState {
             case .hidden:
                 Color.clear.frame(width: 1, height: 1)
+            case .warning:
+                PanelWarningView(text: controller.interimText,
+                                 message: controller.statusMessage ?? "",
+                                 onDiscard: { controller.clearStatusLater(); controller.panelState = .hidden })
             default:
                 FloatingPanelView(
                     state: controller.panelState,
@@ -211,6 +215,7 @@ struct FloatingPanelRoot: View {
             guard controller.panelState == .listening
                     || controller.panelState == .processing
                     || controller.panelState == .reviewing
+                    || controller.panelState == .warning
                     || {
                         if case .error = controller.panelState { return true }
                         return false
@@ -221,6 +226,9 @@ struct FloatingPanelRoot: View {
             if event.keyCode == 53 || (event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == ".") {
                 if controller.panelState == .reviewing {
                     controller.discardReview()   // JOE-2272: discard clears text + model
+                } else if controller.panelState == .warning {
+                    controller.clearStatusLater()
+                    controller.panelState = .hidden
                 } else {
                     controller.cancelSession()
                 }
@@ -252,7 +260,7 @@ struct FloatingPanelRoot: View {
             FloatingPanelController.shared.persistPositionIfNeeded()
             FloatingPanelController.shared.hide()
             removePanelKeyMonitor()
-        case .listening, .processing, .reviewing, .success, .error:
+        case .listening, .processing, .reviewing, .success, .warning, .error:
             FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
             installPanelKeyMonitor()
             DispatchQueue.main.async {
@@ -631,5 +639,48 @@ struct FloatingPanelView: View {
                     )
                 )
         }
+    }
+}
+
+
+/// JOE-2284: persistent warning presentation (amber, no green, no auto
+/// dismiss) with a VoiceOver label; discard is explicit.
+struct PanelWarningView: View {
+    let text: String
+    let message: String
+    let onDiscard: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 18))
+                .foregroundColor(ZephyrTheme.warning)
+            if !text.isEmpty {
+                Text(text)
+                    .font(.system(size: 12))
+                    .foregroundColor(ZephyrTheme.textPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+            }
+            if !message.isEmpty {
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundColor(ZephyrTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button("Dismiss", action: onDiscard)
+                .font(.system(size: 12, weight: .semibold))
+                .buttonStyle(.plain)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(ZephyrTheme.bgElevated, in: Capsule())
+                .foregroundColor(ZephyrTheme.textPrimary)
+                .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityLabel("Dismiss warning")
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(message.isEmpty ? "Warning" : "Warning: \(message)")
     }
 }
