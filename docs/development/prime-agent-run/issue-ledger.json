@@ -527,7 +527,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "b49572c"
    ],
    "aurum_commits": [],
    "tests": [
