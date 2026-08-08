@@ -82,17 +82,29 @@ step "8/8 trust-boundary coverage (ZephyrFlowCore)"
 COV_TMP="$(mktemp -d)"
 BIN="$(swift build --show-bin-path 2>/dev/null)"
 if [[ -z "$BIN" ]]; then BIN=".build/debug"; fi
-if swift build -Xswiftc -profile-generate --target ZephyrFlowCoreTests >/dev/null 2>&1 \
-   && LLVM_PROFILE_FILE="$COV_TMP/core.profraw" "$BIN/ZephyrFlowCoreTests" >/dev/null 2>&1 \
-   && xcrun llvm-profdata merge -o "$COV_TMP/core.profdata" "$COV_TMP/core.profraw" \
-   && xcrun llvm-cov report "$BIN/ZephyrFlowCoreTests" -instr-profile="$COV_TMP/core.profdata" \
-      -ignore-filename-regex='Tests/' > "$COV_TMP/report.txt" 2>&1; then
-  LINE="$(awk -F'[[:space:]]+' '/TOTAL/{print $4}' "$COV_TMP/report.txt" | tr -d '%')"
-  BRANCH="$(awk -F'[[:space:]]+' '/TOTAL/{print $8}' "$COV_TMP/report.txt" | tr -d '%')"
-  echo "ZephyrFlowCore coverage: line=${LINE}% branch=${BRANCH}%"
-  if ! awk -v x="$LINE" 'BEGIN{exit !(x>=70)}'; then fail "coverage line < 70% (got ${LINE}%)"; fi
-  if ! awk -v x="$BRANCH" 'BEGIN{exit !(x>=75)}'; then fail "coverage branch < 75% (got ${BRANCH}%)"; fi
-  cp "$COV_TMP/report.txt" docs/development/ci/coverage-baseline-report.txt
+# `swift test --enable-code-coverage` builds every target instrumented;
+# we then run the CLT suite (the full deterministic check set) with a
+# captured profile and merge it with the XCTest profile.
+if swift test --enable-code-coverage >/dev/null 2>&1 \
+   && LLVM_PROFILE_FILE="$COV_TMP/clt.profraw" "$BIN/ZephyrFlowCoreTests" >/dev/null 2>&1; then
+  PROFILES=()
+  [[ -f "$COV_TMP/clt.profraw" ]] && PROFILES+=("$COV_TMP/clt.profraw")
+  XCPROF="$(find .build -path '*codecov*' -name '*.profraw' | head -1)"
+  [[ -n "$XCPROF" ]] && PROFILES+=("$XCPROF")
+  if [[ "${#PROFILES[@]}" -gt 0 ]] \
+     && xcrun llvm-profdata merge -o "$COV_TMP/core.profdata" "${PROFILES[@]}" \
+     && xcrun llvm-cov report "$BIN/ZephyrFlowCoreTests" -instr-profile="$COV_TMP/core.profdata" \
+        -ignore-filename-regex='Tests/' > "$COV_TMP/report.txt" 2>&1; then
+    REGION="$(awk -F'[[:space:]]+' '/TOTAL/{print $4}' "$COV_TMP/report.txt" | tr -d '%')"
+    LINE="$(awk -F'[[:space:]]+' '/TOTAL/{print $10}' "$COV_TMP/report.txt" | tr -d '%')"
+    BRANCH="$(awk -F'[[:space:]]+' '/TOTAL/{print $13}' "$COV_TMP/report.txt" | tr -d '%')"
+    echo "ZephyrFlowCore coverage: line=${LINE}% branch=${BRANCH}% region=${REGION}%"
+    if ! awk -v x="$LINE" 'BEGIN{exit !(x>=70)}'; then fail "coverage line < 70% (got ${LINE}%)"; fi
+    if ! awk -v x="$BRANCH" 'BEGIN{exit !(x>=75)}'; then fail "coverage branch < 75% (got ${BRANCH}%)"; fi
+    cp "$COV_TMP/report.txt" docs/development/ci/coverage-baseline-report.txt
+  else
+    fail "coverage report"
+  fi
 else
   fail "coverage measurement"
 fi
