@@ -44,6 +44,11 @@ final class SettingsStore: ObservableObject {
         if obj["insertionMode"] == nil { obj["insertionMode"] = defaults.insertionMode.rawValue }
         if obj["panelPositionLocked"] == nil { obj["panelPositionLocked"] = defaults.panelPositionLocked }
         if obj["copyOnlyOverrideBundleIDs"] == nil { obj["copyOnlyOverrideBundleIDs"] = defaults.copyOnlyOverrideBundleIDs }
+        // JOE-2254: legacy free-form language string -> validated model.
+        if let legacy = obj["language"] as? String, SupportedLanguage(rawValue: legacy) == nil {
+            obj["language"] = SupportedLanguage.fromLegacy(legacy).rawValue
+        }
+        if obj["language"] == nil { obj["language"] = defaults.language.rawValue }
         // Drop legacy no-op key if present
         obj.removeValue(forKey: "playSounds")
         guard let fixed = try? JSONSerialization.data(withJSONObject: obj),

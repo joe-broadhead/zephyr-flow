@@ -27,6 +27,8 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     private var recognitionTracker = SpeechRecognitionTracker()
     private var finalContinuation: CheckedContinuation<Void, Never>?
     private var finalizationPending = false
+    // JOE-2254: session language snapshot (for result metadata).
+    private var currentLanguage: SupportedLanguage = .auto
 
     func levels() -> [Float] { latestLevels }
 
@@ -53,10 +55,34 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     func startStreaming(
         sessionID: SessionID,
         localOnly: Bool,
+        language: SupportedLanguage,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws {
-        guard isReady, let recognizer else { throw WhisperEngineError.notReady }
+        guard isReady else { throw WhisperEngineError.notReady }
         guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
+        // JOE-2254: construct the recognizer for the requested locale with an
+        // explicit fallback policy — NEVER a silent en-US substitution.
+        let recognizer: SFSpeechRecognizer
+        if let bcp47 = language.bcp47 {
+            guard let localeRecognizer = SFSpeechRecognizer(locale: Locale(identifier: bcp47)) else {
+                throw WhisperEngineError.modelLoadFailed(
+                    "Speech recognition is unavailable for \(bcp47). Pick another language or use Auto.")
+            }
+            recognizer = localeRecognizer
+        } else {
+            guard let current = self.recognizer ?? SFSpeechRecognizer() else {
+                throw WhisperEngineError.notReady
+            }
+            recognizer = current
+        }
+        // Local Only preflight: on-device recognition must be available; never
+        // silently fall back to network recognition.
+        if localOnly && !recognizer.supportsOnDeviceRecognition {
+            throw WhisperEngineError.modelLoadFailed(
+                "Local Only: on-device speech is unavailable for \(recognizer.locale.identifier). Download the language pack in System Settings → Apple Intelligence & Siri, or turn off Local Only.")
+        }
+        self.recognizer = recognizer
+        currentLanguage = language
         // JOE-2253: unique token per start; callbacks carry it.
         recognitionTracker.start(token: RecognitionToken())
 
@@ -215,7 +241,8 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
                             frameAccounting: accounting,
                             engine: EngineIdentity(kind: .appleSpeech, modelName: modelName,
                                                    modelVersion: nil, modelDigest: nil),
-                            languageRequested: nil, languageDetected: nil,
+                            languageRequested: currentLanguage.bcp47,
+                            languageDetected: currentLanguage.bcp47,
                             confidence: nil, confidenceSource: nil,
                             startedAtUptimeNanos: nil,
                             endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,

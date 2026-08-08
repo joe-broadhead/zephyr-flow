@@ -622,7 +622,10 @@ final class DictationController: ObservableObject {
 
         do {
             let localOnly = settings.settings.localOnlyMode
-            try await sessionEngineHandle.startStreaming(sessionID: sid, localOnly: localOnly) { [weak self] partial in
+            try await sessionEngineHandle.startStreaming(
+                sessionID: sid,
+                localOnly: localOnly,
+                language: settings.settings.language) { [weak self] partial in
                 Task { @MainActor in
                     // JOE-2249: reject callbacks after cancellation, drain
                     // completion, terminal outcome or engine replacement.

@@ -12,6 +12,7 @@ public protocol WhisperEngineProtocol: Actor {
     func startStreaming(
         sessionID: SessionID,
         localOnly: Bool,
+        language: SupportedLanguage,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws
     func stopAndFinalize() async throws -> FinalTranscription

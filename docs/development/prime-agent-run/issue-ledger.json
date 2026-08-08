@@ -492,12 +492,29 @@
     "JOE-2252"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (BCP-47 matrix, legacy migration, capability decisions per engine, auto vs fixed, no silent fallback)",
+    "swift build: pass (language threaded through both engines with preflight; validated settings + UI picker)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/LanguageSupport.swift",
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlowCore/Protocols.swift",
+    "Sources/ZephyrFlow/Services/WhisperKitEngine.swift",
+    "Sources/ZephyrFlow/Services/AppleSpeechEngine.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Sources/ZephyrFlow/Services/SettingsStore.swift",
+    "Sources/ZephyrFlow/UI/Settings/SettingsView.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2254/REPORT.md"
+   ],
+   "remaining_action": "Real-device locale-matrix + missing-language-pack checks (human-gate runbook)."
   },
   {
    "id": "JOE-2255",

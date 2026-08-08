@@ -410,7 +410,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var hotkey: HotkeyConfig
     public var preferredModel: ModelIdentifier
     public var defaultFlowStyle: FlowStyle
-    public var language: String
+    public var language: SupportedLanguage
     /// When true (default), user audio/transcripts are not sent off-device (no analytics; Apple Speech fail-closed).
     public var localOnlyMode: Bool
     /// Allows one-time Whisper model file downloads (does not upload audio). Default on so Whisper Tiny works out of the box.
@@ -439,7 +439,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         hotkey: HotkeyConfig,
         preferredModel: ModelIdentifier,
         defaultFlowStyle: FlowStyle,
-        language: String,
+        language: SupportedLanguage,
         localOnlyMode: Bool,
         allowModelDownloads: Bool = false,
         launchAtLogin: Bool,
@@ -477,7 +477,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         hotkey: .default,
         preferredModel: .whisperTiny,
         defaultFlowStyle: .clean,
-        language: Locale.current.language.languageCode?.identifier ?? "en",
+        language: .auto,
         localOnlyMode: true,
         allowModelDownloads: true,
         launchAtLogin: false,

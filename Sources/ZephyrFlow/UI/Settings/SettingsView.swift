@@ -43,6 +43,13 @@ struct SettingsView: View {
 
     @State private var copyOnlyOverridesText = ""
 
+    private var languageBinding: Binding<SupportedLanguage> {
+        Binding(
+            get: { settings.settings.language },
+            set: { newValue in settings.update { $0.language = newValue } }
+        )
+    }
+
     var body: some View {
         NavigationSplitView {
             List(Tab.allCases, selection: $selectedTab) { tab in
@@ -105,6 +112,16 @@ struct SettingsView: View {
 
             Section("Engine") {
                 LabeledContent("Active engine", value: controller.engineLabel)
+                // JOE-2254: validated language selection (auto + supported
+                // BCP-47 matrix); affects the NEXT session, never the active one.
+                Picker("Language", selection: languageBinding) {
+                    ForEach(SupportedLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang)
+                    }
+                }
+                Text("Auto-detect uses the engine's detection. Fixed languages are preflighted for on-device support before capture (Local Only never falls back to network).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if controller.isModelLoading {
                     ProgressView("Loading model…")
                 }

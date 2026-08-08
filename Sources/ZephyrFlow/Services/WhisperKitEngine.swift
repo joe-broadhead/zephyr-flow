@@ -25,45 +25,55 @@ actor WhisperKitEngine: WhisperEngineProtocol {
 
     private static let maxSampleCount = StreamingPartialWindow.sampleRate * 60
 
-    private static let decodeOptions = DecodingOptions(
-        verbose: false,
-        task: .transcribe,
-        temperature: 0.0,
-        temperatureFallbackCount: 5,
-        usePrefillPrompt: true,
-        usePrefillCache: true,
-        detectLanguage: true,
-        skipSpecialTokens: true,
-        withoutTimestamps: true,
-        wordTimestamps: false,
-        windowClipTime: 1.0,
-        suppressBlank: true,
-        compressionRatioThreshold: 2.4,
-        logProbThreshold: -1.0,
-        firstTokenLogProbThreshold: -1.5,
-        noSpeechThreshold: 0.6,
-        concurrentWorkerCount: 1
-    )
+    /// JOE-2254: decode options honor the session language snapshot. Fixed
+    /// languages disable auto-detection (deterministic behavior); `auto`
+    /// keeps engine detection.
+    private func decodeOptions(language: SupportedLanguage) -> DecodingOptions {
+        DecodingOptions(
+            verbose: false,
+            task: .transcribe,
+            language: language.bcp47,
+            temperature: 0.0,
+            temperatureFallbackCount: 5,
+            usePrefillPrompt: true,
+            usePrefillCache: true,
+            detectLanguage: language.isAuto,
+            skipSpecialTokens: true,
+            withoutTimestamps: true,
+            wordTimestamps: false,
+            windowClipTime: 1.0,
+            suppressBlank: true,
+            compressionRatioThreshold: 2.4,
+            logProbThreshold: -1.0,
+            firstTokenLogProbThreshold: -1.5,
+            noSpeechThreshold: 0.6,
+            concurrentWorkerCount: 1)
+    }
 
-    private static let partialDecodeOptions = DecodingOptions(
-        verbose: false,
-        task: .transcribe,
-        temperature: 0.0,
-        temperatureFallbackCount: 1,
-        usePrefillPrompt: true,
-        usePrefillCache: true,
-        detectLanguage: true,
-        skipSpecialTokens: true,
-        withoutTimestamps: true,
-        wordTimestamps: false,
-        windowClipTime: 1.0,
-        suppressBlank: true,
-        compressionRatioThreshold: 2.4,
-        logProbThreshold: -1.0,
-        firstTokenLogProbThreshold: -1.5,
-        noSpeechThreshold: 0.6,
-        concurrentWorkerCount: 1
-    )
+    private func partialDecodeOptions(language: SupportedLanguage) -> DecodingOptions {
+        DecodingOptions(
+            verbose: false,
+            task: .transcribe,
+            language: language.bcp47,
+            temperature: 0.0,
+            temperatureFallbackCount: 1,
+            usePrefillPrompt: true,
+            usePrefillCache: true,
+            detectLanguage: language.isAuto,
+            skipSpecialTokens: true,
+            withoutTimestamps: true,
+            wordTimestamps: false,
+            windowClipTime: 1.0,
+            suppressBlank: true,
+            compressionRatioThreshold: 2.4,
+            logProbThreshold: -1.0,
+            firstTokenLogProbThreshold: -1.5,
+            noSpeechThreshold: 0.6,
+            concurrentWorkerCount: 1)
+    }
+
+    private var currentLanguage: SupportedLanguage = .auto
+    private var currentDecodeOptions: DecodingOptions?
 
     private static let minPartialRMS: Float = 0.0008
 
@@ -102,6 +112,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     func startStreaming(
         sessionID: SessionID,
         localOnly: Bool,
+        language: SupportedLanguage,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws {
         _ = localOnly
@@ -179,7 +190,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
 
         let raw: String
         do {
-            raw = try await runTranscribe(kit: kit, samples: samples, options: Self.decodeOptions,
+            raw = try await runTranscribe(kit: kit, samples: samples, options: currentDecodeOptions ?? decodeOptions(language: currentLanguage),
                                           purpose: .final)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
@@ -334,7 +345,8 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         guard energy >= Self.minPartialRMS else { return }
 
         do {
-            let text = try await runTranscribe(kit: kit, samples: slice, options: Self.partialDecodeOptions,
+            let text = try await runTranscribe(kit: kit, samples: slice,
+                                                options: partialDecodeOptions(language: currentLanguage),
                                                 purpose: .partial)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
 

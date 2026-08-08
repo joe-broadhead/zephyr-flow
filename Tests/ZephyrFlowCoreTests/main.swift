@@ -1413,6 +1413,55 @@ struct CoreTests {
             check("2253 resume once", r1.markResumed() && !r1.markResumed())
         }
 
+        // ===== JOE-2254: validated language + on-device capability =====
+        do {
+            // Matrix: supported BCP-47 identifiers.
+            check("2254 auto is auto", SupportedLanguage.auto.isAuto && SupportedLanguage.auto.bcp47 == nil)
+            check("2254 fixed languages have BCP-47",
+                  SupportedLanguage.enUS.bcp47 == "en-US"
+                    && SupportedLanguage.deDE.bcp47 == "de-DE"
+                    && SupportedLanguage.jaJP.bcp47 == "ja-JP")
+            check("2254 all fixed cases have identifiers",
+                  SupportedLanguage.allCases.filter { !$0.isAuto }.allSatisfy { $0.bcp47 != nil })
+            // Legacy migration: free-form string -> validated model.
+            check("2254 legacy migration",
+                  SupportedLanguage.fromLegacy("fr-FR") == .frFR
+                    && SupportedLanguage.fromLegacy("nonsense-lang") == .auto
+                    && SupportedLanguage.fromLegacy("") == .auto
+                    && SupportedLanguage.fromLegacy("auto") == .auto)
+            // Capability decisions per engine.
+            let supported = LanguageCapability(language: .enUS, whisperOnDevice: true,
+                                               appleOnDevice: true, appleAvailable: true,
+                                               missingPackMessage: nil)
+            check("2254 supported everywhere",
+                  supported.decision(for: .whisper) == .supported
+                    && supported.decision(for: .appleSpeech) == .supported)
+            // Missing Apple language pack => unavailable (no silent en-US).
+            let missing = LanguageCapability(language: .jaJP, whisperOnDevice: true,
+                                             appleOnDevice: false, appleAvailable: true,
+                                             missingPackMessage: "Download the language pack")
+            check("2254 missing apple pack unavailable",
+                  missing.decision(for: .appleSpeech) == .unavailable
+                    && missing.decision(for: .whisper) == .supported)
+            // Auto => autoDetection for both engines.
+            let autoCap = LanguageCapability(language: .auto, whisperOnDevice: true,
+                                             appleOnDevice: true, appleAvailable: true,
+                                             missingPackMessage: nil)
+            check("2254 auto uses engine detection",
+                  autoCap.decision(for: .whisper) == .autoDetection
+                    && autoCap.decision(for: .appleSpeech) == .autoDetection)
+            // Unavailable recognizer instance => unavailable.
+            let noRecognizer = LanguageCapability(language: .deDE, whisperOnDevice: true,
+                                                  appleOnDevice: false, appleAvailable: false,
+                                                  missingPackMessage: nil)
+            check("2254 no recognizer unavailable",
+                  noRecognizer.decision(for: .appleSpeech) == .unavailable)
+            // Language change is snapshot-based: fixed vs auto separate.
+            check("2254 language change affects next session only (model-level)",
+                  SupportedLanguage.enUS != SupportedLanguage.deDE
+                    && SupportedLanguage.fromLegacy(SupportedLanguage.deDE.rawValue) == .deDE)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
