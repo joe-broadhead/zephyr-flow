@@ -2196,7 +2196,7 @@
  "run": {
   "run_id": "20260808T103416Z",
   "branch": "agent/zephyr-production-run-20260808T103416Z",
-  "head": "97dcd87",
+  "head": "b80bca2",
   "pushed": true,
   "issues_total": 83,
   "dispositions": {
