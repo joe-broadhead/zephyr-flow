@@ -735,12 +735,23 @@
     "JOE-2258"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (exactly-one terminal guard + abandonment, canary clean/detects, bounded sink overflow + reentrancy)",
+    "swift build: pass (TerminalGuard wired per session)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/SessionTelemetry.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2264/REPORT.md"
+   ],
+   "remaining_action": "Schema golden fixtures + example redacted support record (human-gate; runbook)."
   },
   {
    "id": "JOE-2265",

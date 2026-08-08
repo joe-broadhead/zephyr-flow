@@ -1828,6 +1828,59 @@ struct CoreTests {
             }())
         }
 
+        // ===== JOE-2264: versioned privacy-safe telemetry + TerminalGuard =====
+        do {
+            let tid = SessionTelemetryID("abc123")
+            // Exactly one terminal event.
+            var guard1 = TerminalGuard(sessionID: tid)
+            let e1 = guard1.finalize(terminal: .completed, durationNanos: 1_000, atNanos: 100)
+            check("2264 terminal emitted once", e1?.kind == .terminal && e1?.terminal == .completed)
+            check("2264 second finalize refused", guard1.finalize(terminal: .failed, durationNanos: 2, atNanos: 200) == nil)
+            check("2264 exactly one terminal event", guard1.terminalEvent?.terminal == .completed)
+            // Dropping an unfinished guard emits controlled abandonment.
+            var guard2 = TerminalGuard(sessionID: tid)
+            check("2264 unfinished guard abandons",
+                  guard2.abandon(atNanos: 500)?.terminal == .abandonedDuringShutdown)
+            check("2264 abandoned cannot finalize later", guard2.finalize(terminal: .completed, durationNanos: 0, atNanos: 600) == nil)
+            // Schema has no free-form labels; canary clean on typed events.
+            let ev = TelemetryEvent(sessionID: tid, kind: .captureAccounting,
+                                    frameCounts: FrameCountSnapshot(captured: 16000, delivered: 16000, dropped: 0, decoded: 16000),
+                                    atNanos: 42)
+            check("2264 canary clean on typed event", PrivacyCanary.serializeAndScan(ev) == nil)
+            check("2264 schema versioned", ev.schemaVersion == TelemetrySchemaVersion.current.rawValue)
+            // Canary detects smuggled payload shapes.
+            check("2264 canary detects private path", PrivacyCanary.scan("x /Users/joe/secret y") == "/Users/")
+            check("2264 canary detects key shape", PrivacyCanary.scan("key=sk-1234") == "sk-")
+            // Bounded nonblocking sink: overflow drops counted, no stall.
+            let sink = BoundedEventSink(capacity: 4)
+            var delivered: [TelemetryEvent] = []
+            sink.setHost { delivered.append($0) }
+            for i in 0..<20 {
+                sink.record(TelemetryEvent(sessionID: tid, kind: .stageEntered, atNanos: UInt64(i)))
+            }
+            check("2264 sink overflow drops counted", sink.droppedCount >= 16)
+            check("2264 sink never blocks", sink.pendingCount == 4)
+            _ = sink.drain()
+            check("2264 sink drains to host", delivered.count == 4 && sink.pendingCount == 0)
+            // Reentrant host callback (records inside callback) cannot deadlock.
+            let reentrant = BoundedEventSink(capacity: 8)
+            var nested = 0
+            reentrant.setHost { ev in
+                nested += 1
+                if nested < 3 {
+                    reentrant.record(ev)   // reentrant call — must not deadlock
+                }
+            }
+            reentrant.record(TelemetryEvent(sessionID: tid, kind: .stageEntered, atNanos: 1))
+            // Drain repeatedly: each drain delivers one and the host re-records.
+            var drains = 0
+            while reentrant.pendingCount > 0 && drains < 10 {
+                _ = reentrant.drain()
+                drains += 1
+            }
+            check("2264 reentrant sink no deadlock", nested == 3 && drains == 3)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

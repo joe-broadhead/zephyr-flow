@@ -79,6 +79,8 @@ final class DictationController: ObservableObject {
     private var activeSessionBinding: SessionEngineBinding?
     private var callbackGate = CallbackGate()
     private var sessionEngine: (any WhisperEngineProtocol)?
+    // JOE-2264: exactly-one terminal telemetry event per session.
+    private var terminalGuard: TerminalGuard?
 
     init(environment: AppEnvironment) {
         self.environment = environment
@@ -615,6 +617,7 @@ final class DictationController: ObservableObject {
         }
         currentSessionID = sid
         ZFLog.info("SessionID allocated \(sid) gen=\(control.generation)")
+        terminalGuard = TerminalGuard(sessionID: SessionTelemetryID("\(sid.token)-\(sid.sequence)"))
         // JOE-2249: immutable session-owned engine snapshot + fresh gate.
         let sessionEngineHandle = activeEngine
         sessionEngine = sessionEngineHandle
@@ -1075,6 +1078,24 @@ final class DictationController: ObservableObject {
             }
             await (sessionEngine ?? activeEngine).cancel()
         }
+        // JOE-2264: exactly-one terminal event (content-free) emitted here.
+        if terminalGuard != nil {
+            let category: TerminalCategory = control.state.isTerminal
+                ? (control.state == .completed ? .completed
+                   : control.state == .cancelled ? .cancelled
+                   : control.state == .deadlineExceeded ? .deadlineExceeded
+                   : control.state == .targetChanged ? .targetChanged
+                   : control.state == .secureTarget ? .secureTarget
+                   : control.state == .degraded ? .degraded
+                   : control.state == .partial ? .partial
+                   : control.state == .truncated ? .truncated
+                   : .failed)
+                : .abandonedDuringShutdown
+            _ = terminalGuard?.finalize(terminal: category,
+                                        durationNanos: 0,
+                                        atNanos: environment.clock.nowNanos())
+        }
+        terminalGuard = nil
         // JOE-2249: terminal outcome closes the callback gate; session-bound
         // engine reference is released.
         callbackGate.close(reason: .terminalOutcome)
