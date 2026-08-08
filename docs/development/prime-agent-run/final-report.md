@@ -71,9 +71,15 @@ enforces discovery).
 ## Final gate
 
 - `FINAL_GATE_REQUESTED` committed; both branches pushed.
-- `/usr/local/libexec/zephyr-prime-final-gate-20260808T103416Z` ran manually:
-  **FINAL GATE PASSED** `d6e580bf…` (Zephyr) / `2d80982c…` (Aurum), exit 0
-  (log retained: `/tmp/final_gate4.log`; ledger records the exact heads).
+- `/usr/local/libexec/zephyr-prime-final-gate-20260808T103416Z` ran manually
+  and passed at the current committed+pushed head:
+  - pass 1: **FINAL GATE PASSED** `d6e580bf…` (Zephyr) / `2d80982c…` (Aurum),
+    exit 0 (log: `/tmp/final_gate4.log`).
+  - pass 2 (after ledger-head bookkeeping commits): **FINAL GATE PASSED**
+    `8991692b…` / `2d80982c…`, exit 0 (log: `/tmp/final_gate5.log`).
+- The ledger's `integration_head` is kept equal to the exact head the gate
+  runs at (the committed ledger records the first gate-passed head
+  `d6e580bf…`; the on-disk record tracks the current head).
 - Child worktrees removed; single clean worktree each repo; no tags.
 - 9/9 `Scripts/ci_checks.sh` gates green at the final head (XCTest enforced on
   CI; CLT parity suite green locally; strict-concurrency baseline 88 and
