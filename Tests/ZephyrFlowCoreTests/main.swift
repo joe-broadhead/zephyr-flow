@@ -1499,6 +1499,48 @@ struct CoreTests {
             check("2277 quoted span protected", quoted.contains("\"don\'t go\""))
         }
 
+        // ===== JOE-2278: expanded Flow guardrails (sign/multiset/negation) =====
+        do {
+            func reject(_ input: String, _ output: String) -> FlowGuardrailsRejection? {
+                switch FlowGuardrails.evaluate(input: input, output: output, conservativeFallback: "FALLBACK") {
+                case .approved: return nil
+                case .rejected(let reason, let fallback):
+                    return fallback == "FALLBACK" ? reason : reason
+                }
+            }
+            // -5 cannot become 5 (sign preserved).
+            let flip = reject("the value is -5", "the value is 5")
+            check("2278 sign flip rejected", flip == .signFlipped)
+            // Repeated numbers cannot collapse or duplicate unnoticed.
+            let collapse = reject("costs 10 and saves 10", "costs 10")
+            check("2278 dropped multiplicity rejected", collapse == .droppedNumber)
+            let dup = reject("costs 10", "costs 10 and saves 10")
+            check("2278 duplicated number (novel) rejected", dup == .novelNumber)
+            // 10%, $10, 10 ms, v1.2.3 retain associated semantics.
+            check("2278 percent drop rejected", reject("up 10%", "up") == .droppedPercent)
+            check("2278 currency drop rejected", reject("pay $10", "pay") == .droppedCurrency)
+            check("2278 unit drop rejected", reject("wait 10 ms", "wait") == .droppedUnit)
+            check("2278 version drop rejected", reject("use v1.2.3", "use it") == .droppedProtectedToken)
+            // Negation removal/inversion is rejected.
+            check("2278 negation removal rejected", reject("do not run", "run") == .droppedNegation)
+            check("2278 never removal rejected", reject("never again", "again") == .droppedNegation)
+            // Dropping every number fails conservative/structural guards.
+            check("2278 drop all numbers rejected", reject("there are 5 items and 3 more", "there are items") == .droppedNumber)
+            // Technical identifiers preserved.
+            check("2278 issue id drop rejected", reject("fix JOE-2278 now", "fix it now") == .droppedProtectedToken)
+            check("2278 url drop rejected", reject("see https://a.b/x", "see link") == .droppedProtectedToken)
+            // Structural equivalence: 12000 ↔ 12,000 allowed.
+            let equiv = FlowGuardrails.evaluate(input: "total is 12000", output: "Total is 12,000.", conservativeFallback: "X")
+            check("2278 structural equivalence allowed", FlowGuardrailsResult.approved("Total is 12,000.") == equiv)
+            // Approved output passes unchanged.
+            let ok = FlowGuardrails.evaluate(input: "I can't come, call you later", output: "I cannot come, call you later", conservativeFallback: "X")
+            check("2278 approved output passes", FlowGuardrailsResult.approved("I cannot come, call you later") == ok)
+            // Empty/preamble retained as controlled reasons.
+            check("2278 empty output rejected",
+                  reject("a fairly long sentence here", "") == .emptyOutput)
+            check("2278 preamble rejected", reject("say hi", "Sure, here is the text") == .preamble)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

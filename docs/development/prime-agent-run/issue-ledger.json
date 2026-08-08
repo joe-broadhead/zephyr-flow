@@ -1086,12 +1086,23 @@
     "JOE-2277"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (sign flip, multiplicity drop/dup, percent/currency/unit/version/negation/id/url drop, structural equivalence, empty/preamble reasons)",
+    "swift build: pass (guardrails wired into enhanced Flow with conservative fallback)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/FlowGuardrails.swift",
+    "Sources/ZephyrFlow/Services/EnhancedFlowProcessor.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2278/REPORT.md"
+   ],
+   "remaining_action": "Differential golden-set review across changed cases (human-gate runbook)."
   },
   {
    "id": "JOE-2279",

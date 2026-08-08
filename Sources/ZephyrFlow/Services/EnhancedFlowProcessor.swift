@@ -25,24 +25,47 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
     }
 
     func process(_ text: String, style: FlowStyle) async -> String {
+        await process(text, style: style, language: .auto)
+    }
+
+    /// JOE-2277/2278: language-aware enhanced rules with guardrail gate.
+    func process(_ text: String, style: FlowStyle, language: SupportedLanguage) async -> String {
         refreshAvailability()
         guard isReady else {
-            return await regex.process(text, style: style)
+            return await regex.process(text, style: style, language: language)
         }
 
         if Task.isCancelled {
-            return await regex.process(text, style: style)
+            return await regex.process(text, style: style, language: language)
         }
 
         switch style {
         case .clean, .raw:
-            return await regex.process(text, style: style)
+            return await regex.process(text, style: style, language: language)
         case .professional:
-            return await enhancedProfessional(text)
+            let enhanced = await enhancedProfessional(text, language: language)
+            return await guardrail(text, enhanced, style: style, language: language)
         case .bullets:
-            return await enhancedBullets(text)
+            let enhanced = await enhancedBullets(text, language: language)
+            return await guardrail(text, enhanced, style: style, language: language)
         case .summary:
-            return await enhancedSummary(text)
+            let enhanced = await enhancedSummary(text, language: language)
+            return await guardrail(text, enhanced, style: style, language: language)
+        }
+    }
+
+    /// JOE-2278: guardrail gate — on rejection return the approved
+    /// conservative fallback (regex) with the controlled reason logged.
+    private func guardrail(_ input: String, _ output: String,
+                           style: FlowStyle, language: SupportedLanguage) async -> String {
+        let fallback = await regex.process(input, style: style, language: language)
+        switch FlowGuardrails.evaluate(input: input, output: output,
+                                       conservativeFallback: fallback) {
+        case .approved(let out):
+            return out
+        case .rejected(let reason, let conservative):
+            ZFLog.info("Flow guardrail rejection reason=\(reason.rawValue) style=\(style.rawValue)")
+            return conservative
         }
     }
 
