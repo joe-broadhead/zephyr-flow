@@ -1454,7 +1454,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "276cfe0"
    ],
    "aurum_commits": [],
    "tests": [
@@ -1484,7 +1484,7 @@
    "status": "Backlog",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "276cfe0"
    ],
    "aurum_commits": [],
    "tests": [
