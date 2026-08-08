@@ -35,6 +35,13 @@ final class ModelReadinessStore: ObservableObject {
         readiness[model] ?? ModelReadiness(state: model.isWhisperKit ? .missing : .notApplicable)
     }
 
+    /// JOE-2283: preflight free disk space before a download starts.
+    static func freeDiskSpace() -> UInt64 {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+        let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return UInt64(values?.volumeAvailableCapacityForImportantUsage ?? 0)
+    }
+
     /// Verified readiness from the acquisition controller (source of truth).
     func verifiedReadiness(for model: ModelIdentifier) async -> ModelReadiness {
         await acquisition.verifiedReadiness(for: model)
@@ -71,12 +78,15 @@ final class ModelReadinessStore: ObservableObject {
     /// JOE-2256: submit a new model selection (supersedes in-flight loads).
     /// Returns the request id; only the CURRENT request may publish.
     @discardableResult
-    func select(_ model: ModelIdentifier,
-                allowDownloads: Bool, localOnly: Bool) -> UInt64 {
+    func select(
+        _ model: ModelIdentifier,
+        allowDownloads: Bool, localOnly: Bool
+    ) -> UInt64 {
         let requestID = selection.submit(
             model: model,
-            settings: .init(allowModelDownloads: allowDownloads,
-                            localOnlyMode: localOnly))
+            settings: .init(
+                allowModelDownloads: allowDownloads,
+                localOnlyMode: localOnly))
         // Cancel/supersede any in-flight load task for a different model.
         for (rid, task) in loadTasks where rid != requestID {
             task.cancel()
@@ -87,9 +97,11 @@ final class ModelReadinessStore: ObservableObject {
 
     /// Publish a load completion ONLY when its request is current; stale
     /// completions are typed superseded events and never overwrite state.
-    func publishLoadCompletion(requestID: UInt64,
-                               model: ModelIdentifier,
-                               outcome: ModelLoadOutcome) {
+    func publishLoadCompletion(
+        requestID: UInt64,
+        model: ModelIdentifier,
+        outcome: ModelLoadOutcome
+    ) {
         let accepted = selection.acceptCompletion(
             requestID: requestID, model: model, outcome: outcome)
         switch accepted {

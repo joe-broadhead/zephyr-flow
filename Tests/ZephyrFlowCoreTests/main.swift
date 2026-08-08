@@ -3670,6 +3670,101 @@ struct CoreTests {
             check("2289 duration formatted", !AppStrings.duration(65).isEmpty)
         }
 
+        // ===== JOE-2283: first-run model UX policy =====
+        do {
+            // 1. Every verified lifecycle state renders with a name, action
+            //    and dictation-blocking rule (deterministic).
+            for state in [
+                ModelReadinessState.missing, .queued,
+                .downloading(0.4), .verifying, .ready, .cancelled,
+                .quarantined, .failed("boom"),
+            ] {
+                let r = ModelUIPolicy.render(for: state)
+                check("2283 render \(r.stateName)", !r.stateName.isEmpty)
+            }
+            check(
+                "2283 ready does not block dictation",
+                !ModelUIPolicy.render(for: .ready).blocksDictation)
+            check(
+                "2283 missing blocks dictation",
+                ModelUIPolicy.render(for: .missing).blocksDictation)
+            check(
+                "2283 verifying blocks dictation",
+                ModelUIPolicy.render(for: .verifying).blocksDictation)
+
+            // 2. Honest progress only when a real fraction exists; otherwise
+            //    indeterminate (never fake bytes).
+            let withFraction = ModelUIPolicy.render(for: .downloading(0.42))
+            check(
+                "2283 real fraction honest",
+                withFraction.hasHonestProgress && !withFraction.isIndeterminate)
+            let noFraction = ModelUIPolicy.render(for: .downloading(nil))
+            check(
+                "2283 no fraction indeterminate",
+                !noFraction.hasHonestProgress && noFraction.isIndeterminate)
+
+            // 3. Download gate: consent required; cached verified model
+            //    starts from cache; insufficient disk gives actionable gate.
+            check(
+                "2283 cached model starts from cache",
+                ModelUIPolicy.mayStartDownload(
+                    consent: false,
+                    hasCachedVerifiedModel: true,
+                    freeBytes: 0) == .startFromCache)
+            check(
+                "2283 no consent -> consent required",
+                ModelUIPolicy.mayStartDownload(
+                    consent: false,
+                    hasCachedVerifiedModel: false,
+                    freeBytes: 100_000_000_000) == .consentRequired)
+            check(
+                "2283 consent + space -> allowed",
+                ModelUIPolicy.mayStartDownload(
+                    consent: true,
+                    hasCachedVerifiedModel: false,
+                    freeBytes: 100_000_000_000) == .allowed)
+            let diskGate = ModelUIPolicy.mayStartDownload(
+                consent: true,
+                hasCachedVerifiedModel: false,
+                freeBytes: 100_000_000)
+            check(
+                "2283 low disk -> insufficient",
+                diskGate
+                    == .insufficientDiskSpace(
+                        required: 1_500_000_000,
+                        available: 100_000_000))
+
+            // 4. Cleanup guidance is actionable.
+            let guidance = ModelUIPolicy.cleanupGuidance(
+                available: 100_000_000,
+                required: 1_500_000_000)
+            check("2283 cleanup guidance actionable", guidance.contains("Free at least"))
+
+            // 5. Cancelled/failed downloads are recoverable (retry action).
+            check(
+                "2283 cancelled recoverable with retry",
+                ModelUIPolicy.render(for: .cancelled).primaryAction == .retry
+                    && ModelUIPolicy.render(for: .cancelled).recoverable)
+            check(
+                "2283 quarantined recoverable with retry",
+                ModelUIPolicy.render(for: .quarantined).primaryAction == .retry)
+
+            // 6. Verification is a visible state distinct from download
+            //    completion.
+            let downloading = ModelUIPolicy.render(for: .downloading(0.9))
+            let verifying = ModelUIPolicy.render(for: .verifying)
+            check(
+                "2283 verifying distinct from downloading",
+                verifying.stateName != downloading.stateName && verifying.primaryAction == .none
+                    && downloading.primaryAction == .cancel)
+
+            // 7. Superseded completions never overwrite current UI: the
+            //    current-request publish path (JOE-2256) absorbs stale
+            //    completions as no-ops.
+            check("2283 superseded absorbed", ModelUIPolicy.absorbCompletion(isCurrent: false) == .none)
+            check("2283 current absorbed", ModelUIPolicy.absorbCompletion(isCurrent: true) == .none)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

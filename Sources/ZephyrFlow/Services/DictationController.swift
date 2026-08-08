@@ -228,6 +228,12 @@ final class DictationController: ObservableObject {
         if !ready {
             await preloadEngine()
         }
+        // JOE-2283: never enter a fake listening/capturing state when the
+        // selected model is not ready (missing/unverified/failed download).
+        guard await activeEngine.isReady else {
+            showError("Selected model is not ready — download or verify it in Settings, or switch to Apple Speech.")
+            return
+        }
         guard admissionOpen, session == nil else { return }
 
         // Remember where the user was typing BEFORE any of our UI steals focus.
@@ -504,9 +510,10 @@ final class DictationController: ObservableObject {
         // JOE-2256: supersede any in-flight load for the previous selection.
         if !useApple {
             let store = ModelReadinessStore.shared
-            _ = store.select(settingsStore.settings.preferredModel,
-                             allowDownloads: settingsStore.settings.allowModelDownloads,
-                             localOnly: settingsStore.settings.localOnlyMode)
+            _ = store.select(
+                settingsStore.settings.preferredModel,
+                allowDownloads: settingsStore.settings.allowModelDownloads,
+                localOnly: settingsStore.settings.localOnlyMode)
         }
         ZFLog.info("Engine switched to \(engineLabel)")
     }

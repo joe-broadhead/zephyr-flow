@@ -1372,12 +1372,24 @@
     "JOE-2282"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (23 JOE-2283 checks: lifecycle renders, dictation-blocking, honest vs indeterminate progress, download gate cache/consent/disk, cleanup guidance, recoverable retry, verifying distinct, superseded absorbed)",
+    "swift build: pass (beginSession model-ready guard, disk preflight)",
+    "swift-format lint 0; mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/ModelUIPolicy.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Sources/ZephyrFlow/Services/ModelReadinessStore.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2283/REPORT.md"
+   ],
+   "remaining_action": "Recorded fresh-install flows (fast/slow/offline/corrupt/disk-full/cancelled) on a real machine \u2014 human-gate runbook."
   },
   {
    "id": "JOE-2284",
