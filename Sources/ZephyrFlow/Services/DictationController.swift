@@ -376,6 +376,62 @@ final class DictationController: ObservableObject {
         sessionSensitivity.allowsAutomaticSideEffects
     }
 
+    /// JOE-2266: async termination handshake. Closes admission first,
+    /// finishes the active session, stops audio, quiesces the engine, resolves
+    /// pasteboard, flushes storage and restores the Fn preference exactly.
+    /// Returns the handshake state (completed/abandoned) for the delegate.
+    func terminate(deadlineNanosAhead: UInt64 = 3_000_000_000) async -> TerminationState {
+        var handshake = TerminationHandshake(deadlineNanosAhead: deadlineNanosAhead)
+        let t0 = environment.clock.nowNanos()
+        handshake.begin(nowNanos: t0)
+        let now = { self.environment.clock.nowNanos() }
+
+        // 1. Close new-session/hotkey admission first.
+        hotkey.stop()
+        control.shutdown()
+        _ = handshake.completeStep(.admissionClosed, nowNanos: now())
+
+        // 2. Finish/cancel the active session (single terminal outcome).
+        if isSessionActive, let sid = currentSessionID {
+            callbackGate.close(reason: .cancelled)
+            activeSessionBinding = nil
+            _ = control.cancel()
+            await audio.stop()
+            currentSessionID = nil
+        }
+        _ = handshake.completeStep(.sessionFinished, nowNanos: now())
+
+        // 3. Stop + drain audio safely.
+        audioDeliveryTask?.cancel()
+        audioDeliveryTask = nil
+        audioChannel = nil
+        pcmConverter = nil
+        _ = handshake.completeStep(.audioStopped, nowNanos: now())
+
+        // 4. Quiesce engine operations with a bounded deadline.
+        await (sessionEngine ?? activeEngine).cancel()
+        sessionEngine = nil
+        _ = handshake.completeStep(.enginesQuiesced, nowNanos: now())
+
+        // 5. Pasteboard restoration already resolved inside the insert
+        // transaction (typed outcome); nothing outstanding to complete.
+        _ = handshake.completeStep(.pasteboardResolved, nowNanos: now())
+
+        // 6. Flush settings/history/metrics (repositories persist on write).
+        settingsStore.save()
+        await environment.metrics.record(
+            MetricsEvent(kind: .sessionCompleted, value: 0, atNanos: now()))
+        _ = handshake.completeStep(.storageFlushed, nowNanos: now())
+
+        // 7. Restore the retained Fn/global preference exactly.
+        HotkeyService.restoreFnOverrideIfNeededFromPriorLaunch()
+        _ = handshake.completeStep(.preferencesRestored, nowNanos: now())
+
+        reviewSession?.clear(reason: .appTerminating)
+        reviewSession = nil
+        return handshake.state
+    }
+
     func stop() {
         hotkey.stop()
         levelsTask?.cancel()

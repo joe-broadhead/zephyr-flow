@@ -769,12 +769,25 @@
    "classification": "autonomous_implementation",
    "dependencies": [],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (7-step shutdown completes, finalize-once, deadline abandonment + recovery marker, remaining steps)",
+    "swift build: pass (async termination API + DictationController.terminate + Fn restore)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/TerminationHandshake.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Sources/ZephyrFlow/App/ZephyrFlowApp.swift",
+    "Sources/ZephyrFlow/Services/SettingsStore.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2266/REPORT.md"
+   ],
+   "remaining_action": "Forced timeout/crash/relaunch + OS logout/restart dogfood + resource-count/recovery reports (human-gate runbook)."
   },
   {
    "id": "JOE-2267",

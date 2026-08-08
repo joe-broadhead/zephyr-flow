@@ -58,7 +58,7 @@ final class SettingsStore: ObservableObject {
         return decoded
     }
 
-    private func save() {
+    func save() {
         guard let data = try? encoder.encode(settings) else { return }
         UserDefaults.standard.set(data, forKey: defaultsKey)
     }

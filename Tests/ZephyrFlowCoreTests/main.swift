@@ -1789,6 +1789,45 @@ struct CoreTests {
             check("2243 test env has no side effects", prodSettings == .default)
         }
 
+        // ===== JOE-2266: termination handshake =====
+        do {
+            // Complete shutdown from every state -> one terminal outcome.
+            var h = TerminationHandshake(deadlineNanosAhead: 1000)
+            h.begin(nowNanos: 0)
+            var running = true
+            var steps = 0
+            while running {
+                let step = TerminationStep.allCases[steps]
+                let st = h.completeStep(step, nowNanos: UInt64(steps) * 100)
+                steps += 1
+                if st == .completed || st == .abandoned { running = false }
+            }
+            check("2266 full shutdown completes", h.state == .completed && steps == 7)
+            // Exactly-once finalization (no double callbacks).
+            check("2266 finalize once", h.markFinalized() && !h.markFinalized())
+            check("2266 no recovery marker on clean exit", h.recoveryMarker == nil)
+            // Deadline abandonment from mid-shutdown.
+            var d = TerminationHandshake(deadlineNanosAhead: 100)
+            d.begin(nowNanos: 0)
+            _ = d.completeStep(.admissionClosed, nowNanos: 10)
+            _ = d.completeStep(.sessionFinished, nowNanos: 200)
+            check("2266 deadline abandons with marker",
+                  d.state == .abandoned && d.recoveryMarker != nil
+                    && d.recoveryMarker?.contains("sessionFinished") == true)
+            // Remaining steps are surfaced for the recovery report.
+            check("2266 remaining steps listed",
+                  d.remainingSteps.contains(.audioStopped)
+                    && d.remainingSteps.contains(.preferencesRestored))
+            // Idle handshake completes steps in order.
+            var i = TerminationHandshake(deadlineNanosAhead: 1000)
+            _ = i.completeStep(.admissionClosed, nowNanos: 0)
+            check("2266 begin on first step", i.state == .running && i.startedAtNanos == 0)
+            check("2266 terminal absorbed", {
+                _ = i.completeStep(.storageFlushed, nowNanos: 5000)
+                return i.state == .abandoned
+            }())
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

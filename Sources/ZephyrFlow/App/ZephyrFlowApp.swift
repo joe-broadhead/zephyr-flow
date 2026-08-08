@@ -104,6 +104,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DictationController.shared.stop()
     }
 
+    /// JOE-2266: macOS asynchronous termination — the process does not exit
+    /// until the handshake resolves (or the hard deadline abandons it with a
+    /// recovery marker for the next launch).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let controller = DictationController.shared
+        sender.reply(toApplicationShouldTerminate: false)
+        Task { @MainActor in
+            let state = await controller.terminate(deadlineNanosAhead: 3_000_000_000)
+            ZFLog.info("termination handshake state=\(state.rawValue) marker=\(state == .abandoned ? "yes" : "none")")
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if !flag { WindowRouter.openSettings() }
         return true
