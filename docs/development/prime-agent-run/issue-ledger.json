@@ -1645,7 +1645,7 @@
    "status": "Backlog",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "d73551a"
    ],
    "aurum_commits": [],
    "tests": [
