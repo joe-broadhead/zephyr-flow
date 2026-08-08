@@ -3393,20 +3393,20 @@ struct CoreTests {
             check("2256 current model is A", t.currentModel == .whisperTiny)
 
             // 2. Stale completions are typed superseded; current state intact.
-            var outcomeA = t.acceptCompletion(
+            let outcomeA = t.acceptCompletion(
                 requestID: a1, model: .whisperTiny,
                 outcome: .failed(model: .whisperTiny, message: "boom"))
             check(
                 "2256 stale A completion superseded",
                 outcomeA == .superseded(model: .whisperTiny, byRequestID: a2))
-            var outcomeB = t.acceptCompletion(
+            let outcomeB = t.acceptCompletion(
                 requestID: b1, model: .whisperBase,
                 outcome: .ready(model: .whisperBase))
             check(
                 "2256 stale B completion superseded",
                 outcomeB == .superseded(model: .whisperBase, byRequestID: a2))
             // Current completion publishes.
-            var outcomeCurrent = t.acceptCompletion(
+            let outcomeCurrent = t.acceptCompletion(
                 requestID: a2, model: .whisperTiny,
                 outcome: .ready(model: .whisperTiny))
             check(
@@ -3817,7 +3817,7 @@ struct CoreTests {
 
             // 6. Terminal taxonomy coverage: stress across many seeds reaches
             //    multiple terminal categories (completed/secure-target/...).
-            var catSeeds: Set<UInt64> = []
+            let catSeeds: Set<UInt64> = []
             _ = catSeeds
             // Deterministic PRNG gives a fixed set of behaviors per seed;
             // assert the taxonomy union is non-trivial across the corpus.
@@ -3905,6 +3905,264 @@ struct CoreTests {
                 seqB.append(b.next())
             }
             check("2293 distinct seeds distinct sequences", seqA != seqB)
+        }
+
+        // ===== JOE-2286: exact + transactional Fn preference override =====
+        do {
+            // 1. Nil fixture: absent key restores as absent (never removes
+            //    a value; there was none).
+            let snap = FnPreferenceSnapshot(
+                keyPresent: false, value: nil,
+                cfTypeTag: nil)
+            var tx = FnPreferenceTransaction(snapshot: snap)
+            check("2286 begin apply", tx.beginApply())
+            tx.markApplied(mutationSucceeded: true)
+            check("2286 applied", tx.record.status == .applied)
+            check("2286 applied is active override", tx.record.isActiveOverride)
+            check("2286 begin restore", tx.beginRestore())
+            // Read-back verified exact: key absent.
+            tx.finishRestore(verifiedExact: true)
+            check("2286 restored", tx.record.status == .restored)
+            check("2286 completed NOT active", !tx.record.isActiveOverride)
+
+            // 2. Integer fixture: exact value + CF type restore.
+            let intSnap = FnPreferenceSnapshot(
+                keyPresent: true, value: 2,
+                cfTypeTag: "CFNumber")
+            var tx2 = FnPreferenceTransaction(snapshot: intSnap)
+            _ = tx2.beginApply()
+            tx2.markApplied(mutationSucceeded: true)
+            _ = tx2.beginRestore()
+            tx2.finishRestore(verifiedExact: true)
+            check(
+                "2286 int restore keeps snapshot",
+                tx2.record.snapshot.value == 2 && tx2.record.snapshot.keyPresent)
+
+            // 3. Unexpected-value fixture (CFString): type captured exactly.
+            let strSnap = FnPreferenceSnapshot(
+                keyPresent: true, value: nil,
+                cfTypeTag: "CFString")
+            check("2286 CFString type captured", strSnap.cfTypeTag == "CFString")
+
+            // 4. Crash at EVERY transaction step recovers idempotently.
+            //    idle -> stays idle; pendingApply -> idle (mutation never
+            //    confirmed); applied -> pendingRestore (must restore);
+            //    pendingRestore -> pendingRestore; restored -> restored.
+            for status in FnPreferenceStatus.allCases {
+                let rec = FnPreferenceRecord(
+                    version: 7, status: status,
+                    snapshot: snap)
+                var txc = FnPreferenceTransaction(record: rec)
+                let after = txc.recoverAfterCrash()
+                if status == .idle || status == .restored || status == .failedRestore {
+                    check("2286 crash \(status.rawValue) unchanged", after == status)
+                } else if status == .pendingApply {
+                    check("2286 crash pendingApply -> idle", after == .idle)
+                } else {
+                    check(
+                        "2286 crash applied/pendingRestore -> pendingRestore",
+                        after == .pendingRestore)
+                }
+                check(
+                    "2286 crash recovery idempotent",
+                    txc.recoverAfterCrash() == after)
+            }
+
+            // 5. Restore FAILURE disables capture + surfaces recovery, and
+            //    never re-applies automatically.
+            var tx5 = FnPreferenceTransaction(snapshot: intSnap)
+            _ = tx5.beginApply()
+            tx5.markApplied(mutationSucceeded: true)
+            _ = tx5.beginRestore()
+            tx5.finishRestore(verifiedExact: false)
+            check("2286 failedRestore", tx5.record.status == .failedRestore)
+            check("2286 capture disabled", tx5.captureDisabled)
+            check("2286 failed NOT active", !tx5.record.isActiveOverride)
+            check(
+                "2286 no auto reapply (beginRestore fails)",
+                !tx5.beginRestore())
+
+            // 6. Production default path never overrides.
+            check(
+                "2286 default no override",
+                !FnOverridePolicy.shouldOverride(
+                    experimentalOptIn: false, configuredSpecialKeyIsFn: true,
+                    tapPrepared: true))
+            check(
+                "2286 requires opt-in + fn + tap",
+                FnOverridePolicy.shouldOverride(
+                    experimentalOptIn: true, configuredSpecialKeyIsFn: true,
+                    tapPrepared: true))
+            check(
+                "2286 no override without tap",
+                !FnOverridePolicy.shouldOverride(
+                    experimentalOptIn: true, configuredSpecialKeyIsFn: true,
+                    tapPrepared: false))
+            check(
+                "2286 restore immediately on fn change",
+                FnOverridePolicy.shouldRestoreImmediately(
+                    configuredSpecialKeyIsFn: false, accessibilityTrusted: true))
+            check(
+                "2286 restore immediately on permission loss",
+                FnOverridePolicy.shouldRestoreImmediately(
+                    configuredSpecialKeyIsFn: true, accessibilityTrusted: false))
+
+            // 7. Version monotonicity: newer version wins.
+            let v1 = FnPreferenceRecord(version: 1, status: .applied, snapshot: snap)
+            let v2 = FnPreferenceRecord(version: 2, status: .restored, snapshot: snap)
+            check("2286 version ordering", v2.version > v1.version)
+        }
+
+        // ===== JOE-2287: serial deduplicated edge stream =====
+        do {
+            // 1. One physical action, three sources -> ONE logical pair.
+            var es = HotkeyEdgeStream(configIsFn: true)
+            es.setLifecycle(.healthy)
+            let t0: UInt64 = 1_000_000_000
+            var edges = 0
+            edges +=
+                es.feed(
+                    HotkeySourceEvent(
+                        source: .tap, down: true,
+                        keyCode: 63, flags: 0x800000,
+                        isFnKey: true, timestampNanos: t0)) ? 1 : 0
+            edges +=
+                es.feed(
+                    HotkeySourceEvent(
+                        source: .global, down: true,
+                        keyCode: 63, flags: 0x800000,
+                        isFnKey: true, timestampNanos: t0 + 5_000_000)) ? 1 : 0
+            edges +=
+                es.feed(
+                    HotkeySourceEvent(
+                        source: .local, down: true,
+                        keyCode: 63, flags: 0x800000,
+                        isFnKey: true, timestampNanos: t0 + 10_000_000)) ? 1 : 0
+            edges +=
+                es.feed(
+                    HotkeySourceEvent(
+                        source: .tap, down: false,
+                        keyCode: 63, flags: 0,
+                        isFnKey: true, timestampNanos: t0 + 50_000_000)) ? 1 : 0
+            edges +=
+                es.feed(
+                    HotkeySourceEvent(
+                        source: .global, down: false,
+                        keyCode: 63, flags: 0,
+                        isFnKey: true, timestampNanos: t0 + 55_000_000)) ? 1 : 0
+            check("2287 three sources one pair", es.presses == 1 && es.releases == 1)
+            check("2287 edge count == 2", edges == 2)
+            check("2287 duplicate edges suppressed", es.suppressed == 3)
+
+            // 2. Lost release: sweep recovers hold/toggle state.
+            var es2 = HotkeyEdgeStream(configIsFn: true)
+            es2.setLifecycle(.healthy)
+            _ = es2.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 63,
+                    flags: 0x800000, isFnKey: true,
+                    timestampNanos: t0))
+            check("2287 held after down", es2.heldDown)
+            check(
+                "2287 lost release recovered",
+                es2.sweepLostRelease(nowNanos: t0 + HotkeyEdgeStream.lostReleaseTimeoutNanos + 1))
+            check("2287 not held after sweep", !es2.heldDown)
+            check("2287 recovered counted", es2.lostReleasesRecovered == 1)
+
+            // 3. Autorepeat never produces edges.
+            var es3 = HotkeyEdgeStream(configIsFn: true)
+            es3.setLifecycle(.healthy)
+            _ = es3.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 63,
+                    flags: 0x800000, isFnKey: true,
+                    isAutorepeat: true, timestampNanos: t0))
+            check("2287 autorepeat suppressed", es3.presses == 0 && es3.suppressed == 1)
+
+            // 4. Modifier chords suppressed; state resets on chord release.
+            var es4 = HotkeyEdgeStream(configIsFn: true)
+            es4.setLifecycle(.healthy)
+            _ = es4.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 63,
+                    flags: 0x800000 | 0x100000,  // Fn+Cmd
+                    isFnKey: true, timestampNanos: t0))
+            check("2287 chord suppressed", es4.presses == 0)
+            _ = es4.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: false, keyCode: 63,
+                    flags: 0, isFnKey: true, timestampNanos: t0 + 10_000_000))
+            _ = es4.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 63,
+                    flags: 0x800000, isFnKey: true,
+                    timestampNanos: t0 + 20_000_000))
+            check("2287 chord released then press works", es4.presses == 1)
+
+            // 5. Out-of-order/duplicate raw events cannot arm permanently.
+            var es5 = HotkeyEdgeStream(configIsFn: true)
+            es5.setLifecycle(.healthy)
+            _ = es5.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 63,
+                    flags: 0x800000, isFnKey: true, timestampNanos: t0))
+            _ = es5.feed(
+                HotkeySourceEvent(
+                    source: .global, down: true, keyCode: 63,
+                    flags: 0x800000, isFnKey: true, timestampNanos: t0 + 1))
+            check("2287 duplicate down no double arm", es5.presses == 1 && es5.heldDown)
+            _ = es5.feed(
+                HotkeySourceEvent(
+                    source: .local, down: false, keyCode: 63,
+                    flags: 0, isFnKey: true, timestampNanos: t0 + 2_000_000))
+            check("2287 early release ok", es5.releases == 1 && !es5.heldDown)
+            // Release with nothing held is suppressed, never a violation.
+            _ = es5.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: false, keyCode: 63,
+                    flags: 0, isFnKey: true, timestampNanos: t0 + 3_000_000))
+            check("2287 stray release suppressed", es5.suppressed >= 1)
+            check("2287 no violations", es5.violations.isEmpty && es5.isGreen)
+
+            // 6. Lifecycle: stopped never emits; stopping releases held state.
+            var es6 = HotkeyEdgeStream(configIsFn: true)
+            _ = es6.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 63,
+                    flags: 0x800000, isFnKey: true, timestampNanos: t0))
+            check("2287 stopped ignores", es6.presses == 0)
+            es6.setLifecycle(.healthy)
+            _ = es6.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 63,
+                    flags: 0x800000, isFnKey: true, timestampNanos: t0))
+            es6.setLifecycle(.stopping)
+            check("2287 stopping releases held", !es6.heldDown && es6.releases == 1)
+            check("2287 lifecycle states", es6.lifecycle == .stopping)
+
+            // 7. Config change resets held state safely.
+            var es7 = HotkeyEdgeStream(configIsFn: true)
+            es7.setLifecycle(.healthy)
+            _ = es7.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 63,
+                    flags: 0x800000, isFnKey: true, timestampNanos: t0))
+            es7.applyConfig(isFn: false, keyCode: 49)
+            check("2287 config change releases held", !es7.heldDown)
+            _ = es7.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 49,
+                    flags: 0, isFnKey: false, timestampNanos: t0 + 5_000_000))
+            check("2287 new config takes effect", es7.presses == 2)
+
+            // 8. Degraded lifecycle still processes edges (no busy loop).
+            var es8 = HotkeyEdgeStream(configIsFn: true)
+            es8.setLifecycle(.degraded)
+            _ = es8.feed(
+                HotkeySourceEvent(
+                    source: .tap, down: true, keyCode: 63,
+                    flags: 0x800000, isFnKey: true, timestampNanos: t0))
+            check("2287 degraded processes", es8.presses == 1)
         }
 
         print("")

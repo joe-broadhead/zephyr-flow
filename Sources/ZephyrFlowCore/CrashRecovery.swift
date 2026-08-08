@@ -82,14 +82,14 @@ public struct RapidControlReport: Sendable, Equatable {
 public enum RapidControlStress: Sendable {
     public static func run(seed: UInt64, cycles: Int) async -> RapidControlReport {
         var rng = SplitMix64(seed: seed)
-        var violations: [String] = []
+        let violations: [String] = []
         let factory = SessionIDFactory()
         let settings = SessionSettingsSnapshot(
             localOnly: true, language: .enUS, defaultFlowStyle: .clean,
             insertionMode: "automatic", saveHistory: false,
             copyOnlyOverrideBundleIDs: [])
 
-        for cycle in 0..<cycles {
+        for _ in 0..<cycles {
             let provider = StressSessionProvider(
                 seed: rng.next(),
                 normalSensitivity: true)

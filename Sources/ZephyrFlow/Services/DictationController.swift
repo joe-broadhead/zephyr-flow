@@ -421,7 +421,7 @@ final class DictationController: ObservableObject {
     /// Persistent review panel for uncertain outcomes (JOE-2272).
     private func presentReview(outcome: InsertionOutcome, text: String) {
         let now = environment.clock.nowNanos()
-        var model = InsertionReviewModel(outcome: outcome, createdAtNanos: now)
+        let model = InsertionReviewModel(outcome: outcome, createdAtNanos: now)
         reviewModel = model
         reviewText = text
         guard let sid = lastSessionID else { return }

@@ -210,9 +210,9 @@ public enum SessionStressHarness: Sendable {
         }
     ) async -> SessionStressReport {
         var violations: [String] = []
-        var categories: Set<TerminalCategory> = []
+        let categories: Set<TerminalCategory> = []
         var exactlyOne = true
-        var crossSession = true
+        let crossSession = true
         var sensitive = true
         var validationBeforeMutation = true
         let factory = SessionIDFactory()

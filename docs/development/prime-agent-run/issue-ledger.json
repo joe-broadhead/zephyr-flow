@@ -1452,12 +1452,24 @@
     "JOE-2285"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (30 JOE-2286 checks: exact snapshot restore nil/int/CFString, crash at every step idempotent, restore-failure disables capture, default path never overrides, version monotonic)",
+    "swift build: pass; swift-format lint 0; string scan OK; mkdocs --strict 0; strict-concurrency baseline 88 (down from 93; 5 fixed + 1 eliminated)"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/FnPreferenceTransaction.swift",
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlow/Services/HotkeyService.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/ci/strict-concurrency-warnings-baseline.txt",
+    "docs/development/evidence/JOE-2286/REPORT.md"
+   ],
+   "remaining_action": "Real-macOS preference-state verification across supported versions (before/after synthetic evidence) \u2014 human-gate runbook."
   },
   {
    "id": "JOE-2287",
@@ -1470,12 +1482,22 @@
     "JOE-2285"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (20 JOE-2287 checks: one pair from three sources, lost/duplicate/out-of-order safe, autorepeat/chord suppressed, lifecycle states, config reset, degraded no busy loop)",
+    "swift build: pass; swift-format lint 0; string scan OK; mkdocs --strict 0"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/HotkeyEdgeStream.swift",
+    "Sources/ZephyrFlow/Services/HotkeyService.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2287/REPORT.md"
+   ],
+   "remaining_action": "Real-macOS keyboard qualification + permission-revocation runbook retained for human gate."
   },
   {
    "id": "JOE-2288",

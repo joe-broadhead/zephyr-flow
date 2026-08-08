@@ -525,7 +525,7 @@ struct FloatingPanelView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(ZephyrTheme.warning)
                     .multilineTextAlignment(.center)
-                    .accessibilityLabel(AppStrings.format("panel.reviewTitle", reviewTitle ?? ""))
+                    .accessibilityLabel(AppStrings.format("panel.reviewTitle", reviewTitle))
             }
             if let reviewDetail {
                 Text(reviewDetail)

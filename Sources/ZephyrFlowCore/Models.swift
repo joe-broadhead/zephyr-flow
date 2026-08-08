@@ -354,6 +354,11 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
     public var modifiers: UInt
     public var displayName: String
     public var specialKey: SpecialHotkey?
+    /// JOE-2286: explicit experimental opt-in for the AppleFnUsageType
+    /// override. The production default path NEVER touches the system
+    /// preference; the override only begins after this opt-in AND
+    /// successful hotkey/tap preparation.
+    public var experimentalFnOverride: Bool
 
     public enum SpecialHotkey: String, Codable, Sendable {
         case fn
@@ -362,11 +367,15 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
         case rightControl
     }
 
-    public init(keyCode: UInt16?, modifiers: UInt, displayName: String, specialKey: SpecialHotkey?) {
+    public init(
+        keyCode: UInt16?, modifiers: UInt, displayName: String, specialKey: SpecialHotkey?,
+        experimentalFnOverride: Bool = false
+    ) {
         self.keyCode = keyCode
         self.modifiers = modifiers
         self.displayName = displayName
         self.specialKey = specialKey
+        self.experimentalFnOverride = experimentalFnOverride
     }
 
     /// Fn / Globe hold-to-talk (Wispr Flow style). Requires Accessibility.
