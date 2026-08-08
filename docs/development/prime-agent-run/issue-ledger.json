@@ -710,7 +710,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "49d1735"
    ],
    "aurum_commits": [],
    "tests": [
