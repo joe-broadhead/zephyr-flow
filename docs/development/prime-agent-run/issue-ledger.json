@@ -1054,12 +1054,26 @@
     "JOE-2275"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (paragraph preservation, non-English lexical preservation, ambiguous contractions intact, protected URL/email/version/quoted spans, English filler removal)",
+    "swift build: pass (language threaded through FlowRouter+Enhanced; precompiled regexes)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/FlowProcessor.swift",
+    "Sources/ZephyrFlowCore/FlowRouter.swift",
+    "Sources/ZephyrFlowCore/Protocols.swift",
+    "Sources/ZephyrFlow/Services/EnhancedFlowProcessor.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2277/REPORT.md"
+   ],
+   "remaining_action": "Differential golden-set review vs previous behavior + real-device non-English dictation (human-gate runbook)."
   },
   {
    "id": "JOE-2278",

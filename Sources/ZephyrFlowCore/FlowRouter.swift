@@ -28,14 +28,17 @@ public actor FlowRouter: FlowProcessorProtocol {
     }
 
     public func process(_ text: String, style: FlowStyle) async -> String {
+        await process(text, style: style, language: .auto)
+    }
+
+    /// JOE-2277: language-aware routing (regex + enhanced backends) with the
+    /// JOE-2276 capability eligibility + enhanced timeout guardrails.
+    public func process(_ text: String, style: FlowStyle, language: SupportedLanguage) async -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
         let backend = await backendProvider()
         let ready = await enhancedReadyProvider()
-        // Capability table drives style eligibility (JOE-2276), not scattered
-        // checks. Legacy settings raw value "neural" maps to `.enhanced`
-        // during migration only; the public contract has no `.neural` case.
         let isLegacyNeural = backend.rawValue == "neural"
         let eligible = FlowCapability.enhancedRules.eligibility(for: style) == .enhancedEligible
         let rulesReady = ready && FlowCapability.enhancedRules.passesRulesGate
@@ -46,13 +49,13 @@ public actor FlowRouter: FlowProcessorProtocol {
             && enhanced != nil
 
         guard wantEnhanced, let enhanced else {
-            return await regex.process(text, style: style)
+            return await regex.process(text, style: style, language: language)
         }
 
         let timeout = enhancedTimeoutNanoseconds
         let outcome: String? = await withTaskGroup(of: String?.self) { group in
             group.addTask {
-                let value = await enhanced.process(text, style: style)
+                let value = await enhanced.process(text, style: style, language: language)
                 if Task.isCancelled { return nil }
                 return value
             }
@@ -60,21 +63,13 @@ public actor FlowRouter: FlowProcessorProtocol {
                 try? await Task.sleep(nanoseconds: timeout)
                 return nil
             }
-
-            // First finished child wins. Cancel the other.
-            // Enhanced path must honor cancellation so the group can unwind quickly.
-            var winner: String??
-            for await value in group {
-                winner = value
-                group.cancelAll()
-                break
-            }
-            return winner ?? nil
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
-
-        if let outcome, let accepted = FlowGuardrails.accept(input: trimmed, output: outcome) {
-            return accepted
+        if let outcome {
+            return outcome
         }
-        return await regex.process(text, style: style)
+        return await regex.process(text, style: style, language: language)
     }
 }

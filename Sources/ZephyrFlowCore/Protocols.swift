@@ -53,6 +53,14 @@ public protocol FlowProcessorProtocol: Actor {
     func process(_ text: String, style: FlowStyle) async -> String
 }
 
+public extension FlowProcessorProtocol {
+    /// Language-aware entry (JOE-2277). Default implementation forwards with
+    /// `.auto`; conformers may override for language-sensitive rules.
+    func process(_ text: String, style: FlowStyle, language: SupportedLanguage) async -> String {
+        await process(text, style: style)
+    }
+}
+
 // MARK: - Audio Capture
 
 public protocol AudioCaptureProtocol: Actor {

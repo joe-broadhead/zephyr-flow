@@ -797,7 +797,7 @@ final class DictationController: ObservableObject {
             if !sessionAllowsAutomaticSideEffects {
                 _ = control.stage(.transformationFinished) // transforming -> resolvingTarget
                 _ = control.stage(.targetSecure)           // resolvingTarget -> secureTarget (terminal)
-                let conservative = await flow.process(final.text, style: .clean)
+                let conservative = await flow.process(final.text, style: .clean, language: settings.settings.language)
                 let reviewText = conservative.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !reviewText.isEmpty else {
                     showError("No speech detected — try again")
@@ -813,7 +813,7 @@ final class DictationController: ObservableObject {
 
             let style = activeFlowStyle
             let flowT0 = Date()
-            let processed = await flow.process(final.text, style: style)
+            let processed = await flow.process(final.text, style: style, language: settings.settings.language)
             let flowMs = Int(Date().timeIntervalSince(flowT0) * 1000)
             // Lengths only — never log transcript body
             ZFLog.info(

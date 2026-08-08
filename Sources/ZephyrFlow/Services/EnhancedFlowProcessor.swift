@@ -48,10 +48,10 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
 
     // MARK: - Enhanced local rewrites (on-device, deterministic)
 
-    private func enhancedProfessional(_ text: String) async -> String {
-        var base = await regex.process(text, style: .professional)
-        if Task.isCancelled { return base }
-        let extras: [(String, String)] = [
+    /// Precompiled English-only extras (JOE-2277: no per-call compilation;
+    /// applied only for qualified English locales).
+    private static let englishExtras: [(NSRegularExpression, String)] = {
+        let pairs: [(String, String)] = [
             (#"(?i)\bcircle back\b"#, "follow up"),
             (#"(?i)\bloop in\b"#, "include"),
             (#"(?i)\bsync up\b"#, "meet"),
@@ -60,9 +60,20 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
             (#"(?i)\bkinda\b"#, "somewhat"),
             (#"(?i)\blgtm\b"#, "looks good to me"),
         ]
-        for (pat, rep) in extras {
-            if Task.isCancelled { break }
-            if let regex = try? NSRegularExpression(pattern: pat) {
+        return pairs.compactMap { (pattern, rep) in
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+            return (regex, rep)
+        }
+    }()
+
+    private func enhancedProfessional(_ text: String, language: SupportedLanguage) async -> String {
+        var base = await regex.process(text, style: .professional, language: language)
+        if Task.isCancelled { return base }
+        // English heuristics only for qualified English locales.
+        let english = language.isAuto || (language.bcp47?.hasPrefix("en") ?? false)
+        if english {
+            for (regex, rep) in Self.englishExtras {
+                if Task.isCancelled { break }
                 let range = NSRange(base.startIndex..., in: base)
                 base = regex.stringByReplacingMatches(in: base, range: range, withTemplate: rep)
             }
@@ -71,7 +82,7 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
         return base.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func enhancedBullets(_ text: String) async -> String {
+    private func enhancedBullets(_ text: String, language: SupportedLanguage) async -> String {
         let cleaned = await regex.process(text, style: .clean)
         if Task.isCancelled { return await regex.process(text, style: .bullets) }
 
@@ -103,7 +114,7 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
         }.joined(separator: "\n")
     }
 
-    private func enhancedSummary(_ text: String) async -> String {
+    private func enhancedSummary(_ text: String, language: SupportedLanguage) async -> String {
         let cleaned = await regex.process(text, style: .clean)
         if Task.isCancelled { return await regex.process(text, style: .summary) }
 

@@ -1462,6 +1462,43 @@ struct CoreTests {
                     && SupportedLanguage.fromLegacy(SupportedLanguage.deDE.rawValue) == .deDE)
         }
 
+        // ===== JOE-2277: language-aware paragraph-preserving Flow =====
+        do {
+            // Paragraph breaks survive clean/professional.
+            let para = "First paragraph.\n\nSecond paragraph with more content."
+            let cleanedPara = await FlowProcessor.shared.process(para, style: .clean, language: .enUS)
+            check("2277 paragraph break preserved in clean", cleanedPara.contains("\n\n"))
+            // Non-English fixtures preserve lexical content (whitespace-only).
+            let de = await FlowProcessor.shared.process("Also gut, dass wir das besprochen haben und uns einigen konnten.", style: .clean, language: .deDE)
+            check("2277 non-English lexical content preserved", de.contains("besprochen"))
+            check("2277 non-English not mangled", de.lowercased().contains("einigen"))
+            // English filler removal still works for English.
+            let enFill = await FlowProcessor.shared.process("um hello there you know", style: .clean, language: .enUS)
+            check("2277 english filler removed", enFill.lowercased().contains("hello") && !enFill.lowercased().contains("um "))
+            // Non-English fillers are NOT removed (whitespace/punct-safe only).
+            let deFill = await FlowProcessor.shared.process("ähm das ist gut", style: .clean, language: .deDE)
+            check("2277 non-english filler preserved", deFill.lowercased().contains("ähm"))
+            // Ambiguous contractions are not forced to one meaning.
+            let ambiguous = await FlowProcessor.shared.process("I\'d say it\'s fine, that\'s it, there\'s more", style: .professional, language: .enUS)
+            check("2277 ambiguous contractions preserved",
+                  ambiguous.contains("I\'d") && ambiguous.contains("it\'s")
+                    && ambiguous.contains("that\'s") && ambiguous.contains("there\'s"))
+            // Unambiguous contractions still expand for English.
+            let unamb = await FlowProcessor.shared.process("I can\'t come, don\'t go", style: .professional, language: .enUS)
+            check("2277 unambiguous contraction expands",
+                  unamb.lowercased().contains("cannot") && unamb.lowercased().contains("do not"))
+            // Non-English gets no contraction expansion.
+            let deContr = await FlowProcessor.shared.process("ich kann\'t", style: .professional, language: .deDE)
+            check("2277 non-english contraction untouched", deContr.contains("kann\'t"))
+            // Protected technical spans remain byte/canonical equivalent.
+            let tech = await FlowProcessor.shared.process("visit https://example.com/x.y and mail a@b.co and version 1.2.3 is out", style: .professional, language: .enUS)
+            check("2277 url preserved", tech.contains("https://example.com/x.y"))
+            check("2277 email preserved", tech.contains("a@b.co"))
+            check("2277 version preserved", tech.contains("1.2.3"))
+            let quoted = await FlowProcessor.shared.process("He said \"don\'t go\" loudly", style: .professional, language: .enUS)
+            check("2277 quoted span protected", quoted.contains("\"don\'t go\""))
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
