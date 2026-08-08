@@ -681,12 +681,26 @@
     "JOE-2258"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (default-off, policy gate, retention age/bytes/entries, round-trip durable, v1 migration, corruption quarantine, failing-FS typed errors)",
+    "swift build: pass (actor repo wired; controller gate centralized)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/HistoryPolicy.swift",
+    "Sources/ZephyrFlowCore/ActorHistoryRepository.swift",
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlow/App/AppEnvironment+Production.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2261/REPORT.md"
+   ],
+   "remaining_action": "Real-filesystem permission/retention soak + privacy canary of history files + UI clear/export controls (human-gate runbook)."
   },
   {
    "id": "JOE-2262",

@@ -51,10 +51,10 @@ struct ZFLogMetricsSink: MetricsSinking {
     var current: AppSettings { SettingsStore.shared.settings }
 }
 
-/// History repository backed by HistoryStore.
+/// History repository backed by the actor repository (JOE-2261).
 struct HistoryStoreRepository: HistoryRepository {
     func add(_ entry: HistoryEntry) async {
-        await MainActor.run { HistoryStore.shared.add(entry) }
+        await ActorHistoryRepository.shared.add(entry)
     }
 }
 

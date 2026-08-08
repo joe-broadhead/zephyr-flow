@@ -483,7 +483,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         launchAtLogin: false,
         listeningMode: .holdToTalk,
         hasCompletedOnboarding: false,
-        saveHistory: true,
+        saveHistory: false,
         debugLogging: false,
         flowBackend: .regex,
         insertionMode: .automatic,

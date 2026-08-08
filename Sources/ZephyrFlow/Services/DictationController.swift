@@ -995,8 +995,8 @@ final class DictationController: ObservableObject {
                 // central outcome policy decides retention (never for
                 // unverified/uncertain outcomes), combined with sensitivity.
                 if settingsStore.settings.saveHistory,
-                   SensitiveSessionPolicy.historyWriteAllowed(sensitivity: validation.effectiveSensitivity),
-                   result.permitsHistoryRetention {
+                   HistoryStoragePolicy.allowsWrite(sensitivity: validation.effectiveSensitivity,
+                                                    outcome: result) {
                     await environment.history.add(
                         HistoryEntry(
                             originalText: final.text,

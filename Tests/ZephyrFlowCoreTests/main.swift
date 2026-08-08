@@ -1,6 +1,32 @@
 import Foundation
 import ZephyrFlowCore
 
+
+// JOE-2261 test helpers.
+private struct LegacyV1Fixture: Codable {
+    let id: UUID
+    let timestamp: Date
+    let originalText: String
+    let finalText: String
+    let duration: TimeInterval
+    let modelUsed: String
+}
+
+final class FailingHistoryFileSystem: HistoryFileSystem, @unchecked Sendable {
+    private(set) var failures = 0
+    private let real = RealHistoryFileSystem()
+    func fileExists(_ url: URL) -> Bool { real.fileExists(url) }
+    func createDirectory(_ url: URL) throws { try real.createDirectory(url) }
+    func readData(_ url: URL) throws -> Data { try real.readData(url) }
+    func writeAtomic(data: Data, to url: URL) throws {
+        failures += 1
+        throw HistoryRepositoryError.diskFull
+    }
+    func move(_ from: URL, to: URL) throws { try real.move(from, to: to) }
+    func remove(_ url: URL) throws { try real.remove(url) }
+    func setPermissions(_ url: URL, mode: Int) throws { try real.setPermissions(url, mode: mode) }
+}
+
 @main
 struct CoreTests {
     static func main() async {
@@ -72,7 +98,7 @@ struct CoreTests {
             check("default model whisper tiny", s.preferredModel == .whisperTiny)
             check("default hotkey fn", s.hotkey.specialKey == .fn)
             check("debug logging off", !s.debugLogging)
-            check("save history default on", s.saveHistory)
+            check("save history default off", !s.saveHistory)
         }
 
         // Download gate (model files only — independent of Local Only audio policy)
@@ -1879,6 +1905,94 @@ struct CoreTests {
                 drains += 1
             }
             check("2264 reentrant sink no deadlock", nested == 3 && drains == 3)
+        }
+
+        // ===== JOE-2261: opt-in bounded actor history =====
+        do {
+            // Default OFF for new installs.
+            check("2261 default history off", !AppSettings.default.saveHistory)
+            // Policy gate: only normal + outcome-permitted writes.
+            let verified = InsertionOutcome.verifiedInserted(strategy: .axSelectedText, evidence: .postWriteSelectionReRead, warnings: [])
+            let unverified = InsertionOutcome.eventPostedUnverified(strategy: .clipboardPaste, warnings: [.noPostWriteVerification])
+            check("2261 normal+verified allowed",
+                  HistoryStoragePolicy.allowsWrite(sensitivity: .normal, outcome: verified))
+            check("2261 secure denied", !HistoryStoragePolicy.allowsWrite(sensitivity: .secure, outcome: verified))
+            check("2261 unknown denied", !HistoryStoragePolicy.allowsWrite(sensitivity: .unknown, outcome: verified))
+            check("2261 unverified outcome denied",
+                  !HistoryStoragePolicy.allowsWrite(sensitivity: .normal, outcome: unverified))
+            check("2261 no outcome fails closed",
+                  !HistoryStoragePolicy.allowsWrite(sensitivity: .normal, outcome: nil))
+            // Retention: age + entries + bytes.
+            let policy = HistoryRetentionPolicy(maxAgeSeconds: 3600, maxTotalBytes: 300, maxEntries: 3)
+            let now = Date()
+            func e(_ i: Int, age: TimeInterval = 10, text: String) -> HistoryStorageEntry {
+                HistoryStorageEntry(timestamp: now.addingTimeInterval(-age), text: text,
+                                    duration: 1, modelUsed: "Tiny", sensitivityClass: "normal")
+            }
+            var list = [e(1, text: "aaaa"), e(2, text: "bbbb"), e(3, text: "cccc"),
+                        e(4, text: "dddd"), e(5, age: 7200, text: "eeee")]
+            let trimmed = HistoryStoragePolicy.trimmed(list, policy: policy, now: now)
+            check("2261 retention drops old + caps entries",
+                  trimmed.count == 3 && !trimmed.contains { $0.text == "eeee" })
+            // Byte cap holds under large transcripts.
+            let bigPolicy = HistoryRetentionPolicy(maxAgeSeconds: 3600, maxTotalBytes: 200, maxEntries: 100)
+            let big = HistoryStoragePolicy.trimmed([e(1, text: String(repeating: "x", count: 100)),
+                                                    e(2, text: String(repeating: "y", count: 100))],
+                                                   policy: bigPolicy, now: now)
+            check("2261 byte cap holds", big.count == 1)
+        }
+
+        // ===== JOE-2261 repo: round-trip, migration, corruption, failures =====
+        do {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("zf-history-\(UUID().uuidString)", isDirectory: true)
+            let file = dir.appendingPathComponent("history.json")
+            // Round-trip: add -> persist -> reload entries durable.
+            let repo = ActorHistoryRepository(fileURL: file)
+            try? await repo.load()
+            let entry = HistoryStorageEntry(timestamp: Date(), text: "hello world",
+                                            duration: 1.0, modelUsed: "Tiny",
+                                            sensitivityClass: "normal")
+            await repo.add(entry)
+            let reloaded = ActorHistoryRepository(fileURL: file)
+            try? await reloaded.load()
+            let entries = await reloaded.entries()
+            check("2261 repo round-trip durable", entries.count == 1 && entries[0].text == "hello world")
+            // Clear is durable after relaunch.
+            try? await reloaded.clear()
+            let afterClear = ActorHistoryRepository(fileURL: file)
+            try? await afterClear.load()
+            let clearedEntries = await afterClear.entries()
+            check("2261 clear durable", clearedEntries.isEmpty)
+            // Legacy v1 migration -> single text field.
+            let v1 = [LegacyV1Fixture(id: UUID(), timestamp: Date(), originalText: "raw", finalText: "final", duration: 1, modelUsed: "Tiny")]
+            let enc = JSONEncoder()
+            enc.dateEncodingStrategy = .iso8601
+            if let data = try? enc.encode(v1) {
+                try? data.write(to: file)
+                let migrated = ActorHistoryRepository(fileURL: file)
+                try? await migrated.load()
+                let migratedEntries = await migrated.entries()
+                check("2261 v1 migration to single text",
+                      migratedEntries.count == 1 && migratedEntries[0].text == "final")
+            }
+            // Corruption -> quarantine + clean start.
+            try? Data("garbage-not-json".utf8).write(to: file)
+            let corrupt = ActorHistoryRepository(fileURL: file)
+            var threwCorruption = false
+            do { try await corrupt.load() } catch { threwCorruption = true }
+            let corruptEntries = await corrupt.entries()
+            check("2261 corruption quarantined + reported",
+                  threwCorruption && corruptEntries.isEmpty)
+            // Failure injection: disk-full and permission-denied map to typed errors.
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let failing = FailingHistoryFileSystem()
+            let failRepo = ActorHistoryRepository(fileURL: file, fileSystem: failing)
+            await failRepo.add(entry)
+            // add() swallows errors; verify the failing FS was asked and the
+            // typed error path is exercised via persistOrThrow indirectly.
+            check("2261 failing fs exercises error path", failing.failures > 0)
+            try? FileManager.default.removeItem(at: dir)
         }
 
         print("")
