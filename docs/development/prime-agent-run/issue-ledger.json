@@ -264,11 +264,20 @@
     "JOE-2242"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "100398b"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass incl session-control block (release-during-load, stale-callback, idempotent edges, 10k randomized edges)",
+    "swift build: pass (app + WhisperKit deps)"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/SessionControl.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "docs/development/evidence/JOE-2246/REPORT.md"
+   ],
    "remaining_action": ""
   },
   {
@@ -479,11 +488,19 @@
     "JOE-2241"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "05cbd16"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (3x9 policy matrix, fail-closed unknown, upgrade-to-secure, explicit-copy audit)"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/SensitivityPolicy.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/contracts/sensitivity-policy.md"
+   ],
    "remaining_action": ""
   },
   {
@@ -822,11 +839,24 @@
     "JOE-2275"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (capability fixtures, style eligibility, no-masquerade gate, legacy migration, honest case labels)",
+    "swift build: pass",
+    "mkdocs build --strict: pass",
+    "Repo audit: no NeuralFlowProcessor/neuralReady/neuralMinimumRAMBytes/FlowBackend.neural references remaining"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/FlowCapabilities.swift",
+    "Sources/ZephyrFlowCore/FlowRouter.swift",
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlow/Services/EnhancedFlowProcessor.swift",
+    "docs/development/contracts/flow-capabilities.md"
+   ],
    "remaining_action": ""
   },
   {

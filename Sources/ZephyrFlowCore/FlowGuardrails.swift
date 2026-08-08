@@ -1,6 +1,6 @@
 import Foundation
 
-/// Production mirror of eval number/fact gates for neural Flow output.
+/// Production mirror of eval number/fact gates for enhanced Flow output.
 public enum FlowGuardrails: Sendable {
     private static let numberPattern = try! NSRegularExpression(
         pattern: #"\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\b"#

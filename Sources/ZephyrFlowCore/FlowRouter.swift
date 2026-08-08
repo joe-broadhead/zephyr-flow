@@ -9,7 +9,6 @@ public actor FlowRouter: FlowProcessorProtocol {
     private var backendProvider: @Sendable () async -> FlowBackend = { .regex }
     private var enhancedReadyProvider: @Sendable () async -> Bool = { false }
 
-    public static let enhancedEligible: Set<FlowStyle> = [.professional, .summary, .bullets]
 
     /// Soft deadline for enhanced rewrite (protects sessionChain).
     public var enhancedTimeoutNanoseconds: UInt64 = 1_000_000_000
@@ -28,27 +27,22 @@ public actor FlowRouter: FlowProcessorProtocol {
         self.enhanced = enhanced
     }
 
-    /// App wiring alias (historical name).
-    public func configure(
-        backend: @escaping @Sendable () async -> FlowBackend,
-        neuralReady: @escaping @Sendable () async -> Bool,
-        neural: (any FlowProcessorProtocol)?
-    ) {
-        configure(backend: backend, enhancedReady: neuralReady, enhanced: neural)
-    }
-
     public func process(_ text: String, style: FlowStyle) async -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
         let backend = await backendProvider()
         let ready = await enhancedReadyProvider()
-        let eligible = Self.enhancedEligible.contains(style)
-        // Accept legacy `.neural` raw value as enhanced.
+        // Capability table drives style eligibility (JOE-2276), not scattered
+        // checks. Legacy settings raw value "neural" maps to `.enhanced`
+        // during migration only; the public contract has no `.neural` case.
+        let isLegacyNeural = backend.rawValue == "neural"
+        let eligible = FlowCapability.enhancedRules.eligibility(for: style) == .enhancedEligible
+        let rulesReady = ready && FlowCapability.enhancedRules.passesRulesGate
         let wantEnhanced =
             eligible
-            && ready
-            && (backend == .enhanced || backend == .auto || backend == .neural)
+            && rulesReady
+            && (backend == .enhanced || backend == .auto || isLegacyNeural)
             && enhanced != nil
 
         guard wantEnhanced, let enhanced else {

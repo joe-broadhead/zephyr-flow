@@ -58,13 +58,13 @@ final class DictationController: ObservableObject {
                 enhancedReady: {
                     await MainActor.run {
                         let s = SettingsStore.shared.settings
-                        // Enhanced path is lightweight rules — available whenever selected.
-                        return s.flowBackend == .enhanced || s.flowBackend == .auto || s.flowBackend == .neural
+                        // Enhanced path is lightweight deterministic rules — ready whenever selected.
+                        return s.flowBackend == .enhanced || s.flowBackend == .auto || s.flowBackend.rawValue == "neural"
                     }
                 },
-                enhanced: NeuralFlowProcessor.shared
+                enhanced: EnhancedFlowProcessor.shared
             )
-            await NeuralFlowProcessor.shared.refreshAvailability()
+            await EnhancedFlowProcessor.shared.refreshAvailability()
         }
     }
 
@@ -440,7 +440,7 @@ final class DictationController: ObservableObject {
                 return
             }
 
-            // Stale session check after flow (may have taken up to neural timeout)
+            // Stale session check after flow (may have taken up to the enhanced timeout)
             guard sessionGeneration == generation, control.isCurrent(sid) else {
                 ZFLog.info("endSession discarded after flow — stale generation")
                 return

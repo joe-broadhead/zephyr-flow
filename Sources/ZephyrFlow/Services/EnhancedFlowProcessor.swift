@@ -6,20 +6,22 @@ import ZephyrFlowCore
 /// Routed only for Professional / Bullets / Summary via `FlowRouter`.
 /// Clean / Raw never use this path. No network. No model weights.
 /// Honors `Task` cancellation so router timeouts can unwind.
-actor NeuralFlowProcessor: FlowProcessorProtocol {
-    static let shared = NeuralFlowProcessor()
+actor EnhancedFlowProcessor: FlowProcessorProtocol {
+    static let shared = EnhancedFlowProcessor()
 
-    private(set) var isReady = false
+    /// Deterministic rules backend: no model weights, no RAM gate.
+    /// Measured envelope is tiny (< 32 MB); Auto selection is never blocked
+    /// by memory for this path (JOE-2276).
+    private(set) var isReady = true
     private let regex = FlowProcessor.shared
 
-    var meetsRAMGate: Bool {
-        // Light CPU work only — no large model. Gate kept modest so Auto isn't blocked
-        // on small machines for a rules path.
-        ProcessInfo.processInfo.physicalMemory >= 4 * 1024 * 1024 * 1024
-    }
+    /// Honest capability contract (JOE-2276). Future model/LLM backends
+    /// declare a different capability and need an evidence gate.
+    static let capability = FlowCapability.enhancedRules
 
+    /// Kept for router wiring compatibility; the rules engine is always ready.
     func refreshAvailability() {
-        isReady = meetsRAMGate
+        isReady = true
     }
 
     func process(_ text: String, style: FlowStyle) async -> String {

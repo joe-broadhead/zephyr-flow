@@ -145,8 +145,6 @@ public enum FlowBackend: String, Codable, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// Legacy alias — same as `.enhanced`.
-    public static var neural: FlowBackend { .enhanced }
 }
 
 // MARK: - Insertion mode / strategy
@@ -326,13 +324,6 @@ public struct AppSettings: Codable, Equatable, Sendable {
         panelOriginY: nil,
         panelPositionLocked: false
     )
-
-    /// Neural Flow needs ~16 GB to coexist with Whisper comfortably.
-    public static let neuralMinimumRAMBytes: UInt64 = 16 * 1024 * 1024 * 1024
-
-    public var neuralRAMSatisfied: Bool {
-        ProcessInfo.processInfo.physicalMemory >= Self.neuralMinimumRAMBytes
-    }
 
     /// Model file fetch only — never implies uploading user audio.
     public var mayDownloadModels: Bool {

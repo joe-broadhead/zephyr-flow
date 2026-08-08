@@ -439,6 +439,46 @@ struct CoreTests {
             check("audit record content-free", audit.sensitivity == .secure && audit.timestampMillis == 0)
         }
 
+        // ===== JOE-2276: flow capability contract + honest naming =====
+        do {
+            let cap = FlowCapability.enhancedRules
+            check("capability id is the canonical rules id", cap.id == FlowCapability.rulesCapabilityId)
+            check("rules backend has no network", cap.networkUse == .none)
+            check("rules backend has no weights", !cap.requiresModelWeights)
+            check("deterministic rules pass the gate", cap.passesRulesGate)
+            check("capability version declared", cap.version == "1.0")
+            check("enhanced styles via capability", cap.eligibility(for: .professional) == .enhancedEligible
+                  && cap.eligibility(for: .bullets) == .enhancedEligible
+                  && cap.eligibility(for: .summary) == .enhancedEligible)
+            check("clean/raw stay deterministic passthrough", cap.eligibility(for: .clean) == .passthroughOnly
+                  && cap.eligibility(for: .raw) == .passthroughOnly)
+            check("loss classes preserved", cap.lossClasses == Set(FlowLossClass.allCases))
+        }
+        do {
+            // a future semantic backend cannot masquerade as rules
+            let fakeSemantic = FlowCapability(
+                id: "io.zephyr-flow.flow.semantic.llm.v1",
+                version: "0.1",
+                networkUse: .onDeviceDownloadsOnly,
+                requiresModelWeights: true,
+                isDeterministic: false,
+                styles: [.clean, .professional, .bullets, .summary, .raw],
+                enhancedStyles: [.professional, .bullets, .summary],
+                lossClasses: Set(FlowLossClass.allCases),
+                languages: ["en"],
+                cancellation: .cooperative,
+                resourceRequirement: .required(megabytes: 4096),
+                entryGate: .semanticModelRequiresEvidence)
+            check("semantic backend fails rules gate", !fakeSemantic.passesRulesGate && !fakeSemantic.isRulesCompatible)
+            check("semantic backend requires evidence gate", fakeSemantic.entryGate == FlowBackendEntryGate.semanticModelRequiresEvidence)
+        }
+        do {
+            // legacy settings value "neural" migrates to .enhanced; no public case
+            check("legacy raw value decodes to enhanced", FlowBackend(rawValue: "neural") == .enhanced)
+            // no enum CASE named .neural exists (compile-time); labels stay honest
+            check("case labels are honest", FlowBackend.allCases.map { String(describing: $0) }.sorted() == ["auto", "enhanced", "regex"])
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
