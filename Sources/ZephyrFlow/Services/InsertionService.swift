@@ -20,7 +20,8 @@ actor InsertionService: InsertionServiceProtocol {
         mode: InsertionMode = .automatic,
         targetBundleID: String? = nil,
         sensitivity: SessionSensitivity = .normal,
-        sessionID: SessionID? = nil
+        sessionID: SessionID? = nil,
+        copyOnlyOverrides: Set<String> = []
     ) async -> InsertionOutcome {
         guard !text.isEmpty else { return .failed("Empty text") }
         // JOE-2259: domain rejection of automatic insertion for secure/unknown
@@ -44,11 +45,14 @@ actor InsertionService: InsertionServiceProtocol {
             return .explicitlyCopiedByUser
         }
 
+        let adapter = InsertionStrategyResolver.adapter(forBundle: bundle, role: role)
         var strategies = InsertionStrategyResolver.strategies(
             bundleID: bundle,
             role: role,
-            mode: mode
+            mode: mode,
+            copyOnlyOverrides: copyOnlyOverrides
         )
+        ZFLog.info("adapter id=\(adapter.id) version=\(InsertionAdapterRegistry.current.version) strategies=\(strategies.map { $0.rawValue }.joined(separator: ","))")
         // Honor preferPaste=false by trying AX before paste when automatic.
         // Keep copyOnly strictly last so paste remains a fallback.
         if mode == .automatic, !preferPaste {
@@ -68,8 +72,7 @@ actor InsertionService: InsertionServiceProtocol {
                 return .explicitlyCopiedByUser
 
             case .clipboardPaste, .terminalPaste:
-                let settle: UInt64 = InsertionStrategyResolver.isTerminal(bundle ?? "")
-                    ? 40_000_000 : 16_000_000
+                let settle = adapter.settleNanos
                 try? await Task.sleep(nanoseconds: settle)
                 let paste = await pasteViaClipboard(text, sessionID: sessionID, sensitivity: sensitivity)
                 switch paste {

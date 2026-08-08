@@ -1,11 +1,14 @@
 import Foundation
 
-/// Pure bundle-ID → strategy order. Unit-tested; no AppKit.
+/// Pure bundle-ID → strategy order, backed by the evidence adapter registry
+/// (JOE-2271). No `contains("chrome")` guesses: unknown apps get the
+/// conservative default. Unit-tested; no AppKit.
 public enum InsertionStrategyResolver: Sendable {
     public static func strategies(
         bundleID: String?,
         role: String?,
-        mode: InsertionMode
+        mode: InsertionMode,
+        copyOnlyOverrides: Set<String> = []
     ) -> [InsertionStrategy] {
         if isSecureRole(role) {
             return [.copyOnly]
@@ -20,20 +23,21 @@ public enum InsertionStrategyResolver: Sendable {
             break
         }
 
-        let id = bundleID ?? ""
-
-        if isTerminal(id) {
-            return [.terminalPaste, .clipboardPaste, .copyOnly]
-        }
-        if isEditorIDE(id) {
-            return [.clipboardPaste, .axSelectedText, .axValue, .copyOnly]
-        }
-        if isElectronOrBrowser(id) {
-            return [.clipboardPaste, .axSelectedText, .axValue, .copyOnly]
+        // Local user override: copy-only for problematic apps.
+        if let bundleID, copyOnlyOverrides.contains(bundleID) {
+            return [.copyOnly]
         }
 
-        // Default: paste first (after focus restore), then AX, then copy
-        return [.clipboardPaste, .axSelectedText, .axValue, .copyOnly]
+        // Evidence-backed adapter registry (exact bundle identity).
+        let adapter = InsertionAdapterRegistry.current.adapter(
+            forBundle: bundleID, role: role, appVersion: nil, macOSVersion: nil)
+        return adapter.strategies
+    }
+
+    /// Resolve the adapter for a bundle (content-free identity for UI/logs).
+    public static func adapter(forBundle bundleID: String?, role: String?) -> InsertionAdapter {
+        InsertionAdapterRegistry.current.adapter(
+            forBundle: bundleID, role: role, appVersion: nil, macOSVersion: nil)
     }
 
     public static func isSecureRole(_ role: String?) -> Bool {

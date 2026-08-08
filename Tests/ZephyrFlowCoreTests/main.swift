@@ -972,6 +972,114 @@ struct CoreTests {
                     && PasteboardTransactionPolicy.allowed(sensitivity: .normal))
         }
 
+        // ===== JOE-2271: evidence-backed insertion adapter registry =====
+        do {
+            let reg = InsertionAdapterRegistry.current
+            check("2271 registry has no duplicate/overlapping entries", !reg.hasOverlaps)
+            check("2271 registry versioned", reg.version >= 1)
+
+            // Exact bundle identity matching (no guesses).
+            check("2271 chrome exact => browser adapter",
+                  reg.adapter(forBundle: "com.google.Chrome", role: "AXTextField",
+                              appVersion: nil, macOSVersion: nil).id == "browser.v1")
+            check("2271 safari exact => browser adapter",
+                  reg.adapter(forBundle: "com.apple.Safari", role: "AXTextArea",
+                              appVersion: nil, macOSVersion: nil).id == "browser.v1")
+            check("2271 terminal exact => terminal adapter",
+                  reg.adapter(forBundle: "com.apple.Terminal", role: "AXTextArea",
+                              appVersion: nil, macOSVersion: nil).id == "terminal.v1")
+            check("2271 vscode exact => editor adapter",
+                  reg.adapter(forBundle: "com.microsoft.VSCode", role: "AXTextField",
+                              appVersion: nil, macOSVersion: nil).id == "editor.v1")
+            check("2271 slack exact => electron-shell adapter",
+                  reg.adapter(forBundle: "com.tinyspeck.slackmacgap", role: nil,
+                              appVersion: nil, macOSVersion: nil).id == "electron-shell.v1")
+
+            // Unknown apps use the conservative default.
+            check("2271 unknown bundle => conservative default",
+                  reg.adapter(forBundle: "com.example.random", role: "AXTextField",
+                              appVersion: nil, macOSVersion: nil).id == "default.v1")
+            // Regression: a chrome-LIKE (but not exact) bundle no longer matches.
+            check("2271 chrome-like guess removed",
+                  reg.adapter(forBundle: "com.evil.chromeish.app", role: "AXTextField",
+                              appVersion: nil, macOSVersion: nil).id == "default.v1")
+            check("2271 nil bundle => conservative default",
+                  reg.adapter(forBundle: nil, role: nil, appVersion: nil, macOSVersion: nil).id == "default.v1")
+
+            // Conservative default: no whole-value mutation, paste unverified.
+            let def = InsertionAdapter.conservativeDefault
+            check("2271 default has no axValue", !def.strategies.contains(.axValue))
+            check("2271 default distinguishes unverified paste",
+                  def.verification == .none && def.strategies.contains(.clipboardPaste))
+            check("2271 default explicit copy last", def.strategies.last == .copyOnly)
+
+            // Strategy ordering + cascade semantics.
+            let editor = reg.adapter(forBundle: "com.apple.dt.Xcode", role: nil,
+                                     appVersion: nil, macOSVersion: nil)
+            check("2271 editor strategy order",
+                  editor.strategies == [.clipboardPaste, .axSelectedText, .axValue, .copyOnly])
+            check("2271 cascade to next permitted",
+                  editor.nextStrategy(after: .clipboardPaste) == .axSelectedText
+                    && editor.nextStrategy(after: .axValue) == .copyOnly)
+            // A cascade-disallowed adapter stops after first failure.
+            let strict = InsertionAdapter(id: "strict.v1", bundleIDs: ["com.strict.app"],
+                                          roles: nil, appVersionRange: nil, macOSMin: nil,
+                                          strategies: [.clipboardPaste, .copyOnly],
+                                          settleNanos: 16_000_000, verification: .none,
+                                          limitations: [], evidenceReference: "e1",
+                                          allowsStrategyCascade: false)
+            check("2271 cascade-disallowed stops after failure",
+                  strict.nextStrategy(after: .clipboardPaste) == nil)
+
+            // Role filter matching.
+            let roleFiltered = InsertionAdapter(id: "role.v1", bundleIDs: ["com.role.app"],
+                                                roles: ["AXTextField"], appVersionRange: nil,
+                                                macOSMin: nil, strategies: [.copyOnly],
+                                                settleNanos: 0, verification: .none,
+                                                limitations: [], evidenceReference: "e2",
+                                                allowsStrategyCascade: false)
+            check("2271 role filter match",
+                  roleFiltered.matches(bundleID: "com.role.app", role: "AXTextField",
+                                       appVersion: nil, macOSVersion: nil))
+            check("2271 role filter reject",
+                  !roleFiltered.matches(bundleID: "com.role.app", role: "AXTextArea",
+                                        appVersion: nil, macOSVersion: nil))
+
+            // App-version + macOS range matching.
+            let versioned = InsertionAdapter(id: "ver.v1", bundleIDs: ["com.ver.app"],
+                                             roles: nil, appVersionRange: "1.0"..."2.5",
+                                             macOSMin: "14.0", strategies: [.copyOnly],
+                                             settleNanos: 0, verification: .none,
+                                             limitations: [], evidenceReference: "e3",
+                                             allowsStrategyCascade: false)
+            check("2271 version in range matches",
+                  versioned.matches(bundleID: "com.ver.app", role: nil, appVersion: "2.0",
+                                    macOSVersion: "15.0"))
+            check("2271 version out of range rejects",
+                  !versioned.matches(bundleID: "com.ver.app", role: nil, appVersion: "3.0",
+                                     macOSVersion: "15.0"))
+            check("2271 macOS below minimum rejects",
+                  !versioned.matches(bundleID: "com.ver.app", role: nil, appVersion: "2.0",
+                                     macOSVersion: "13.5"))
+
+            // Resolver uses registry + copy-only overrides (no AppKit).
+            check("2271 resolver default strategies",
+                  InsertionStrategyResolver.strategies(bundleID: "com.google.Chrome", role: "AXTextField", mode: .automatic)
+                    == [.clipboardPaste, .axSelectedText, .copyOnly])
+            check("2271 resolver editor includes axValue",
+                  InsertionStrategyResolver.strategies(bundleID: "com.microsoft.VSCode", role: "AXTextField", mode: .automatic)
+                    == [.clipboardPaste, .axSelectedText, .axValue, .copyOnly])
+            check("2271 resolver unknown => default",
+                  InsertionStrategyResolver.strategies(bundleID: "com.example.x", role: "AXTextField", mode: .automatic)
+                    == [.clipboardPaste, .axSelectedText, .copyOnly])
+            check("2271 local copy-only override",
+                  InsertionStrategyResolver.strategies(bundleID: "com.google.Chrome", role: "AXTextField",
+                                                       mode: .automatic,
+                                                       copyOnlyOverrides: ["com.google.Chrome"]) == [.copyOnly])
+            check("2271 alwaysCopy mode",
+                  InsertionStrategyResolver.strategies(bundleID: "com.google.Chrome", role: "AXTextField", mode: .alwaysCopy) == [.copyOnly])
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

@@ -41,6 +41,8 @@ struct SettingsView: View {
         }
     }
 
+    @State private var copyOnlyOverridesText = ""
+
     var body: some View {
         NavigationSplitView {
             List(Tab.allCases, selection: $selectedTab) { tab in
@@ -69,6 +71,7 @@ struct SettingsView: View {
         .onAppear {
             privacy.refresh()
             NSApp.appearance = NSAppearance(named: .darkAqua)
+            copyOnlyOverridesText = settings.settings.copyOnlyOverrideBundleIDs.joined(separator: ", ")
         }
     }
 

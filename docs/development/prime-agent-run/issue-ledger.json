@@ -814,12 +814,28 @@
     "JOE-2270"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (registry hygiene/version, exact bundle matching, guess-regression, default no-axValue, cascade, role/version/macOS ranges, copy-only override)",
+    "swift build: pass (registry-backed resolver + local override setting + adapter logging)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/InsertionAdapter.swift",
+    "Sources/ZephyrFlowCore/InsertionStrategyResolver.swift",
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlow/Services/InsertionService.swift",
+    "Sources/ZephyrFlow/Services/SettingsStore.swift",
+    "Sources/ZephyrFlow/UI/Settings/SettingsView.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/contracts/insertion-adapter-registry.md",
+    "docs/development/evidence/JOE-2271/REPORT.md"
+   ],
+   "remaining_action": "Real-app evidence matrix for adapter qualification records (manual human-gate item; runbook in adapter doc)."
   },
   {
    "id": "JOE-2272",

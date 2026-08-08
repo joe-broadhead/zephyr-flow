@@ -269,6 +269,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var panelOriginY: Double?
     /// User dragged the panel; honor saved origin until reset.
     public var panelPositionLocked: Bool
+    /// Local user override: exact bundle IDs that must be copy-only
+    /// (JOE-2271). No remote configuration; never telemetry.
+    public var copyOnlyOverrideBundleIDs: [String]
 
     public init(
         hotkey: HotkeyConfig,
@@ -286,7 +289,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         insertionMode: InsertionMode = .automatic,
         panelOriginX: Double? = nil,
         panelOriginY: Double? = nil,
-        panelPositionLocked: Bool = false
+        panelPositionLocked: Bool = false,
+        copyOnlyOverrideBundleIDs: [String] = []
     ) {
         self.hotkey = hotkey
         self.preferredModel = preferredModel
@@ -304,6 +308,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.panelOriginX = panelOriginX
         self.panelOriginY = panelOriginY
         self.panelPositionLocked = panelPositionLocked
+        self.copyOnlyOverrideBundleIDs = copyOnlyOverrideBundleIDs
     }
 
     public static let `default` = AppSettings(
@@ -322,7 +327,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         insertionMode: .automatic,
         panelOriginX: nil,
         panelOriginY: nil,
-        panelPositionLocked: false
+        panelPositionLocked: false,
+        copyOnlyOverrideBundleIDs: []
     )
 
     /// Model file fetch only — never implies uploading user audio.

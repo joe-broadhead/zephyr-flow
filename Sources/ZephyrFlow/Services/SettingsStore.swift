@@ -43,6 +43,7 @@ final class SettingsStore: ObservableObject {
         if obj["flowBackend"] == nil { obj["flowBackend"] = defaults.flowBackend.rawValue }
         if obj["insertionMode"] == nil { obj["insertionMode"] = defaults.insertionMode.rawValue }
         if obj["panelPositionLocked"] == nil { obj["panelPositionLocked"] = defaults.panelPositionLocked }
+        if obj["copyOnlyOverrideBundleIDs"] == nil { obj["copyOnlyOverrideBundleIDs"] = defaults.copyOnlyOverrideBundleIDs }
         // Drop legacy no-op key if present
         obj.removeValue(forKey: "playSounds")
         guard let fixed = try? JSONSerialization.data(withJSONObject: obj),
