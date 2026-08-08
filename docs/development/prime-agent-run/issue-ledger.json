@@ -1088,7 +1088,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "c2de508"
    ],
    "aurum_commits": [],
    "tests": [
