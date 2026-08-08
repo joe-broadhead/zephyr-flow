@@ -8,7 +8,7 @@
    "id": "JOE-2232",
    "title": "[EPIC] Production contracts, architecture and execution governance",
    "parent": "",
-   "milestone": "M0 — Product Contracts & Release Freeze",
+   "milestone": "M0 \u2014 Product Contracts & Release Freeze",
    "classification": "parent_epic",
    "dependencies": [],
    "status": "Todo",
@@ -23,7 +23,7 @@
    "id": "JOE-2233",
    "title": "[EPIC] Lossless session, audio and transcription correctness",
    "parent": "",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "parent_epic",
    "dependencies": [],
    "status": "Todo",
@@ -38,7 +38,7 @@
    "id": "JOE-2234",
    "title": "[EPIC] Sensitive-data confinement, persistence and observability",
    "parent": "",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "parent_epic",
    "dependencies": [],
    "status": "Todo",
@@ -53,7 +53,7 @@
    "id": "JOE-2235",
    "title": "[EPIC] Transactional target resolution and insertion reliability",
    "parent": "",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "parent_epic",
    "dependencies": [],
    "status": "Todo",
@@ -68,7 +68,7 @@
    "id": "JOE-2236",
    "title": "[EPIC] Flow fidelity, protected meaning and language correctness",
    "parent": "",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "parent_epic",
    "dependencies": [],
    "status": "Todo",
@@ -83,7 +83,7 @@
    "id": "JOE-2237",
    "title": "[EPIC] Capability-aware UX, hotkeys and accessibility",
    "parent": "",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "parent_epic",
    "dependencies": [],
    "status": "Todo",
@@ -98,7 +98,7 @@
    "id": "JOE-2238",
    "title": "[EPIC] Quality proof, trusted distribution and production acceptance",
    "parent": "",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "parent_epic",
    "dependencies": [],
    "status": "Todo",
@@ -113,7 +113,7 @@
    "id": "JOE-2239",
    "title": "[EPIC] Aurum helper reuse and optional engine qualification",
    "parent": "",
-   "milestone": "M6 — Optional Aurum Helper & Engine Qualification",
+   "milestone": "M6 \u2014 Optional Aurum Helper & Engine Qualification",
    "classification": "parent_epic",
    "dependencies": [],
    "status": "Todo",
@@ -128,56 +128,78 @@
    "id": "JOE-2240",
    "title": "Spec: freeze product invariants and terminal outcome taxonomy",
    "parent": "JOE-2232",
-   "milestone": "M0 — Product Contracts & Release Freeze",
+   "milestone": "M0 \u2014 Product Contracts & Release Freeze",
    "classification": "autonomous_specification",
    "dependencies": [],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "77d1214"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
+   "tests": [
+    "swift run ZephyrFlowCoreTests: outcome policy exhaustive + terminal gate exactly-once (pass)",
+    "swift test build: pass"
+   ],
+   "evidence": [
+    "docs/development/contracts/product-invariants.md",
+    "Sources/ZephyrFlowCore/SessionOutcome.swift"
+   ],
    "remaining_action": ""
   },
   {
    "id": "JOE-2241",
    "title": "Security: threat model, sensitivity classification and data-flow inventory",
    "parent": "JOE-2232",
-   "milestone": "M0 — Product Contracts & Release Freeze",
+   "milestone": "M0 \u2014 Product Contracts & Release Freeze",
    "classification": "autonomous_specification",
    "dependencies": [
     "JOE-2240"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "ee76172"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
+   "tests": [
+    "sensitivity fail-closed tests (CLT pass)"
+   ],
+   "evidence": [
+    "docs/development/contracts/threat-model.md",
+    "Sources/ZephyrFlowCore/SessionSensitivity.swift"
+   ],
    "remaining_action": ""
   },
   {
    "id": "JOE-2242",
    "title": "ADR: per-session state machine, cancellation, deadline and generation contract",
    "parent": "JOE-2232",
-   "milestone": "M0 — Product Contracts & Release Freeze",
+   "milestone": "M0 \u2014 Product Contracts & Release Freeze",
    "classification": "autonomous_specification",
    "dependencies": [
     "JOE-2240"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "1c552d9"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
+   "tests": [
+    "transition-table tests: happy path, absorption, progressability (CLI pass)"
+   ],
+   "evidence": [
+    "docs/development/adr/0001-per-session-state-machine.md",
+    "Sources/ZephyrFlowCore/SessionState.swift"
+   ],
    "remaining_action": ""
   },
   {
    "id": "JOE-2243",
    "title": "Architecture: introduce AppEnvironment and dependency-injected subsystem boundaries",
    "parent": "JOE-2232",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2241",
@@ -195,7 +217,7 @@
    "id": "JOE-2244",
    "title": "Architecture: split UI coordination from a per-session pipeline actor",
    "parent": "JOE-2232",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2242",
@@ -213,25 +235,30 @@
    "id": "JOE-2245",
    "title": "Spec: supported platform/app matrix, release channels and evidence registry",
    "parent": "JOE-2232",
-   "milestone": "M0 — Product Contracts & Release Freeze",
+   "milestone": "M0 \u2014 Product Contracts & Release Freeze",
    "classification": "human_decision_gate",
    "dependencies": [
     "JOE-2240",
     "JOE-2241"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "ready_for_human_gate",
+   "commits": [
+    "bcb1310"
+   ],
    "aurum_commits": [],
    "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "evidence": [
+    "docs/development/contracts/supported-platform-matrix.md",
+    "docs/development/evidence/evidence-registry.json"
+   ],
+   "remaining_action": "Human approval of the initial production boundary (macOS 14+, arm64, app matrix, channel split). Spec and machine-readable registry are prepared and retained."
   },
   {
    "id": "JOE-2246",
    "title": "Implement immutable SessionID and an independently preemptible control plane",
    "parent": "JOE-2233",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2242"
@@ -248,7 +275,7 @@
    "id": "JOE-2247",
    "title": "Implement a bounded ordered audio channel with sequence and sample offsets",
    "parent": "JOE-2233",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2246"
@@ -265,7 +292,7 @@
    "id": "JOE-2248",
    "title": "Implement audio stop/drain barrier and frame-accounting invariants",
    "parent": "JOE-2233",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2247"
@@ -282,7 +309,7 @@
    "id": "JOE-2249",
    "title": "Bind capture callbacks to immutable session and engine ownership",
    "parent": "JOE-2233",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2246",
@@ -300,7 +327,7 @@
    "id": "JOE-2250",
    "title": "WhisperKit: replace the Boolean decode gate with exclusive cancellable operation ownership",
    "parent": "JOE-2233",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2246",
@@ -318,7 +345,7 @@
    "id": "JOE-2251",
    "title": "Define and implement a no-silent-truncation long-dictation policy",
    "parent": "JOE-2233",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "human_decision_gate",
    "dependencies": [
     "JOE-2245",
@@ -337,7 +364,7 @@
    "id": "JOE-2252",
    "title": "Introduce rich EngineResult completeness, provenance and warning contracts",
    "parent": "JOE-2233",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2240",
@@ -356,7 +383,7 @@
    "id": "JOE-2253",
    "title": "Apple Speech: tokenized callbacks and event-driven finalization",
    "parent": "JOE-2233",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2246",
@@ -375,7 +402,7 @@
    "id": "JOE-2254",
    "title": "Wire language selection and on-device capability checks into every engine",
    "parent": "JOE-2233",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2245",
@@ -393,7 +420,7 @@
    "id": "JOE-2255",
    "title": "Implement verified model acquisition, cache integrity and readiness state machine",
    "parent": "JOE-2233",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2241",
@@ -412,7 +439,7 @@
    "id": "JOE-2256",
    "title": "Make model selection and preload generation-safe, cancellable and stale-result proof",
    "parent": "JOE-2233",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2246",
@@ -430,7 +457,7 @@
    "id": "JOE-2257",
    "title": "Qualify rapid-control, late-callback and engine-lifecycle stress behavior",
    "parent": "JOE-2233",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "real_device_or_external_evidence",
    "dependencies": [],
    "status": "Backlog",
@@ -445,7 +472,7 @@
    "id": "JOE-2258",
    "title": "Implement SessionSensitivity with normal, secure and fail-closed unknown policy",
    "parent": "JOE-2234",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2240",
@@ -463,7 +490,7 @@
    "id": "JOE-2259",
    "title": "Block automatic Flow, clipboard fallback and history for secure or unknown sessions",
    "parent": "JOE-2234",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2258"
@@ -480,7 +507,7 @@
    "id": "JOE-2260",
    "title": "Rebuild pasteboard insertion as a lossless bounded transaction",
    "parent": "JOE-2234",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2235",
@@ -498,7 +525,7 @@
    "id": "JOE-2261",
    "title": "Replace plaintext default-on history with an opt-in bounded actor repository",
    "parent": "JOE-2234",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2243",
@@ -516,7 +543,7 @@
    "id": "JOE-2262",
    "title": "Add optional at-rest encryption for history with Keychain-managed keys",
    "parent": "JOE-2234",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2261"
@@ -533,7 +560,7 @@
    "id": "JOE-2263",
    "title": "Version settings storage with transactional migrations, quarantine and safe rollback",
    "parent": "JOE-2234",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2241",
@@ -551,7 +578,7 @@
    "id": "JOE-2264",
    "title": "Implement versioned privacy-safe events, metrics and exactly-one terminal emission",
    "parent": "JOE-2234",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2240",
@@ -570,7 +597,7 @@
    "id": "JOE-2265",
    "title": "Implement a user-reviewable privacy-safe support bundle and canary scanner",
    "parent": "JOE-2234",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2241",
@@ -589,7 +616,7 @@
    "id": "JOE-2266",
    "title": "Implement an asynchronous application termination and recovery handshake",
    "parent": "JOE-2234",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [],
    "status": "Backlog",
@@ -604,7 +631,7 @@
    "id": "JOE-2267",
    "title": "Spec: define immutable TargetSnapshot identity and capture contract",
    "parent": "JOE-2235",
-   "milestone": "M0 — Product Contracts & Release Freeze",
+   "milestone": "M0 \u2014 Product Contracts & Release Freeze",
    "classification": "autonomous_specification",
    "dependencies": [
     "JOE-2241",
@@ -612,18 +639,25 @@
     "JOE-2258"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "273b436"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
+   "tests": [
+    "TargetSnapshot usable-target/confidence tests (CLI pass)"
+   ],
+   "evidence": [
+    "docs/development/contracts/target-snapshot.md",
+    "Sources/ZephyrFlowCore/TargetSnapshot.swift"
+   ],
    "remaining_action": ""
   },
   {
    "id": "JOE-2268",
    "title": "Revalidate PID, window, element and sensitivity immediately before insertion",
    "parent": "JOE-2235",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2246",
@@ -642,7 +676,7 @@
    "id": "JOE-2269",
    "title": "Introduce typed InsertionOutcome and confidence; remove false verified success",
    "parent": "JOE-2235",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2240",
@@ -660,7 +694,7 @@
    "id": "JOE-2270",
    "title": "Harden AX writes with settable checks, bounded calls and post-write verification",
    "parent": "JOE-2235",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2268",
@@ -678,7 +712,7 @@
    "id": "JOE-2271",
    "title": "Build an evidence-backed insertion adapter registry instead of bundle heuristics",
    "parent": "JOE-2235",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2260",
@@ -698,7 +732,7 @@
    "id": "JOE-2272",
    "title": "Design no-side-effect review UX for changed, unknown and secure targets",
    "parent": "JOE-2235",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2259",
@@ -716,7 +750,7 @@
    "id": "JOE-2273",
    "title": "Qualify the supported-app insertion matrix with repeatable real-device evidence",
    "parent": "JOE-2235",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "real_device_or_external_evidence",
    "dependencies": [
     "JOE-2245",
@@ -736,7 +770,7 @@
    "id": "JOE-2274",
    "title": "Stress focus switches, secure fields, hung AX targets and clipboard races",
    "parent": "JOE-2235",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "real_device_or_external_evidence",
    "dependencies": [
     "JOE-2260",
@@ -756,7 +790,7 @@
    "id": "JOE-2275",
    "title": "Spec: define Flow loss classes and protected-span preservation grammar",
    "parent": "JOE-2236",
-   "milestone": "M0 — Product Contracts & Release Freeze",
+   "milestone": "M0 \u2014 Product Contracts & Release Freeze",
    "classification": "autonomous_specification",
    "dependencies": [
     "JOE-2240",
@@ -764,18 +798,25 @@
     "JOE-2258"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "cf7960e"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
+   "tests": [
+    "loss-class policy and language gating tests (CLI pass)"
+   ],
+   "evidence": [
+    "docs/development/contracts/flow-loss-classes.md",
+    "Sources/ZephyrFlowCore/FlowContract.swift"
+   ],
    "remaining_action": ""
   },
   {
    "id": "JOE-2276",
    "title": "Rename the deterministic rules backend and publish an honest Flow capability contract",
    "parent": "JOE-2236",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2275"
@@ -792,7 +833,7 @@
    "id": "JOE-2277",
    "title": "Make deterministic Flow rules language-aware and paragraph-preserving",
    "parent": "JOE-2236",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2254",
@@ -810,7 +851,7 @@
    "id": "JOE-2278",
    "title": "Expand Flow guardrails for signed/multiset facts, negation and protected identifiers",
    "parent": "JOE-2236",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2275",
@@ -828,7 +869,7 @@
    "id": "JOE-2279",
    "title": "Return typed FlowOutcome with changes, loss class, warnings and fallback reason",
    "parent": "JOE-2236",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2275",
@@ -847,7 +888,7 @@
    "id": "JOE-2280",
    "title": "Build a versioned Flow fidelity corpus and differential evaluation harness",
    "parent": "JOE-2236",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "autonomous_evidence",
    "dependencies": [
     "JOE-2275",
@@ -867,7 +908,7 @@
    "id": "JOE-2281",
    "title": "Set preregistered Flow release budgets and exact-candidate regression gate",
    "parent": "JOE-2236",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "human_decision_gate",
    "dependencies": [
     "JOE-2280"
@@ -884,7 +925,7 @@
    "id": "JOE-2282",
    "title": "Build capability-based onboarding for WhisperKit, Apple Speech and clipboard-only modes",
    "parent": "JOE-2237",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2241",
@@ -904,7 +945,7 @@
    "id": "JOE-2283",
    "title": "First-run model UX: explicit consent, real state, retry, cancel and fallback",
    "parent": "JOE-2237",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2255",
@@ -923,7 +964,7 @@
    "id": "JOE-2284",
    "title": "Render truthful UI for complete, partial, degraded, truncated and insertion-confidence states",
    "parent": "JOE-2237",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2252",
@@ -943,7 +984,7 @@
    "id": "JOE-2285",
    "title": "Adopt a conventional configurable production hotkey; retain single-Fn as experimental",
    "parent": "JOE-2237",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "human_decision_gate",
    "dependencies": [
     "JOE-2245"
@@ -958,9 +999,9 @@
   },
   {
    "id": "JOE-2286",
-   "title": "Make the experimental Fn preference override exact and transactional—or remove it",
+   "title": "Make the experimental Fn preference override exact and transactional\u2014or remove it",
    "parent": "JOE-2237",
-   "milestone": "M1 — P0 Safety & Session Correctness",
+   "milestone": "M1 \u2014 P0 Safety & Session Correctness",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2241",
@@ -978,7 +1019,7 @@
    "id": "JOE-2287",
    "title": "Harden the hotkey engine into one serial deduplicated edge stream",
    "parent": "JOE-2237",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2246",
@@ -996,7 +1037,7 @@
    "id": "JOE-2288",
    "title": "Complete VoiceOver, keyboard, reduced-motion, contrast and panel-focus qualification",
    "parent": "JOE-2237",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "real_device_or_external_evidence",
    "dependencies": [
     "JOE-2272",
@@ -1015,7 +1056,7 @@
    "id": "JOE-2289",
    "title": "Make product strings localization-ready and align locale selection with engine capabilities",
    "parent": "JOE-2237",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2254",
@@ -1035,7 +1076,7 @@
    "id": "JOE-2290",
    "title": "Make launch-at-login changes transactional, visible and recoverable",
    "parent": "JOE-2237",
-   "milestone": "M3 — UX, Accessibility & Compatibility",
+   "milestone": "M3 \u2014 UX, Accessibility & Compatibility",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2263"
@@ -1052,7 +1093,7 @@
    "id": "JOE-2291",
    "title": "CI: run complete XCTest, Swift 6 strict concurrency, lint, format and coverage gates",
    "parent": "JOE-2238",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2243"
@@ -1069,7 +1110,7 @@
    "id": "JOE-2292",
    "title": "Build deterministic fakes, fake clocks and randomized session property tests",
    "parent": "JOE-2238",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2240",
@@ -1089,7 +1130,7 @@
    "id": "JOE-2293",
    "title": "Add sanitizer, concurrency-stress and crash/relaunch recovery CI lanes",
    "parent": "JOE-2238",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2244",
@@ -1108,7 +1149,7 @@
    "id": "JOE-2294",
    "title": "Build a real-speech observatory for WER/CER, silence false positives and partial stability",
    "parent": "JOE-2238",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "real_device_or_external_evidence",
    "dependencies": [
     "JOE-2245",
@@ -1128,7 +1169,7 @@
    "id": "JOE-2295",
    "title": "Set named-hardware latency, memory, energy, thermal and battery budgets",
    "parent": "JOE-2238",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "real_device_or_external_evidence",
    "dependencies": [
     "JOE-2245",
@@ -1148,7 +1189,7 @@
    "id": "JOE-2296",
    "title": "Run 1,000-session soak and maximum-duration stability qualification",
    "parent": "JOE-2238",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "real_device_or_external_evidence",
    "dependencies": [
     "JOE-2251",
@@ -1169,7 +1210,7 @@
    "id": "JOE-2297",
    "title": "Run the end-to-end privacy canary matrix across every data and recovery surface",
    "parent": "JOE-2238",
-   "milestone": "M4 — Quality Observatory & Reliability Evidence",
+   "milestone": "M4 \u2014 Quality Observatory & Reliability Evidence",
    "classification": "autonomous_evidence",
    "dependencies": [
     "JOE-2241",
@@ -1192,7 +1233,7 @@
    "id": "JOE-2298",
    "title": "Split preview and production release channels; production must fail closed",
    "parent": "JOE-2238",
-   "milestone": "M5 — Trusted Distribution & Operations",
+   "milestone": "M5 \u2014 Trusted Distribution & Operations",
    "classification": "human_decision_gate",
    "dependencies": [
     "JOE-2245"
@@ -1209,7 +1250,7 @@
    "id": "JOE-2299",
    "title": "Require Developer ID signing, hardened runtime, notarization, stapling and Gatekeeper verification",
    "parent": "JOE-2238",
-   "milestone": "M5 — Trusted Distribution & Operations",
+   "milestone": "M5 \u2014 Trusted Distribution & Operations",
    "classification": "credential_or_cross_repo_gate",
    "dependencies": [
     "JOE-2266",
@@ -1228,7 +1269,7 @@
    "id": "JOE-2300",
    "title": "Harden release supply chain: exact-tag checkout, full-SHA actions, minimal permissions and locked tools",
    "parent": "JOE-2238",
-   "milestone": "M5 — Trusted Distribution & Operations",
+   "milestone": "M5 \u2014 Trusted Distribution & Operations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2291",
@@ -1246,7 +1287,7 @@
    "id": "JOE-2301",
    "title": "Publish SBOM, checksums, provenance attestations and third-party notices for every production artifact",
    "parent": "JOE-2238",
-   "milestone": "M5 — Trusted Distribution & Operations",
+   "milestone": "M5 \u2014 Trusted Distribution & Operations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2299",
@@ -1264,7 +1305,7 @@
    "id": "JOE-2302",
    "title": "Implement a signed update manifest with exact channel, architecture and digest verification",
    "parent": "JOE-2238",
-   "milestone": "M5 — Trusted Distribution & Operations",
+   "milestone": "M5 \u2014 Trusted Distribution & Operations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2298",
@@ -1283,7 +1324,7 @@
    "id": "JOE-2303",
    "title": "Qualify fresh-Mac install, upgrade, launch-at-login, uninstall and rollback paths",
    "parent": "JOE-2238",
-   "milestone": "M5 — Trusted Distribution & Operations",
+   "milestone": "M5 \u2014 Trusted Distribution & Operations",
    "classification": "real_device_or_external_evidence",
    "dependencies": [
     "JOE-2245",
@@ -1304,7 +1345,7 @@
    "id": "JOE-2304",
    "title": "Ship doctor, support, incident, recovery, vulnerability and revocation runbooks",
    "parent": "JOE-2238",
-   "milestone": "M5 — Trusted Distribution & Operations",
+   "milestone": "M5 \u2014 Trusted Distribution & Operations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2265",
@@ -1324,7 +1365,7 @@
    "id": "JOE-2305",
    "title": "Freeze one exact candidate and run the complete production acceptance pack",
    "parent": "JOE-2238",
-   "milestone": "M7 — Exact-Candidate Production Acceptance",
+   "milestone": "M7 \u2014 Exact-Candidate Production Acceptance",
    "classification": "human_decision_gate",
    "dependencies": [],
    "status": "Backlog",
@@ -1339,7 +1380,7 @@
    "id": "JOE-2306",
    "title": "Verify post-publication assets, update path, support readiness and rollback drill",
    "parent": "JOE-2238",
-   "milestone": "M7 — Exact-Candidate Production Acceptance",
+   "milestone": "M7 \u2014 Exact-Candidate Production Acceptance",
    "classification": "human_decision_gate",
    "dependencies": [
     "JOE-2305"
@@ -1356,7 +1397,7 @@
    "id": "JOE-2307",
    "title": "Unify Zephyr Flow and Aurum speech/Flow evaluation schemas and corpus manifests",
    "parent": "JOE-2239",
-   "milestone": "M6 — Optional Aurum Helper & Engine Qualification",
+   "milestone": "M6 \u2014 Optional Aurum Helper & Engine Qualification",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2275",
@@ -1373,9 +1414,9 @@
   },
   {
    "id": "JOE-2308",
-   "title": "Adopt Aurum’s model-integrity, partial-session and privacy-safe observability contracts without runtime coupling",
+   "title": "Adopt Aurum\u2019s model-integrity, partial-session and privacy-safe observability contracts without runtime coupling",
    "parent": "JOE-2239",
-   "milestone": "M2 — Production Architecture & Data Foundations",
+   "milestone": "M2 \u2014 Production Architecture & Data Foundations",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2247",
@@ -1395,7 +1436,7 @@
    "id": "JOE-2309",
    "title": "Aurum: publish a tagged STT-only macOS XCFramework/native SDK for Swift hosts",
    "parent": "JOE-2239",
-   "milestone": "M6 — Optional Aurum Helper & Engine Qualification",
+   "milestone": "M6 \u2014 Optional Aurum Helper & Engine Qualification",
    "classification": "credential_or_cross_repo_gate",
    "dependencies": [
     "JOE-2300",
@@ -1413,7 +1454,7 @@
    "id": "JOE-2310",
    "title": "Build an actor-safe AurumSwift wrapper with ABI, capability and ownership validation",
    "parent": "JOE-2239",
-   "milestone": "M6 — Optional Aurum Helper & Engine Qualification",
+   "milestone": "M6 \u2014 Optional Aurum Helper & Engine Qualification",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2243",
@@ -1431,7 +1472,7 @@
    "id": "JOE-2311",
    "title": "Implement a feature-gated Aurum TranscriptionEngine adapter with host-owned partials",
    "parent": "JOE-2239",
-   "milestone": "M6 — Optional Aurum Helper & Engine Qualification",
+   "milestone": "M6 \u2014 Optional Aurum Helper & Engine Qualification",
    "classification": "autonomous_implementation",
    "dependencies": [
     "JOE-2247",
@@ -1452,7 +1493,7 @@
    "id": "JOE-2312",
    "title": "Qualify Aurum FFI lifecycle, Metal teardown, cancellation and 1,000-session stability",
    "parent": "JOE-2239",
-   "milestone": "M6 — Optional Aurum Helper & Engine Qualification",
+   "milestone": "M6 \u2014 Optional Aurum Helper & Engine Qualification",
    "classification": "real_device_or_external_evidence",
    "dependencies": [
     "JOE-2266",
@@ -1472,7 +1513,7 @@
    "id": "JOE-2313",
    "title": "Run a preregistered Aurum vs WhisperKit production bake-off on shared real-speech evidence",
    "parent": "JOE-2239",
-   "milestone": "M6 — Optional Aurum Helper & Engine Qualification",
+   "milestone": "M6 \u2014 Optional Aurum Helper & Engine Qualification",
    "classification": "real_device_or_external_evidence",
    "dependencies": [
     "JOE-2294",
@@ -1492,7 +1533,7 @@
    "id": "JOE-2314",
    "title": "Human decision: defer, retain experimental, ship optional, or promote Aurum based on evidence",
    "parent": "JOE-2239",
-   "milestone": "M6 — Optional Aurum Helper & Engine Qualification",
+   "milestone": "M6 \u2014 Optional Aurum Helper & Engine Qualification",
    "classification": "human_decision_gate",
    "dependencies": [
     "JOE-2308",
