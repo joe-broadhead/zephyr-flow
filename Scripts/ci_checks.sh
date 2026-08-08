@@ -97,7 +97,6 @@ if swift test --enable-code-coverage >/dev/null 2>&1 \
         -ignore-filename-regex='Tests/' > "$COV_TMP/report.txt" 2>&1; then
     REGION="$(awk -F'[[:space:]]+' '/TOTAL/{print $4}' "$COV_TMP/report.txt" | tr -d '%')"
     LINE="$(awk -F'[[:space:]]+' '/TOTAL/{print $10}' "$COV_TMP/report.txt" | tr -d '%')"
-    BRANCH="$(awk -F'[[:space:]]+' '/TOTAL/{print $13}' "$COV_TMP/report.txt" | tr -d '%')"
     echo "ZephyrFlowCore coverage: line=${LINE}% region=${REGION}% (Swift toolchain emits no literal branch data; region is the equivalent)"
     if ! awk -v x="$LINE" 'BEGIN{exit !(x>=70)}'; then fail "coverage line < 70% (got ${LINE}%)"; fi
     if ! awk -v x="$REGION" 'BEGIN{exit !(x>=70)}'; then fail "coverage region < 70% (got ${REGION}%)"; fi
