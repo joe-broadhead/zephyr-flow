@@ -3831,6 +3831,82 @@ struct CoreTests {
             check("2292 corpus all green", greenCount == corpus.count)
         }
 
+        // ===== JOE-2293: crash recovery + rapid-control stress =====
+        do {
+            // 1. Crash mid-write with non-atomic commit rolls back to OLD
+            //    (never mixed).
+            let partial = CrashRecoveryPolicy.recover(
+                faultPoint: .settingsWrite, wrotePartialData: true,
+                commitWasAtomic: false)
+            check(
+                "2293 partial non-atomic -> old intact",
+                partial == .oldStateIntact)
+            let atomic = CrashRecoveryPolicy.recover(
+                faultPoint: .historyWrite, wrotePartialData: true,
+                commitWasAtomic: true)
+            check(
+                "2293 atomic commit -> new intact",
+                atomic == .newStateIntact)
+            let clean = CrashRecoveryPolicy.recover(
+                faultPoint: .modelPromote, wrotePartialData: false,
+                commitWasAtomic: false)
+            check("2293 clean non-atomic -> old intact", clean == .oldStateIntact)
+
+            // 2. Every fault point has a deterministic recovery rule.
+            for fp in CrashFaultPoint.allCases {
+                let r = CrashRecoveryPolicy.recover(
+                    faultPoint: fp,
+                    wrotePartialData: true,
+                    commitWasAtomic: false)
+                check("2293 \(fp.rawValue) rolls back", r == .oldStateIntact)
+                let r2 = CrashRecoveryPolicy.recover(
+                    faultPoint: fp,
+                    wrotePartialData: true,
+                    commitWasAtomic: true)
+                check("2293 \(fp.rawValue) atomic commits", r2 == .newStateIntact)
+            }
+
+            // 3. Relaunch consistency: each boundary reports old-or-new.
+            check(
+                "2293 relaunch consistent (all old)",
+                CrashRecoveryPolicy.relaunchConsistent(
+                    settingsOld: true, settingsNew: false,
+                    historyOld: true, historyNew: false,
+                    modelOld: true, modelNew: false,
+                    pasteboardOld: true, pasteboardNew: false))
+            check(
+                "2293 relaunch consistent (mixed new)",
+                CrashRecoveryPolicy.relaunchConsistent(
+                    settingsOld: false, settingsNew: true,
+                    historyOld: true, historyNew: false,
+                    modelOld: true, modelNew: false,
+                    pasteboardOld: true, pasteboardNew: false))
+            check(
+                "2293 relaunch INCONSISTENT detected",
+                !CrashRecoveryPolicy.relaunchConsistent(
+                    settingsOld: true, settingsNew: false,
+                    historyOld: false, historyNew: false,  // neither = lost
+                    modelOld: true, modelNew: false,
+                    pasteboardOld: true, pasteboardNew: false))
+
+            // 4. Rapid-control stress (seeded) is green across seeds.
+            for seed in [UInt64(0xA11CE), 0xBADC0DE, 0xF00D] {
+                let rep = await RapidControlStress.run(seed: seed, cycles: 12)
+                check("2293 rapid control green seed \(seed)", rep.isGreen)
+            }
+
+            // 5. PRNG drives distinct rapid-control sequences per seed.
+            var a = SplitMix64(seed: 0xA11CE)
+            var b = SplitMix64(seed: 0xBADC0DE)
+            var seqA: [UInt64] = []
+            var seqB: [UInt64] = []
+            for _ in 0..<16 {
+                seqA.append(a.next())
+                seqB.append(b.next())
+            }
+            check("2293 distinct seeds distinct sequences", seqA != seqB)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

@@ -1643,12 +1643,25 @@
     "JOE-2292"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (18 JOE-2293 checks: crash rollback old/new, all fault points, relaunch consistency, rapid-control stress green, distinct seeds)",
+    "swift test --sanitize=address: ASan lane clean (verified on clean rebuild)",
+    "swift build: pass; swift-format lint 0; string scan OK; mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/CrashRecovery.swift",
+    "Scripts/ci_checks.sh",
+    "docs/development/ci/sanitizers.md",
+    "docs/development/ci/ci-policy.md",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2293/REPORT.md"
+   ],
+   "remaining_action": "Scheduled extended campaigns on the exact candidate (real app kill/relaunch with real audio/AX) \u2014 human-gate runbook."
   },
   {
    "id": "JOE-2294",

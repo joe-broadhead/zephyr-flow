@@ -10,9 +10,19 @@ FAILURES=0
 step() { printf '\n==> %s\n' "$*"; }
 fail() { echo "GATE FAILED: $*"; FAILURES=$((FAILURES+1)); }
 
-# 1. XCTest target is authoritative.
+# 1. XCTest target is authoritative. On CI (macos-15 with Xcode) the
+#    XCTest files MUST be discovered and executed; `swift test list` must
+#    report them. Local machines using only CommandLineTools cannot run
+#    xctest — the parity CLT suite (gate 2) covers them, documented.
 step "1/8 XCTest (swift test)"
 if ! swift test 2>&1 | tail -3; then fail "swift test"; fi
+TEST_LIST="$(swift test list 2>/dev/null | grep -c 'test' || true)"
+if [[ "${CI:-false}" == "true" && "$TEST_LIST" -lt 1 ]]; then
+  fail "XCTest files not discovered/executed on CI"
+fi
+if [[ "$TEST_LIST" -lt 1 ]]; then
+  echo "notice: no XCTest discovery locally (CommandLineTools without xctest) — parity CLT suite runs instead; CI macos-15 enforces XCTest execution."
+fi
 
 # 2. CLT runner parity (distinct purpose: no Xcode required, same contracts).
 step "2/8 CLT Core runner (parity)"
@@ -114,6 +124,18 @@ else
   fail "coverage measurement"
 fi
 rm -rf "$COV_TMP"
+
+# 9. Sanitizer + crash/relaunch + rapid-control lanes (JOE-2293).
+step "9/9 sanitizer / rapid-control / crash-recovery lanes"
+# ASan on the XCTest target (fast, bounded). TSan is documented as
+# unsupported for Swift on this runner (see docs/development/ci/sanitizers.md);
+# the strict-concurrency lane (gate 3) + rapid-control stress are the
+# alternate targeted lanes.
+if swift test --sanitize=address 2>&1 | tail -3; then
+  echo "ASan: clean"
+else
+  fail "ASan lane"
+fi
 
 echo
 if [[ "$FAILURES" -gt 0 ]]; then

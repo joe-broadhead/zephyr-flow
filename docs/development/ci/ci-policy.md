@@ -8,9 +8,12 @@ code elsewhere — adding untested Core code lowers the measured percentage.
 
 ## Gates (in order, all required)
 
-1. **XCTest** — `swift test` is the authoritative test target and must pass.
-   The custom CLT runner (`swift run ZephyrFlowCoreTests`) is retained for its
-   distinct purpose (no Xcode required) and is kept in parity: both run in CI.
+1. **XCTest** — `swift test` is the authoritative test target and must pass;
+   on CI (macos-15 with Xcode) `swift test list` must discover the XCTest
+   files (execution enforced — a zero-test list fails CI). The custom CLT
+   runner (`swift run ZephyrFlowCoreTests`) is retained for its distinct
+   purpose (no Xcode required — local CommandLineTools machines cannot run
+   xctest) and is kept in parity: both run in CI.
 2. **Swift 6 strict concurrency** — the app and tests compile with
    `-Xswiftc -strict-concurrency=complete` (strongest supported setting).
    NEW warnings fail CI against the pinned baseline
