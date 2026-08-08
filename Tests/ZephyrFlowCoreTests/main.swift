@@ -3393,47 +3393,58 @@ struct CoreTests {
             check("2256 current model is A", t.currentModel == .whisperTiny)
 
             // 2. Stale completions are typed superseded; current state intact.
-            var outcomeA = t.acceptCompletion(requestID: a1, model: .whisperTiny,
-                                              outcome: .failed(model: .whisperTiny, message: "boom"))
-            check("2256 stale A completion superseded",
-                  outcomeA == .superseded(model: .whisperTiny, byRequestID: a2))
-            var outcomeB = t.acceptCompletion(requestID: b1, model: .whisperBase,
-                                              outcome: .ready(model: .whisperBase))
-            check("2256 stale B completion superseded",
-                  outcomeB == .superseded(model: .whisperBase, byRequestID: a2))
+            var outcomeA = t.acceptCompletion(
+                requestID: a1, model: .whisperTiny,
+                outcome: .failed(model: .whisperTiny, message: "boom"))
+            check(
+                "2256 stale A completion superseded",
+                outcomeA == .superseded(model: .whisperTiny, byRequestID: a2))
+            var outcomeB = t.acceptCompletion(
+                requestID: b1, model: .whisperBase,
+                outcome: .ready(model: .whisperBase))
+            check(
+                "2256 stale B completion superseded",
+                outcomeB == .superseded(model: .whisperBase, byRequestID: a2))
             // Current completion publishes.
-            var outcomeCurrent = t.acceptCompletion(requestID: a2, model: .whisperTiny,
-                                                    outcome: .ready(model: .whisperTiny))
-            check("2256 current completion accepted",
-                  outcomeCurrent == .ready(model: .whisperTiny))
+            var outcomeCurrent = t.acceptCompletion(
+                requestID: a2, model: .whisperTiny,
+                outcome: .ready(model: .whisperTiny))
+            check(
+                "2256 current completion accepted",
+                outcomeCurrent == .ready(model: .whisperTiny))
 
             // 3. Old completion can never overwrite a current ready/failed
             //    state: after A ready, a stale B failure is ignored.
             var t3 = ModelSelectionTracker()
             let r3a = t3.submit(model: .whisperTiny, settings: sel())
             let r3b = t3.submit(model: .whisperBase, settings: sel())
-            _ = t3.acceptCompletion(requestID: r3b, model: .whisperBase,
-                                    outcome: .failed(model: .whisperBase, message: "late error"))
-            let stale = t3.acceptCompletion(requestID: r3a, model: .whisperTiny,
-                                            outcome: .ready(model: .whisperTiny))
+            _ = t3.acceptCompletion(
+                requestID: r3b, model: .whisperBase,
+                outcome: .failed(model: .whisperBase, message: "late error"))
+            let stale = t3.acceptCompletion(
+                requestID: r3a, model: .whisperTiny,
+                outcome: .ready(model: .whisperTiny))
             check("2256 stale failure cannot publish", stale == .superseded(model: .whisperTiny, byRequestID: r3b))
 
             // 4. Session-start guard: a session may only start against the
             //    CURRENT selection (never a finished-obsolete engine).
             var t4 = ModelSelectionTracker()
             _ = t4.submit(model: .whisperBase, settings: sel())
-            check("2256 session may start on current model",
-                  t4.allowsSessionStart(model: .whisperBase))
-            check("2256 session may NOT start on obsolete model",
-                  !t4.allowsSessionStart(model: .whisperTiny))
+            check(
+                "2256 session may start on current model",
+                t4.allowsSessionStart(model: .whisperBase))
+            check(
+                "2256 session may NOT start on obsolete model",
+                !t4.allowsSessionStart(model: .whisperTiny))
 
             // 5. cancelCurrent: no selection in flight; session start denied.
             var t5 = ModelSelectionTracker()
             _ = t5.submit(model: .whisperTiny, settings: sel())
             t5.cancelCurrent()
             check("2256 cancel clears current", t5.currentModel == nil)
-            check("2256 no session start after cancel",
-                  !t5.allowsSessionStart(model: .whisperTiny))
+            check(
+                "2256 no session start after cancel",
+                !t5.allowsSessionStart(model: .whisperTiny))
 
             // 6. Monotonic request ids strictly increase.
             var t6 = ModelSelectionTracker()
@@ -3445,9 +3456,9 @@ struct CoreTests {
             // 7. Settings snapshot at request start is retained.
             var t7 = ModelSelectionTracker()
             _ = t7.submit(model: .whisperBase, settings: sel(false, true))
-            check("2256 settings snapshot retained",
-                  t7.currentSettings?.allowModelDownloads == false &&
-                  t7.currentSettings?.localOnlyMode == true)
+            check(
+                "2256 settings snapshot retained",
+                t7.currentSettings?.allowModelDownloads == false && t7.currentSettings?.localOnlyMode == true)
 
             // 8. Deterministic out-of-order completion matrix: every
             //    permutation of A/B completions only lets the CURRENT one
@@ -3456,13 +3467,127 @@ struct CoreTests {
             let reqA = t8.submit(model: .whisperTiny, settings: sel())
             let reqB = t8.submit(model: .whisperBase, settings: sel())
             // B current: any completion order keeps only B publishable.
-            let p1 = t8.acceptCompletion(requestID: reqA, model: .whisperTiny,
-                                         outcome: .failed(model: .whisperTiny, message: "x"))
-            let p2 = t8.acceptCompletion(requestID: reqB, model: .whisperBase,
-                                         outcome: .ready(model: .whisperBase))
-            check("2256 out-of-order: current publishes, stale superseded",
-                  p1 == .superseded(model: .whisperTiny, byRequestID: reqB) &&
-                  p2 == .ready(model: .whisperBase))
+            let p1 = t8.acceptCompletion(
+                requestID: reqA, model: .whisperTiny,
+                outcome: .failed(model: .whisperTiny, message: "x"))
+            let p2 = t8.acceptCompletion(
+                requestID: reqB, model: .whisperBase,
+                outcome: .ready(model: .whisperBase))
+            check(
+                "2256 out-of-order: current publishes, stale superseded",
+                p1 == .superseded(model: .whisperTiny, byRequestID: reqB) && p2 == .ready(model: .whisperBase))
+        }
+
+        // ===== JOE-2282: capability-based onboarding =====
+        do {
+            func steps(_ path: OnboardingProductPath) -> [OnboardingStep] {
+                CapabilityGraph.steps(for: path)
+            }
+            func caps(_ s: [OnboardingStep]) -> Set<OnboardingCapability> {
+                Set(s.map(\.capability))
+            }
+
+            // 1. All four paths have deterministic sequences (no duplicates).
+            for p in OnboardingProductPath.allCases {
+                let st = steps(p)
+                check("2282 \(p.rawValue) deterministic", !st.isEmpty)
+                check("2282 \(p.rawValue) no dup caps", caps(st).count == st.count)
+            }
+
+            // 2. WhisperKit paths NEVER request Speech Recognition / System
+            //    Dictation.
+            let wk = caps(steps(.whisperKitAutomatic))
+            let wkc = caps(steps(.whisperKitClipboardOnly))
+            check(
+                "2282 WhisperKit no speech recognition",
+                !wk.contains(.speechRecognition) && !wkc.contains(.speechRecognition))
+            check(
+                "2282 WhisperKit no system dictation",
+                !wk.contains(.systemDictation) && !wkc.contains(.systemDictation))
+
+            // 3. Clipboard-only paths never imply Accessibility required.
+            let acc = OnboardingCapability.accessibility
+            check(
+                "2282 clipboard-only no accessibility",
+                !wkc.contains(acc) && !caps(steps(.appleSpeechClipboardOnly)).contains(acc))
+            check(
+                "2282 automatic paths include accessibility",
+                wk.contains(acc) && caps(steps(.appleSpeechAutomatic)).contains(acc))
+
+            // 4. Network actions listed separately from audio privacy:
+            //    model download is its own step with networkClass.
+            let modelStep = steps(.whisperKitAutomatic).first { $0.capability == .modelAcquisition }
+            check(
+                "2282 model step network class",
+                modelStep?.networkClass == "modelDownload")
+            let micStep = steps(.whisperKitAutomatic).first { $0.capability == .microphone }
+            check(
+                "2282 mic step no network class",
+                micStep?.networkClass == "none")
+
+            // 5. Delta: only missing capabilities requested.
+            let full = steps(.whisperKitAutomatic)
+            let done = caps(Array(full.prefix(2)))  // mic + model done
+            let remaining = CapabilityGraph.remainingSteps(for: .whisperKitAutomatic, completed: done)
+            check(
+                "2282 delta requests only missing",
+                remaining.map(\.capability) == [.accessibility, .localOnlyImplications])
+            check(
+                "2282 complete only when all done",
+                !CapabilityGraph.isComplete(for: .whisperKitAutomatic, completed: done))
+            check(
+                "2282 complete when all done",
+                CapabilityGraph.isComplete(for: .whisperKitAutomatic, completed: caps(full)))
+
+            // 6. Path derivation from settings.
+            check(
+                "2282 path whisper+automatic",
+                CapabilityGraph.path(model: .whisperTiny, insertionMode: "automatic") == .whisperKitAutomatic)
+            check(
+                "2282 path whisper+copy",
+                CapabilityGraph.path(model: .whisperBase, insertionMode: "alwaysCopy") == .whisperKitClipboardOnly)
+            check(
+                "2282 path apple+automatic",
+                CapabilityGraph.path(model: .appleSpeech, insertionMode: "automatic") == .appleSpeechAutomatic)
+            check(
+                "2282 path apple+copy",
+                CapabilityGraph.path(model: .appleSpeech, insertionMode: "alwaysCopy") == .appleSpeechClipboardOnly)
+
+            // 7. Every skip path states limitations + recoverable.
+            for p in OnboardingProductPath.allCases {
+                for st in steps(p) where st.skippable {
+                    let skip = CapabilityGraph.skipExplanation(for: p, step: st)
+                    check(
+                        "2282 skip \(st.id) explains+recoverable",
+                        !skip.limitations.isEmpty && skip.recoverable)
+                }
+            }
+
+            // 8. No system prompt without a user action + explanation: all
+            //    requiresSystemPrompt steps carry an explanation.
+            for p in OnboardingProductPath.allCases {
+                for st in steps(p) where st.requiresSystemPrompt {
+                    check("2282 prompt \(st.id) explained", !st.explanation.isEmpty)
+                }
+            }
+
+            // 9. Already-granted capabilities skipped without hiding required
+            //    system switches: completed set removes steps, required
+            //    prompts remain.
+            let granted: Set<OnboardingCapability> = [.microphone]
+            let rem = CapabilityGraph.remainingSteps(for: .appleSpeechAutomatic, completed: granted)
+            check(
+                "2282 granted mic skipped, prompts remain",
+                !rem.contains { $0.capability == .microphone }
+                    && rem.contains { $0.capability == .speechRecognition && $0.requiresSystemPrompt })
+
+            // 10. Missing/denied capabilities lead to actionable limited
+            //     modes (skip explanations are actionable, not dead ends).
+            let ax = steps(.whisperKitAutomatic).first { $0.capability == .accessibility }!
+            let axSkip = CapabilityGraph.skipExplanation(for: .whisperKitAutomatic, step: ax)
+            check(
+                "2282 AX skip offers copy mode",
+                axSkip.limitations.lowercased().contains("copy"))
         }
 
         print("")

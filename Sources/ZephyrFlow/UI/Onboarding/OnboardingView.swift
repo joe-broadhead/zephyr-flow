@@ -1,62 +1,30 @@
 import SwiftUI
 import ZephyrFlowCore
 
-/// Stepped dark setup flow. One system permission prompt at a time for clean UX.
+/// Stepped dark setup flow driven by the capability graph (JOE-2282).
+/// Steps are derived from the selected product path (engine + insertion),
+/// only the missing delta is requested when settings change, every
+/// permission/network action is explained, and completed capabilities are
+/// persisted (not just a boolean).
 struct OnboardingView: View {
     @ObservedObject private var privacy = PrivacyService.shared
     @ObservedObject private var settings = SettingsStore.shared
     var onFinished: () -> Void
 
-    @State private var step: Step = .welcome
+    @State private var steps: [OnboardingStep] = []
+    @State private var index = 0
     @State private var isRequesting = false
+    @State private var completed: Set<OnboardingCapability> = []
+    @State private var skipNote: String?
 
-    enum Step: Int, CaseIterable {
-        case welcome
-        case microphone
-        case speech
-        case accessibility
-        case dictation
-        case ready
+    private var current: OnboardingStep? {
+        index >= 0 && index < steps.count ? steps[index] : nil
+    }
 
-        var title: String {
-            switch self {
-            case .welcome: return "Private dictation,\non your machine"
-            case .microphone: return "Microphone"
-            case .speech: return "Speech Recognition"
-            case .accessibility: return "Accessibility"
-            case .dictation: return "System Dictation"
-            case .ready: return "You're set"
-            }
-        }
-
-        var subtitle: String {
-            switch self {
-            case .welcome:
-                return "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default."
-            case .microphone:
-                return "ZephyrFlow needs the mic to capture your voice. Audio is processed on-device."
-            case .speech:
-                return "Apple’s on-device speech engine turns voice into text. We’ll show one system prompt."
-            case .accessibility:
-                return "Lets Fn work globally and insert text at the caret in other apps."
-            case .dictation:
-                return
-                    "macOS blocks Apple Speech unless Keyboard → Dictation is On. This is a system switch, not an app permission."
-            case .ready:
-                return "Click into any text field, hold Fn, speak, and release."
-            }
-        }
-
-        var icon: String {
-            switch self {
-            case .welcome: return "wind"
-            case .microphone: return "mic.fill"
-            case .speech: return "waveform"
-            case .accessibility: return "accessibility"
-            case .dictation: return "keyboard"
-            case .ready: return "checkmark"
-            }
-        }
+    private var productPath: OnboardingProductPath {
+        CapabilityGraph.path(
+            model: settings.settings.preferredModel,
+            insertionMode: settings.settings.insertionMode.rawValue)
     }
 
     var body: some View {
@@ -71,7 +39,7 @@ struct OnboardingView: View {
             )
             .ignoresSafeArea()
             RadialGradient(
-                colors: [ZephyrTheme.cyan.opacity(0.12), .clear],
+                colors: [ZephyrTheme.cyan.opacity(0.10), .clear],
                 center: .bottomLeading,
                 startRadius: 10,
                 endRadius: 360
@@ -93,7 +61,7 @@ struct OnboardingView: View {
                             removal: .move(edge: .leading).combined(with: .opacity)
                         )
                     )
-                    .id(step)
+                    .id(index)
 
                 Spacer(minLength: 12)
 
@@ -105,36 +73,94 @@ struct OnboardingView: View {
         .zephyrDarkChrome()
         .onAppear {
             privacy.refresh()
-            advancePastGrantedSteps()
+            rebuildSteps()
         }
         .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
             privacy.refresh()
-            // Auto-advance when the current step becomes satisfied
             autoAdvanceIfGranted()
         }
     }
 
-    // MARK: Progress
+    // MARK: - Graph-driven steps
+
+    private func rebuildSteps() {
+        // Synthetic welcome + graph steps for the CURRENT product path.
+        var all: [OnboardingStep] = [
+            OnboardingStep(
+                id: "welcome", capability: .localOnlyImplications,
+                title: "Private dictation,\non your machine",
+                explanation:
+                    "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default. Steps below ask only for what the selected product path needs.",
+                requiresSystemPrompt: false)
+        ]
+        all.append(contentsOf: CapabilityGraph.steps(for: productPath))
+        steps = all
+        index = 0
+        // Restore previously persisted capabilities.
+        completed = Set(
+            settings.settings.completedCapabilities.compactMap {
+                OnboardingCapability(rawValue: $0)
+            })
+        skipNote = nil
+        advancePastGrantedSteps()
+    }
+
+    /// Only the missing delta is requested; already-granted capabilities are
+    /// skipped WITHOUT hiding required system switches.
+    private func advancePastGrantedSteps() {
+        while let s = current, s.id != "welcome", stepSatisfied(s) {
+            if s.capability != .localOnlyImplications || s.id != "ready" {
+                completed.insert(s.capability)
+            }
+            index += 1
+        }
+    }
+
+    private func stepSatisfied(_ s: OnboardingStep) -> Bool {
+        switch s.capability {
+        case .microphone: return privacy.status.microphone
+        case .speechRecognition: return privacy.status.speechRecognition
+        case .accessibility: return privacy.status.accessibility
+        case .modelAcquisition, .networkModelDownload:
+            return settings.settings.allowModelDownloads
+        default:
+            return true  // informational steps
+        }
+    }
+
+    private func icon(for capability: OnboardingCapability) -> String {
+        switch capability {
+        case .microphone: return "mic.fill"
+        case .speechRecognition: return "waveform"
+        case .accessibility: return "accessibility"
+        case .modelAcquisition, .networkModelDownload: return "cpu"
+        case .clipboardDisclosure: return "doc.on.clipboard"
+        case .systemDictation: return "keyboard"
+        case .languageAvailability: return "globe"
+        case .localOnlyImplications: return "lock.shield"
+        case .networkUpdateCheck: return "arrow.triangle.2.circlepath"
+        }
+    }
+
+    // MARK: - Content
 
     private var progressBar: some View {
         HStack(spacing: 6) {
-            ForEach(Step.allCases, id: \.rawValue) { s in
+            ForEach(Array(steps.enumerated()), id: \.offset) { i, _ in
                 Capsule()
-                    .fill(s.rawValue <= step.rawValue ? ZephyrTheme.cyan : ZephyrTheme.border)
+                    .fill(i <= index ? ZephyrTheme.cyan : ZephyrTheme.border)
                     .frame(height: 3)
-                    .animation(ZephyrTheme.spring, value: step)
+                    .animation(ZephyrTheme.spring, value: index)
             }
         }
     }
 
-    // MARK: Content
-
     private var stepContent: some View {
         VStack(spacing: 22) {
             Group {
-                if step == .welcome || step == .ready {
+                if current?.id == "welcome" || current?.id == "ready" {
                     ZephyrMarkBadge(size: 88)
-                } else {
+                } else if let current {
                     ZStack {
                         Circle()
                             .fill(ZephyrTheme.brandGradient.opacity(0.25))
@@ -147,7 +173,7 @@ struct OnboardingView: View {
                             .fill(ZephyrTheme.bgCard)
                             .frame(width: 80, height: 80)
                             .overlay(
-                                Image(systemName: step.icon)
+                                Image(systemName: icon(for: current.capability))
                                     .font(.system(size: 32, weight: .semibold))
                                     .foregroundStyle(ZephyrTheme.brandGradient)
                             )
@@ -156,13 +182,13 @@ struct OnboardingView: View {
             }
 
             VStack(spacing: 10) {
-                Text(step.title)
+                Text(current?.title ?? "")
                     .font(.system(size: 26, weight: .bold, design: .rounded))
                     .foregroundStyle(ZephyrTheme.textPrimary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(step.subtitle)
+                Text(current?.explanation ?? "")
                     .font(.system(size: 14, weight: .regular, design: .rounded))
                     .foregroundStyle(ZephyrTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -170,61 +196,48 @@ struct OnboardingView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if step != .welcome && step != .ready {
-                statusChip
+            if let current, current.id != "welcome", current.id != "ready" {
+                statusChip(for: current.capability)
             }
 
-            if step == .ready {
-                readyTips
+            if let skipNote {
+                Text(skipNote)
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(ZephyrTheme.warning)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 400)
             }
         }
     }
 
-    private var statusChip: some View {
-        let ok = stepSatisfied(step)
-        return HStack(spacing: 8) {
-            Image(systemName: ok ? "checkmark.circle.fill" : "circle.dashed")
-                .foregroundStyle(ok ? ZephyrTheme.mint : ZephyrTheme.textMuted)
-            Text(ok ? "Ready" : "Waiting for permission…")
-                .font(.system(size: 12, weight: .medium, design: .rounded))
-                .foregroundStyle(ok ? ZephyrTheme.mint : ZephyrTheme.textSecondary)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Capsule().fill(ZephyrTheme.bgCard))
-        .overlay(Capsule().strokeBorder(ZephyrTheme.border, lineWidth: 1))
+    private func statusChip(for capability: OnboardingCapability) -> some View {
+        let satisfied = stepSatisfiedForCapability(capability)
+        return Label(
+            satisfied ? "Granted" : "Not granted yet",
+            systemImage: satisfied ? "checkmark.seal.fill" : "circle.dashed"
+        )
+        .font(.system(size: 12, weight: .semibold, design: .rounded))
+        .foregroundStyle(satisfied ? ZephyrTheme.cyan : ZephyrTheme.textSecondary)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(ZephyrTheme.bgCard.opacity(0.8)))
+        .accessibilityLabel(satisfied ? "Capability granted" : "Capability not granted")
     }
 
-    private var readyTips: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            tipRow(icon: "fn", text: "Hold Fn to talk · release to insert")
-            tipRow(
-                icon: "lock.shield.fill",
-                text: "Local Only — your voice stays on this Mac; Whisper Tiny may download once")
-            tipRow(icon: "gearshape", text: "Menu bar mic → Settings anytime")
-        }
-        .padding(16)
-        .frame(maxWidth: 400, alignment: .leading)
-        .background(ZephyrCardBackground())
-    }
-
-    private func tipRow(icon: String, text: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ZephyrTheme.cyan)
-                .frame(width: 22)
-            Text(text)
-                .font(.system(size: 13, weight: .medium, design: .rounded))
-                .foregroundStyle(ZephyrTheme.textSecondary)
+    private func stepSatisfiedForCapability(_ capability: OnboardingCapability) -> Bool {
+        switch capability {
+        case .microphone: return privacy.status.microphone
+        case .speechRecognition: return privacy.status.speechRecognition
+        case .accessibility: return privacy.status.accessibility
+        case .modelAcquisition, .networkModelDownload:
+            return settings.settings.allowModelDownloads
+        default: return true
         }
     }
-
-    // MARK: Footer
 
     private var footer: some View {
         HStack(spacing: 12) {
-            if step != .welcome {
+            if index > 0 {
                 Button("Back") { goBack() }
                     .buttonStyle(ZephyrSecondaryButtonStyle())
                     .keyboardShortcut(.cancelAction)
@@ -232,58 +245,58 @@ struct OnboardingView: View {
 
             Spacer()
 
-            if step == .welcome {
+            if current?.id == "welcome" {
                 Button("Get started") { goForward() }
                     .buttonStyle(ZephyrPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
-            } else if step == .ready {
-                Button("Start using ZephyrFlow") { finish(limited: false) }
+            } else if current?.id == "ready" {
+                Button("Start using ZephyrFlow") { finish() }
                     .buttonStyle(ZephyrPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
-            } else if stepSatisfied(step) {
-                Button("Continue") { goForward() }
-                    .buttonStyle(ZephyrPrimaryButtonStyle())
-                    .keyboardShortcut(.defaultAction)
-            } else {
-                Button(primaryActionTitle) {
-                    Task { await runPrimaryAction() }
+            } else if let current {
+                Button(primaryActionTitle(for: current)) {
+                    Task { await runPrimaryAction(current) }
                 }
-                .buttonStyle(ZephyrPrimaryButtonStyle(enabled: !isRequesting))
-                .disabled(isRequesting)
+                .buttonStyle(ZephyrPrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
+                .disabled(isRequesting)
 
-                if step == .microphone || step == .speech || step == .accessibility {
-                    Button("Skip for now") { goForward() }
-                        .buttonStyle(ZephyrSecondaryButtonStyle())
+                if current.skippable {
+                    Button("Skip") {
+                        let skip = CapabilityGraph.skipExplanation(for: productPath, step: current)
+                        skipNote = skip.limitations
+                        completed.remove(current.capability)
+                        goForward()
+                    }
+                    .buttonStyle(ZephyrSecondaryButtonStyle())
                 }
             }
         }
     }
 
-    private var primaryActionTitle: String {
-        switch step {
-        case .microphone: return isRequesting ? "Waiting…" : "Allow Microphone"
-        case .speech: return isRequesting ? "Waiting…" : "Allow Speech Recognition"
-        case .accessibility: return isRequesting ? "Waiting…" : "Enable Accessibility"
-        case .dictation: return "Open Keyboard Settings"
+    private func primaryActionTitle(for step: OnboardingStep) -> String {
+        switch step.capability {
+        case .microphone: return "Allow Microphone"
+        case .speechRecognition: return "Allow Speech Recognition"
+        case .accessibility: return "Enable Accessibility"
+        case .modelAcquisition: return "Download Model"
         default: return "Continue"
         }
     }
 
-    // MARK: Actions
+    // MARK: - Actions
 
-    private func runPrimaryAction() async {
+    private func runPrimaryAction(_ step: OnboardingStep) async {
         isRequesting = true
         defer { isRequesting = false }
         privacy.refresh()
 
-        switch step {
+        switch step.capability {
         case .microphone:
-            // Bring app forward so the system sheet attaches cleanly
             WindowRouter.presentForPermissionPrompt()
             let ok = await privacy.requestMicrophone()
             if !ok { privacy.openMicrophoneSettings() }
-        case .speech:
+        case .speechRecognition:
             WindowRouter.presentForPermissionPrompt()
             let ok = await privacy.requestSpeechRecognition()
             if !ok { privacy.openSpeechSettings() }
@@ -292,67 +305,63 @@ struct OnboardingView: View {
             if !privacy.requestAccessibility() {
                 privacy.openAccessibilitySettings()
             }
-        case .dictation:
-            privacy.openDictationSettings()
+        case .modelAcquisition, .networkModelDownload:
+            // Explicit download consent (independent of Local Only audio).
+            settings.update { $0.allowModelDownloads = true }
         default:
             break
         }
         privacy.refresh()
-        if stepSatisfied(step) {
-            withAnimation(ZephyrTheme.spring) { goForward() }
-        }
-    }
 
-    private func stepSatisfied(_ s: Step) -> Bool {
-        switch s {
-        case .welcome, .ready, .dictation: return true
-        case .microphone: return privacy.status.microphone
-        case .speech: return privacy.status.speechRecognition
-        case .accessibility: return privacy.status.accessibility
+        // Only advance when the step's requirement is satisfied (or it is an
+        // informational step). Otherwise the user stays with an actionable
+        // limited mode — never a dead end.
+        if stepSatisfied(step) || !step.requiresSystemPrompt {
+            if !step.requiresSystemPrompt || stepSatisfied(step) {
+                completed.insert(step.capability)
+                withAnimation(ZephyrTheme.spring) { goForward() }
+            }
         }
     }
 
     private func goForward() {
         withAnimation(ZephyrTheme.spring) {
-            if let next = Step(rawValue: step.rawValue + 1) {
-                step = next
+            if index + 1 < steps.count {
+                index += 1
             } else {
-                finish(limited: false)
+                finish()
             }
         }
     }
 
     private func goBack() {
+        skipNote = nil
         withAnimation(ZephyrTheme.spring) {
-            if let prev = Step(rawValue: step.rawValue - 1) {
-                step = prev
-            }
+            if index > 0 { index -= 1 }
         }
     }
 
     private func autoAdvanceIfGranted() {
-        guard step == .microphone || step == .speech || step == .accessibility else { return }
-        if stepSatisfied(step), !isRequesting {
-            // Small delay so user sees the green chip
+        guard let s = current, s.requiresSystemPrompt else { return }
+        if stepSatisfied(s), !isRequesting {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                if stepSatisfied(step) {
+                if stepSatisfied(s) {
+                    completed.insert(s.capability)
                     goForward()
                 }
             }
         }
     }
 
-    private func advancePastGrantedSteps() {
-        // If user already granted everything, land on dictation or ready
-        if privacy.status.microphone && privacy.status.speechRecognition && privacy.status.accessibility {
-            step = .dictation
+    /// Persist completed capabilities (not merely a boolean); the onboarding
+    /// boolean is derived from graph completeness for the current path.
+    private func finish() {
+        settings.update {
+            $0.completedCapabilities = Array(completed.map(\.rawValue)).sorted()
+            $0.hasCompletedOnboarding = CapabilityGraph.isComplete(
+                for: productPath, completed: completed)
         }
-    }
-
-    private func finish(limited: Bool) {
-        settings.update { $0.hasCompletedOnboarding = true }
         onFinished()
         WindowRouter.closeOnboarding()
-        _ = limited
     }
 }

@@ -1341,12 +1341,24 @@
     "JOE-2258"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (33 JOE-2282 checks: deterministic sequences per path, WhisperKit no speech/system dictation, clipboard-only no AX, network class separation, delta-only, completeness, skip explanations, prompts explained, granted-skip)",
+    "swift build: pass (graph-driven OnboardingView + persisted completedCapabilities with backward-compatible decode)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/CapabilityOnboarding.swift",
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlow/UI/Onboarding/OnboardingView.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2282/REPORT.md"
+   ],
+   "remaining_action": "UI recordings for fresh/partial/existing installs + permission-denied and language-pack-missing paths on real machine \u2014 human-gate runbook."
   },
   {
    "id": "JOE-2283",

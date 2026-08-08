@@ -445,6 +445,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var panelPositionLocked: Bool
     /// Local user override: exact bundle IDs that must be copy-only
     /// (JOE-2271). No remote configuration; never telemetry.
+    /// Persisted completed onboarding capabilities (JOE-2282).
+    public var completedCapabilities: [String]
     public var copyOnlyOverrideBundleIDs: [String]
 
     public init(
@@ -461,6 +463,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         debugLogging: Bool = false,
         flowBackend: FlowBackend = .regex,
         insertionMode: InsertionMode = .automatic,
+        completedCapabilities: [String] = [],
         panelOriginX: Double? = nil,
         panelOriginY: Double? = nil,
         panelPositionLocked: Bool = false,
@@ -479,10 +482,35 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.debugLogging = debugLogging
         self.flowBackend = flowBackend
         self.insertionMode = insertionMode
+        self.completedCapabilities = completedCapabilities
         self.panelOriginX = panelOriginX
         self.panelOriginY = panelOriginY
         self.panelPositionLocked = panelPositionLocked
         self.copyOnlyOverrideBundleIDs = copyOnlyOverrideBundleIDs
+    }
+
+    // JOE-2282: backward-compatible decode — new fields default; existing
+    // payloads (any schema) remain decodable.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.hotkey = try c.decode(HotkeyConfig.self, forKey: .hotkey)
+        self.preferredModel = try c.decode(ModelIdentifier.self, forKey: .preferredModel)
+        self.defaultFlowStyle = try c.decode(FlowStyle.self, forKey: .defaultFlowStyle)
+        self.language = try c.decode(SupportedLanguage.self, forKey: .language)
+        self.localOnlyMode = try c.decode(Bool.self, forKey: .localOnlyMode)
+        self.allowModelDownloads = try c.decodeIfPresent(Bool.self, forKey: .allowModelDownloads) ?? false
+        self.launchAtLogin = try c.decode(Bool.self, forKey: .launchAtLogin)
+        self.listeningMode = try c.decode(ListeningMode.self, forKey: .listeningMode)
+        self.hasCompletedOnboarding = try c.decode(Bool.self, forKey: .hasCompletedOnboarding)
+        self.saveHistory = try c.decodeIfPresent(Bool.self, forKey: .saveHistory) ?? true
+        self.debugLogging = try c.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? false
+        self.flowBackend = try c.decodeIfPresent(FlowBackend.self, forKey: .flowBackend) ?? .regex
+        self.insertionMode = try c.decodeIfPresent(InsertionMode.self, forKey: .insertionMode) ?? .automatic
+        self.completedCapabilities = try c.decodeIfPresent([String].self, forKey: .completedCapabilities) ?? []
+        self.panelOriginX = try c.decodeIfPresent(Double.self, forKey: .panelOriginX)
+        self.panelOriginY = try c.decodeIfPresent(Double.self, forKey: .panelOriginY)
+        self.panelPositionLocked = try c.decodeIfPresent(Bool.self, forKey: .panelPositionLocked) ?? false
+        self.copyOnlyOverrideBundleIDs = try c.decodeIfPresent([String].self, forKey: .copyOnlyOverrideBundleIDs) ?? []
     }
 
     public static let `default` = AppSettings(
