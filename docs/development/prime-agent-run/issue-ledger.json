@@ -772,7 +772,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "283d3a2"
    ],
    "aurum_commits": [],
    "tests": [
