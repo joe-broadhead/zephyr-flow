@@ -100,6 +100,9 @@ actor InsertionService: InsertionServiceProtocol {
                 case .unverified:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=unverified")
                     return .eventPostedUnverified(strategy: strategy, warnings: [.noPostWriteVerification])
+                case .deadlineExceeded:
+                    ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=deadline")
+                    return .deadlineExceeded
                 case .failed:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=fail")
                 }
@@ -117,9 +120,18 @@ actor InsertionService: InsertionServiceProtocol {
         case verified
         case unverified
         case failed
+        case deadlineExceeded
     }
 
+    private static let textLikeRoles: Set<String> = [
+        "AXTextField", "AXTextArea", "AXComboBox", "AXSecureTextField",
+        "AXTextView", "AXSearchField",
+    ]
+
     private func insertViaAccessibility(_ text: String, allowValueFallback: Bool) async -> AXInsertResult {
+        // JOE-2270: consult the deterministic write policy before ANY write.
+        // Re-resolve capability + selection immediately before the write, then
+        // route the actual AX mutation through the bounded runner.
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         let focusedResult = AXUIElementCopyAttributeValue(
@@ -140,103 +152,150 @@ actor InsertionService: InsertionServiceProtocol {
             return .failed
         }
 
-        var roleRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
-           let role = roleRef as? String {
-            ZFLog.info("AX focused role=\(role) pid=\(pid)")
-            if InsertionStrategyResolver.isSecureRole(role) { return .failed }
+        // Capability flags (fresh, content-free).
+        let role = axString(element, kAXRoleAttribute)
+        let subrole = axString(element, kAXSubroleAttribute)
+        let isSecure = role == "AXSecureTextField" || InsertionStrategyResolver.isSecureRole(role)
+        var settableFlag = DarwinBoolean(false)
+        let settable = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settableFlag) == .success
+            && settableFlag.boolValue
+        let editable = role.map { InsertionService.textLikeRoles.contains($0) } ?? false
+        let enabled = axBool(element, kAXEnabledAttribute)
+        let capability = AxElementCapability(settable: settable, editable: editable,
+                                             enabled: enabled, isSecure: isSecure,
+                                             role: role, subrole: subrole)
+
+        // Current selection (positional only) + current value length.
+        let selection = axSelectionRange(element)
+        let currentUTF16Length = axString(element, kAXValueAttribute).map { ($0 as NSString).length }
+
+        // Qualification from the (versioned, empty-by-default) adapter registry.
+        let bundle = await frontmostBundleID()
+        let qualification = AxValueAdapterRegistry.default.qualification(
+            forBundle: bundle, role: role)
+
+        let plan = AxWritePolicy.plan(capability: capability,
+                                      selection: selection,
+                                      currentUTF16Length: currentUTF16Length,
+                                      text: text,
+                                      qualification: qualification)
+        switch plan {
+        case .rejected(let reason):
+            ZFLog.info("AX write rejected reason=\(reason.rawValue) role=\(role ?? "nil")")
+            if reason == .secure { return .failed }
+            return .failed
+        case .selectedTextReplacement, .rangeMutation:
+            break
         }
 
-        var selectedRef: CFTypeRef?
-        let hasSelected = AXUIElementCopyAttributeValue(
-            element,
-            kAXSelectedTextAttribute as CFString,
-            &selectedRef
-        ) == .success
-
-        if hasSelected {
-            let setResult = AXUIElementSetAttributeValue(
-                element,
-                kAXSelectedTextAttribute as CFString,
-                text as CFTypeRef
-            )
-            if setResult == .success {
-                // Post-write verification: re-read the selected text and
-                // compare in memory (never log field contents). Confirmed
-                // match => verified; otherwise unverified post.
-                var checkRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &checkRef) == .success,
-                   let check = checkRef as? String, check == text {
-                    return .verified
-                }
-                return .unverified
-            }
-            ZFLog.info("AX set selectedText failed \(setResult.rawValue)")
-            if !allowValueFallback { return .failed }
-        } else if !allowValueFallback {
+        // Bounded write: a hung target must not block the session.
+        let startNanos = DispatchTime.now().uptimeNanoseconds
+        let writeResult = await AxBoundedRunner.run(
+            deadlineNanosAhead: 1_500_000_000,
+            startedAtNanos: startNanos,
+            nowNanos: { DispatchTime.now().uptimeNanoseconds }
+        ) { [element] in
+            self.performAXWrite(element: element, text: text, plan: plan)
+        }
+        guard let outcome = writeResult.value else {
+            return .deadlineExceeded
+        }
+        guard outcome.rawValue == 0 else {
+            let mapped = AxErrorOutcome.map(rawValue: outcome.rawValue)
+            ZFLog.info("AX write failed code=\(outcome.rawValue) mapped=\(mapped.rawValue)")
             return .failed
         }
 
-        var valueRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            element,
-            kAXValueAttribute as CFString,
-            &valueRef
-        ) == .success,
-              let current = valueRef as? String else {
-            return .failed
+        // Post-write verification (bounded re-read, in-memory compare only).
+        let verifyStart = DispatchTime.now().uptimeNanoseconds
+        let verifyResult = await AxBoundedRunner.run(
+            deadlineNanosAhead: 1_500_000_000,
+            startedAtNanos: verifyStart,
+            nowNanos: { DispatchTime.now().uptimeNanoseconds }
+        ) { [element] in
+            self.axString(element, kAXSelectedTextAttribute)
         }
-
-        var rangeRef: CFTypeRef?
-        var insertionIndex = (current as NSString).length
-        var selectionLength = 0
-        if AXUIElementCopyAttributeValue(
-            element,
-            kAXSelectedTextRangeAttribute as CFString,
-            &rangeRef
-        ) == .success,
-           let rangeValue = rangeRef,
-           CFGetTypeID(rangeValue) == AXValueGetTypeID() {
-            var cfRange = CFRange(location: 0, length: 0)
-            let axValue = unsafeBitCast(rangeValue, to: AXValue.self)
-            if AXValueGetValue(axValue, .cfRange, &cfRange) {
-                insertionIndex = max(0, cfRange.location)
-                selectionLength = max(0, cfRange.length)
+        guard let verifiedText = verifyResult.value else {
+            return .unverified
+        }
+        if verifiedText == text {
+            // Caret update only after verified mutation (bounded).
+            _ = await AxBoundedRunner.run(
+                deadlineNanosAhead: 1_500_000_000,
+                startedAtNanos: DispatchTime.now().uptimeNanoseconds,
+                nowNanos: { DispatchTime.now().uptimeNanoseconds }
+            ) { [element] in
+                self.placeCaret(element: element, afterInserting: text, plan: plan)
             }
+            return .verified
         }
-
-        let nsCurrent = current as NSString
-        let safeLoc = min(insertionIndex, nsCurrent.length)
-        let safeLen = min(selectionLength, nsCurrent.length - safeLoc)
-        let replaceRange = NSRange(location: safeLoc, length: safeLen)
-        let newValue = nsCurrent.replacingCharacters(in: replaceRange, with: text)
-        let setVal = AXUIElementSetAttributeValue(
-            element,
-            kAXValueAttribute as CFString,
-            newValue as CFTypeRef
-        )
-        guard setVal == .success else { return .failed }
-
-        // Post-write verification for the value path (in-memory compare).
-        var checkRef: CFTypeRef?
-        var verified = false
-        if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &checkRef) == .success,
-           let check = checkRef as? String, check == newValue {
-            verified = true
-        }
-
-        var newRange = CFRange(location: safeLoc + (text as NSString).length, length: 0)
-        if let axRange = AXValueCreate(.cfRange, &newRange) {
-            AXUIElementSetAttributeValue(
-                element,
-                kAXSelectedTextRangeAttribute as CFString,
-                axRange
-            )
-        }
-        return verified ? .verified : .unverified
+        return .unverified
     }
 
-    // MARK: - Clipboard paste path
+    // MARK: - AX primitives (JOE-2270)
+
+    /// Synchronous AX mutation; runs on the bounded runner's thread.
+    private nonisolated func performAXWrite(element: AXUIElement, text: String, plan: AxWritePlan) -> AXError {
+        switch plan {
+        case .selectedTextReplacement:
+            return AXUIElementSetAttributeValue(
+                element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+        case .rangeMutation(let range, _):
+            guard let current = axString(element, kAXValueAttribute) else { return .failure }
+            let ns = current as NSString
+            let loc = min(max(0, range.location), ns.length)
+            let len = min(max(0, range.length), ns.length - loc)
+            let newValue = ns.replacingCharacters(in: NSRange(location: loc, length: len), with: text)
+            return AXUIElementSetAttributeValue(
+                element, kAXValueAttribute as CFString, newValue as CFTypeRef)
+        case .rejected:
+            return .failure
+        }
+    }
+
+    /// Positional caret placement (only after a verified mutation).
+    private nonisolated func placeCaret(element: AXUIElement, afterInserting text: String, plan: AxWritePlan) {
+        let insertionIndex: Int
+        switch plan {
+        case .selectedTextReplacement:
+            guard let current = axString(element, kAXValueAttribute) else { return }
+            insertionIndex = (current as NSString).length
+        case .rangeMutation(let range, _):
+            insertionIndex = range.location + (text as NSString).length
+        case .rejected:
+            return
+        }
+        var newRange = CFRange(location: insertionIndex, length: 0)
+        if let axRange = AXValueCreate(.cfRange, &newRange) {
+            AXUIElementSetAttributeValue(
+                element, kAXSelectedTextRangeAttribute as CFString, axRange)
+        }
+    }
+
+    private nonisolated func axString(_ element: AXUIElement, _ attribute: String) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+        return value as? String
+    }
+
+    private nonisolated func axBool(_ element: AXUIElement, _ attribute: String) -> Bool {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return false }
+        return value as? Bool ?? false
+    }
+
+    /// Positional AXSelectedTextRange as AxSelection (never field content).
+    private nonisolated func axSelectionRange(_ element: AXUIElement) -> AxSelection? {
+        var rangeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+              let rangeValue = rangeRef, CFGetTypeID(rangeValue) == AXValueGetTypeID() else { return nil }
+        var cfRange = CFRange(location: 0, length: 0)
+        let axValue = unsafeBitCast(rangeValue, to: AXValue.self)
+        guard AXValueGetValue(axValue, .cfRange, &cfRange) else { return nil }
+        return AxSelection(location: max(0, cfRange.location), length: max(0, cfRange.length))
+    }
+
+// MARK: - Clipboard paste path
 
     private enum ClipboardPasteResult: Sendable {
         case pasted

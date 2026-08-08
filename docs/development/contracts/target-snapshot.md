@@ -50,3 +50,13 @@ write time.
 - No stale `lastBundleID` fallback: the session-scoped snapshot is the only
   insertion authority.
 - Serialized snapshot for diagnostics: positional metadata only.
+
+## 5. AX write hardening (JOE-2270)
+
+- Every write is planned by `AxWritePolicy` immediately before execution
+  (settable/editable/enabled/secure gates; AXSelectedText preferred; range/
+  value mutation only behind an explicit `AxValueAdapterQualification`).
+- AX calls execute through `AxBoundedRunner` (hard deadline; late results
+  dropped) so a hung target cannot block the session.
+- Success requires post-write verification re-read (in-memory, never logged);
+  caret placement happens only after verified mutation.

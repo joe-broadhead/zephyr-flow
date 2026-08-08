@@ -770,12 +770,24 @@
     "JOE-2269"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (fake AX matrix, UTF-16/Unicode selection, bounded runner deadline, AX error mapping, registry hygiene)",
+    "swift build: pass (policy-planned bounded AX writes, no generic whole-value fallback)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/AxWritePolicy.swift",
+    "Sources/ZephyrFlow/Services/InsertionService.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2270/REPORT.md",
+    "docs/development/contracts/target-snapshot.md"
+   ],
+   "remaining_action": "Real-app qualification tied to adapter capability keys (JOE-2271 registry) + manual AX matrix runbook (human gate)."
   },
   {
    "id": "JOE-2271",

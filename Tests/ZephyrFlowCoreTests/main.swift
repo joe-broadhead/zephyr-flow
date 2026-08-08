@@ -736,6 +736,117 @@ struct CoreTests {
             check("2269 policy defined for every outcome case", policyComplete)
         }
 
+        // ===== JOE-2270: selection-safe bounded verifiable AX writes =====
+        do {
+            // Fake element matrix: capability flags x roles
+            func cap(settable: Bool = true, editable: Bool = true, enabled: Bool = true,
+                     secure: Bool = false, role: String = "AXTextField") -> AxElementCapability {
+                AxElementCapability(settable: settable, editable: editable, enabled: enabled,
+                                    isSecure: secure, role: role, subrole: nil)
+            }
+            let sel = AxSelection(location: 2, length: 3)
+            let text = "abc"
+            // writable + valid selection => selectedTextReplacement
+            check("2270 prefers selectedText replacement",
+                  AxWritePolicy.plan(capability: cap(), selection: sel, currentUTF16Length: 10,
+                                     text: text, qualification: nil) == .selectedTextReplacement)
+            // secure => no write
+            check("2270 secure element rejected",
+                  AxWritePolicy.plan(capability: cap(secure: true), selection: sel, currentUTF16Length: 10,
+                                     text: text, qualification: nil) == .rejected(reason: .secure))
+            // read-only (not editable) => no write
+            check("2270 read-only rejected",
+                  AxWritePolicy.plan(capability: cap(editable: false), selection: sel, currentUTF16Length: 10,
+                                     text: text, qualification: nil) == .rejected(reason: .notSettable))
+            // disabled => no write
+            check("2270 disabled rejected",
+                  AxWritePolicy.plan(capability: cap(enabled: false), selection: sel, currentUTF16Length: 10,
+                                     text: text, qualification: nil) == .rejected(reason: .disabled))
+            // out-of-range selection => rejected, never corrupts
+            check("2270 out-of-range selection rejected",
+                  AxWritePolicy.plan(capability: cap(), selection: AxSelection(location: 8, length: 3),
+                                     currentUTF16Length: 10, text: text, qualification: nil) == .rejected(reason: .outOfRange))
+            // no selection + no qualification => wholeValueNotQualified (no generic rewrite)
+            check("2270 whole-value rewrite denied without adapter",
+                  AxWritePolicy.plan(capability: cap(), selection: nil, currentUTF16Length: 10,
+                                     text: text, qualification: nil) == .rejected(reason: .wholeValueNotQualified))
+            // no selection + qualified adapter => append via rangeMutation
+            let q = AxValueAdapterQualification(capabilityKey: "ax.value.replace.v1",
+                                                bundleID: "com.example.Editor", roles: ["AXTextField"],
+                                                macOSMin: "14.0", evidenceReference: "docs/evidence/adapter-example")
+            check("2270 qualified adapter permits append rangeMutation",
+                  AxWritePolicy.plan(capability: cap(), selection: nil, currentUTF16Length: 10,
+                                     text: text, qualification: q) == .rangeMutation(
+                                        range: AxSelection(location: 10, length: 0), replacementUTF16Length: 3))
+            // registry hygiene
+            check("2270 default registry has no overlaps",
+                  !AxValueAdapterRegistry.default.hasOverlaps
+                    && AxValueAdapterRegistry.default.qualification(forBundle: "com.example.Editor", role: "AXTextField") == nil)
+            let reg = AxValueAdapterRegistry(qualifications: [q])
+            check("2270 registry resolves qualified adapter",
+                  reg.qualification(forBundle: "com.example.Editor", role: "AXTextField")?.capabilityKey == "ax.value.replace.v1")
+            check("2270 registry ignores unlisted bundle",
+                  reg.qualification(forBundle: "com.other.App", role: "AXTextField") == nil)
+            let dup = AxValueAdapterRegistry(qualifications: [
+                AxValueAdapterQualification(capabilityKey: "k1", bundleID: "b", roles: nil, macOSMin: nil, evidenceReference: "r1"),
+                AxValueAdapterQualification(capabilityKey: "k2", bundleID: "b", roles: nil, macOSMin: nil, evidenceReference: "r2"),
+            ])
+            check("2270 overlapping registry detected", dup.hasOverlaps)
+        }
+        // Unicode/emoji/combining-character selection tests (UTF-16 safe)
+        do {
+            let emoji = "a👨👩👧👦b"          // multi-codepoint ZWJ family
+            let combining = "e\u{301}"       // e + combining acute
+            let utf16 = (emoji as NSString).length
+            check("2270 emoji UTF-16 length handled",
+                  AxSelection(location: 1, length: utf16 - 2).isValid(utf16Length: utf16))
+            check("2270 emoji caret after replacement",
+                  AxSelection(location: 1, length: 0).caretAfter(replacingWith: (combining as NSString).length) == 1 + (combining as NSString).length)
+            check("2270 malformed negative clamped",
+                  !AxSelection(location: 0, length: utf16 + 1).isValid(utf16Length: utf16))
+        }
+        // AX error mapping table
+        do {
+            check("2270 AX error mapping",
+                  AxErrorOutcome.map(rawValue: 0) == .ok
+                    && AxErrorOutcome.map(rawValue: -25204) == .timeout
+                    && AxErrorOutcome.map(rawValue: -25205) == .notEditable
+                    && AxErrorOutcome.map(rawValue: -25210) == .axDisabled
+                    && AxErrorOutcome.map(rawValue: -25206) == .notSupported
+                    && AxErrorOutcome.map(rawValue: -25201) == .illegalArgument
+                    && AxErrorOutcome.map(rawValue: -9999) == .unknown)
+        }
+        // Bounded AX call runner: hung target cannot block; late results dropped
+        do {
+            let start = UInt64(1_000_000)
+            // Fast operation completes.
+            let fast = await AxBoundedRunner.run(deadlineNanosAhead: 10_000_000_000,
+                                                 startedAtNanos: start,
+                                                 nowNanos: { start + 1 }) { 42 }
+            check("2270 fast AX call completes", fast.value == 42)
+            // Slow operation exceeds deadline => deadlineExceeded, no hang.
+            let slow = await AxBoundedRunner.run(deadlineNanosAhead: 20_000_000,
+                                                 startedAtNanos: start,
+                                                 nowNanos: { start }) {
+                Thread.sleep(forTimeInterval: 0.5)   // synchronous hang, like a stuck AX target
+                return 7
+            }
+            if case .deadlineExceeded = slow {
+                check("2270 hung AX call hits deadline", true)
+            } else {
+                check("2270 hung AX call hits deadline", false)
+            }
+            // Already-expired budget never executes.
+            let expired = await AxBoundedRunner.run(deadlineNanosAhead: 10,
+                                                    startedAtNanos: start,
+                                                    nowNanos: { start + 999 }) { 1 }
+            if case .deadlineExceeded = expired {
+                check("2270 expired budget reports deadline without running", true)
+            } else {
+                check("2270 expired budget reports deadline without running", false)
+            }
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
