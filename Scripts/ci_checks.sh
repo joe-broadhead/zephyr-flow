@@ -22,6 +22,9 @@ if ! swift run ZephyrFlowCoreTests 2>&1 | tail -2; then fail "swift run ZephyrFl
 #    warnings fail (pinned baseline).
 step "3/8 strict concurrency (complete) vs baseline"
 WARN_LOG="$(mktemp)"
+# Clean build so every warning is emitted (a cached build would emit none and
+# silently pass); the baseline was produced the same way.
+swift package clean >/dev/null 2>&1 || true
 swift build -Xswiftc -strict-concurrency=complete 2>&1 \
   | grep 'warning:' | sed -E 's/^[[:space:]]*[|`-]*[[:space:]]*//' \
   | sed -E 's/[[:space:]]+/ /g' | sort -u > "$WARN_LOG" || true
