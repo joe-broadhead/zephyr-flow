@@ -173,6 +173,118 @@ struct CoreTests {
             check("newer minor", AppVersion.isNewer(candidate: "v1.1.0", than: "1.0.9"))
         }
 
+        // ===== M0 contract tests =====
+        // JOE-2240: outcome taxonomy policy is exhaustive and fail-closed
+        do {
+            var successOutcomes = 0
+            for outcome in StageOutcomeCategory.allCases {
+                let policy = OutcomePolicy.policy(for: outcome)
+                if policy.showsSuccessUI { successOutcomes += 1 }
+            }
+            check("only completed shows success UI", successOutcomes == 1)
+            check("completed full policy", OutcomePolicy.policy(for: .completed).entersReleaseEvidence)
+            check("partial never persists", !OutcomePolicy.policy(for: .partial).maySaveHistory
+                  && !OutcomePolicy.policy(for: .partial).mayWriteClipboard)
+            check("truncated never success", !OutcomePolicy.policy(for: .truncated).showsSuccessUI)
+            check("secureTarget fail-closed", OutcomePolicy.policy(for: .secureTarget) == .failClosed)
+            check("deadlineExceeded not success", !OutcomePolicy.policy(for: .deadlineExceeded).showsSuccessUI)
+            check("degraded not success but persists", !OutcomePolicy.policy(for: .degraded).showsSuccessUI
+                  && OutcomePolicy.policy(for: .degraded).maySaveHistory)
+        }
+        // exactly-one terminal gate
+        do {
+            let gate = SessionTerminalGate()
+            let first = await gate.record(.completed)
+            let second = await gate.record(.failed)
+            check("terminal gate exactly once", first && !second)
+            check("terminal gate is terminal", await gate.isTerminal)
+            let gate2 = SessionTerminalGate()
+            check("gate2 not terminal", !(await gate2.isTerminal))
+        }
+        // JOE-2241: sensitivity fail-closed
+        do {
+            check("unknown fails closed", !SessionSensitivity.unknown.allowsAutomaticSideEffects)
+            check("secure fails closed", !SessionSensitivity.secure.allowsAutomaticSideEffects)
+            check("secure no history", !SessionSensitivity.secure.allowsHistory)
+            check("secure no clipboard", !SessionSensitivity.secure.allowsClipboardFallback)
+            check("secure no payload", !SessionSensitivity.secure.allowsPayloadDiagnostics)
+            check("normal allows side effects", SessionSensitivity.normal.allowsAutomaticSideEffects)
+            check("unknown assessment canonical", SensitivityAssessment.unknown.sensitivity == .unknown)
+        }
+        // JOE-2242: state machine transition table
+        do {
+            let sm = SessionStateMachine()
+            func tr(_ s: SessionState, _ e: SessionEvent) -> SessionTransition { sm.transition(from: s, event: e) }
+            check("idle begin -> preparing", tr(.idle, .begin) == .to(.preparing))
+            check("preparing cancel -> cancelled", tr(.preparing, .cancel) == .to(.cancelled))
+            check("preparing release prevents capture", tr(.preparing, .stop) == .illegal || tr(.preparing, .stop) == .to(.cancelled))
+            check("capturing stop -> draining", tr(.capturing, .stop) == .to(.draining))
+            check("capturing duplicate begin stays", tr(.capturing, .begin) == .stay)
+            check("draining finish -> transcribing", tr(.draining, .drainFinished) == .to(.transcribing))
+            check("transcribing finished -> transforming", tr(.transcribing, .transcriptionFinished) == .to(.transforming))
+            check("transforming finished -> resolving", tr(.transforming, .transformationFinished) == .to(.resolvingTarget))
+            check("resolving ok -> inserting", tr(.resolvingTarget, .targetValidationSucceeded) == .to(.inserting))
+            check("resolving secure -> secureTarget", tr(.resolvingTarget, .targetSecure) == .to(.secureTarget))
+            check("resolving unknown fails closed", tr(.resolvingTarget, .targetUnknown) == .to(.secureTarget))
+            check("inserting ok -> completed", tr(.inserting, .insertionSucceeded) == .to(.completed))
+            check("deadline on capturing", tr(.capturing, .deadlineViolated) == .to(.deadlineExceeded))
+            // terminal absorbing
+            var absorbingOK = true
+            for terminal in SessionState.allCases where terminal.isTerminal {
+                for event in SessionEvent.allCases where tr(terminal, event) != .illegal { absorbingOK = false }
+            }
+            check("terminal states absorb all events", absorbingOK)
+            // every non-terminal state can progress or is intentionally idle
+            var progressOK = true
+            for s in SessionState.allCases where !s.isTerminal && s != .idle {
+                var canProgress = false
+                for e in SessionEvent.allCases {
+                    if case .to = tr(s, e) { canProgress = true }
+                }
+                if !canProgress { progressOK = false }
+            }
+            check("every working state can progress", progressOK)
+            // happy path
+            var happy: [SessionState] = [.idle]
+            for (e, expect) in [(SessionEvent.begin, SessionState.preparing),
+                                (.readyToCapture, .capturing),
+                                (.stop, .draining),
+                                (.drainFinished, .transcribing),
+                                (.transcriptionFinished, .transforming),
+                                (.transformationFinished, .resolvingTarget),
+                                (.targetValidationSucceeded, .inserting),
+                                (.insertionSucceeded, .completed)] {
+                if case .to(let ns) = tr(happy.last!, e) { happy.append(ns) }
+            }
+            check("happy path reaches completed", happy.last == .completed && happy.count == 9)
+        }
+        // JOE-2267: TargetSnapshot contract
+        do {
+            let sid = SessionID(token: "t", sequence: 1, createdAtUptimeNanos: 0)
+            let ident = TargetSnapshot.Identity(pid: 4242, bundleID: "com.example.App",
+                                                processStartUptimeNanos: 99, windowID: 77, appVersion: "1.0")
+            let snap = TargetSnapshot(sessionID: sid, capturedAtUptimeNanos: 5, target: ident,
+                                      element: nil, settable: true, editable: true, enabled: true,
+                                      selectionRange: 2..<5,
+                                      sensitivity: SensitivityAssessment.unknown)
+            check("snapshot rejects zephyr pid", !snap.isUsableTarget(zephyrPIDs: [4242], ignoredSystemPIDs: []))
+            check("snapshot rejects ignored system pid",
+                  !TargetSnapshot(sessionID: sid, capturedAtUptimeNanos: 0, target: TargetSnapshot.Identity(pid: 1, bundleID: nil, processStartUptimeNanos: nil, windowID: nil, appVersion: nil), element: nil, settable: false, editable: false, enabled: false, selectionRange: nil, sensitivity: .unknown).isUsableTarget(zephyrPIDs: [], ignoredSystemPIDs: [1]))
+            check("no element -> unknown confidence", snap.targetConfidence == .unknown)
+            check("snapshot immutable range", snap.selectionRange == 2..<5)
+        }
+        // JOE-2275: loss classes + language gating
+        do {
+            check("secure allows verbatim", FlowLossClass.verbatim.allowedForSecureSessions)
+            check("secure allows conservative", FlowLossClass.conservative.allowedForSecureSessions)
+            check("secure blocks structural", !FlowLossClass.structural.allowedForSecureSessions)
+            check("secure blocks semantic", !FlowLossClass.semantic.allowedForSecureSessions)
+            check("semantic needs consent", FlowLossClass.semantic.requiresExplicitConsent)
+            check("en qualified", FlowLanguageContext(language: "en-US").isEnglishQualified)
+            check("de not qualified", !FlowLanguageContext(language: "de").isEnglishQualified)
+            check("forced conservative", !FlowLanguageContext(language: "en", forceConservative: true).isEnglishQualified)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
