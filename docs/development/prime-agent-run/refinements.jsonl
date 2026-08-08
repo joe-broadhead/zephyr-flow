@@ -1,0 +1,1 @@
+{"event": "zephyr-run-final-dispositions", "change": "recorded full disposition map + runbooks in provisional-decisions.md/human-gates.md before final gate", "expected": "gate passes with no fabricated evidence", "eval": "3 events: disposition pass, gate run, final report", "rollback": "keep human gates open"}
