@@ -790,12 +790,22 @@
     "JOE-2264"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (clean bundle + canary, marker prevents export + field named, private-path blocked, bounded events, representative fields)",
+    "swift build: pass",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/SupportBundle.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2265/REPORT.md"
+   ],
+   "remaining_action": "Support scenarios reviewed with generated bundles + synthetic example bundle + schema docs (human-gate runbook)."
   },
   {
    "id": "JOE-2266",

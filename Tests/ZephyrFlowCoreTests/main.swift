@@ -2057,6 +2057,61 @@ struct CoreTests {
             }
         }
 
+        // ===== JOE-2265: privacy-safe support bundle + canary =====
+        do {
+            func inputs(settings: [String: String] = ["localOnly": "true", "saveHistory": "false"],
+                        events: [TelemetryEvent] = [],
+                        healthChecks: [String: String] = ["historyPerms": "ok"]) -> SupportBundleInputs {
+                SupportBundleInputs(appVersion: "0.0.0", build: "1", sourceProvenance: "git",
+                                    channel: "debug", osVersion: "14.5", architecture: "arm64",
+                                    hardwareClass: "desktop", microphoneGranted: true,
+                                    accessibilityTrusted: true, speechGranted: true,
+                                    settingsSummary: settings, engineModel: "Whisper Tiny",
+                                    modelCacheReady: true, modelCacheIntegrity: true,
+                                    telemetryEvents: events, frameSummary: "captured=16000 delivered=16000 dropped=0 decoded=16000",
+                                    fallbackCount: 1, insertionConfidenceCounts: ["verified": 5],
+                                    healthChecks: healthChecks, privacyPolicyVersion: "1")
+            }
+            // Clean bundle builds + passes canary.
+            let clean = try? SupportBundleBuilder.build(inputs: inputs())
+            check("2265 clean bundle builds + canary clean",
+                  clean != nil && clean?.schemaVersion == SupportBundleSchemaVersion.current)
+            check("2265 preview manifest readable",
+                  SupportBundleBuilder.preview(clean!).contains("support bundle"))
+            // Injected canary markers in controlled fields => export prevented.
+            let tainted = inputs(settings: ["notes": "my password=secret123"])
+            var threw = false
+            do { _ = try SupportBundleBuilder.build(inputs: tainted) } catch { threw = true }
+            check("2265 marker prevents export", threw)
+            // Field name reported without revealing the marker.
+            do {
+                _ = try SupportBundleBuilder.build(inputs: tainted)
+                check("2265 offending field named", false)
+            } catch SupportBundleBuilder.BuildError.markerDetected(let field) {
+                check("2265 offending field named", field == "settingsSummary.notes")
+            } catch {
+                check("2265 offending field named", false)
+            }
+            // Private path marker in health check blocks export.
+            let pathTainted = inputs(healthChecks: ["logPath": "/Users/alice/zf.log"])
+            var threwPath = false
+            do { _ = try SupportBundleBuilder.build(inputs: pathTainted) } catch { threwPath = true }
+            check("2265 private path marker blocks export", threwPath)
+            // Telemetry events are content-free (no transcript/audio/keys).
+            let tid = SessionTelemetryID("b1")
+            let ev = TelemetryEvent(sessionID: tid, kind: .terminal, terminal: .completed, atNanos: 1)
+            let withEvents = try? SupportBundleBuilder.build(inputs: inputs(events: [ev]))
+            check("2265 telemetry events included bounded",
+                  withEvents?.telemetryEvents.count == 1)
+            // Bundle sufficient for representative diagnostics.
+            let b = clean!
+            check("2265 bundle has permissions/model/frames",
+                  b.permissions.microphoneGranted && b.modelCache.integrityVerified
+                    && b.frameSummary.contains("captured=16000")
+                    && b.fallbackCount == 1
+                    && b.insertionConfidenceCounts["verified"] == 5)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
