@@ -37,7 +37,7 @@ public enum WhisperEngineError: LocalizedError, Sendable {
 // MARK: - Insertion
 
 public protocol InsertionServiceProtocol: Actor {
-    func insert(_ text: String) async -> InsertionResult
+    func insert(_ text: String) async -> InsertionOutcome
 }
 
 // MARK: - Flow Processor

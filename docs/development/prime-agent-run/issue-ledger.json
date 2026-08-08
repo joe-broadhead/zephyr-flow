@@ -739,12 +739,25 @@
     "JOE-2268"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (golden outcome mapping, central policy exhaustiveness)",
+    "swift build: pass (InsertionService typed outcomes + post-write verification, controller central consumption)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlowCore/Protocols.swift",
+    "Sources/ZephyrFlow/Services/InsertionService.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2269/REPORT.md"
+   ],
+   "remaining_action": "UI snapshot/accessibility-label tests for each confidence state (human-gate real-device item; deterministic policy tests cover the mapping)."
   },
   {
    "id": "JOE-2270",

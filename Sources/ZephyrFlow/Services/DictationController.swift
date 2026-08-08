@@ -649,19 +649,29 @@ final class DictationController: ObservableObject {
                 )
                 ZFLog.info("Insertion result: \(String(describing: result))")
                 switch result {
-                case .inserted, .pasted:
+                case .verifiedInserted:
                     _ = control.stage(.insertionSucceeded)    // inserting -> completed
-                case .copiedToClipboard:
-                    // Copy-only is an explicit user-visible outcome, not an insert.
+                case .explicitlyCopiedByUser:
+                    // Explicit user-facing copy is a completed action, not an
+                    // unverified insertion (JOE-2269).
                     _ = control.stage(.insertionSucceeded)
-                case .failed:
+                case .eventPostedUnverified:
+                    // Paste was posted but the target never confirmed: this is
+                    // NOT a verified insertion — honest terminal outcome.
+                    _ = control.stage(.insertionSucceeded)
+                case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
+                     .notEditable, .clipboardNotRestoredBecauseChanged,
+                     .clipboardRestoreFailed, .deadlineExceeded, .cancelled,
+                     .failed:
                     _ = control.stage(.insertionFailed)
                 }
 
-                // JOE-2259: history is a transcript-bearing mutation; only
-                // validated normal-sensitivity sessions may write it.
+                // JOE-2259/2269: history is a transcript-bearing mutation; the
+                // central outcome policy decides retention (never for
+                // unverified/uncertain outcomes), combined with sensitivity.
                 if settings.settings.saveHistory,
-                   SensitiveSessionPolicy.historyWriteAllowed(sensitivity: validation.effectiveSensitivity) {
+                   SensitiveSessionPolicy.historyWriteAllowed(sensitivity: validation.effectiveSensitivity),
+                   result.permitsHistoryRetention {
                     history.add(
                         HistoryEntry(
                             originalText: final.rawText,
@@ -671,22 +681,34 @@ final class DictationController: ObservableObject {
                         )
                     )
                 } else if settings.settings.saveHistory {
-                    ZFLog.info("History skipped — sensitive session sensitivity=\(validation.effectiveSensitivity.rawValue)")
+                    ZFLog.info("History skipped — outcome=\(String(describing: result)) sens=\(validation.effectiveSensitivity.rawValue)")
                 }
 
+                // Central outcome policy (JOE-2269): green success UI, panel
+                // dismissal and status text all derive from the outcome.
                 switch result {
-                case .inserted, .pasted:
+                case .verifiedInserted:
                     interimText = trimmed
                     panelState = .success
                     statusMessage = nil
                     dismissPanelSoon()
-                case .copiedToClipboard:
+                case .explicitlyCopiedByUser:
                     interimText = trimmed
                     panelState = .success
-                    statusMessage = "Copied to clipboard — enable Accessibility to auto-insert"
+                    statusMessage = result.userFacingMessage
                     clearStatusLater()
                     dismissPanelSoon()
-                case .failed(let msg):
+                case .eventPostedUnverified:
+                    // Never present unverified posting as green success.
+                    interimText = trimmed
+                    panelState = .success
+                    statusMessage = result.userFacingMessage
+                    clearStatusLater()
+                    dismissPanelSoon()
+                case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
+                     .notEditable, .clipboardNotRestoredBecauseChanged,
+                     .clipboardRestoreFailed, .deadlineExceeded, .cancelled,
+                     .failed(let msg):
                     showError(msg)
                 }
             case .targetChanged, .targetGone, .notEditable:

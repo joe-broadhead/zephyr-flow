@@ -95,10 +95,11 @@ struct CoreTests {
             check("settings round-trip", false, error.localizedDescription)
         }
 
-        // InsertionResult
-        check("inserted succeeds", InsertionResult.inserted.succeeded)
-        check("copied message", InsertionResult.copiedToClipboard.userMessage == "Copied to clipboard")
-        check("failed fails", !InsertionResult.failed("x").succeeded)
+        // InsertionOutcome (JOE-2269) — legacy InsertionResult removed
+        check("verified succeeds", InsertionOutcome.verifiedInserted(
+            strategy: .axSelectedText, evidence: .postWriteSelectionReRead, warnings: []).isVerifiedSuccess)
+        check("copied message", InsertionOutcome.explicitlyCopiedByUser.userFacingMessage == "Copied to clipboard")
+        check("failed fails", !InsertionOutcome.failed("x").isVerifiedSuccess)
 
         // Streaming partial window policy (Whisper progressive decode)
         do {
@@ -664,6 +665,75 @@ struct CoreTests {
             } else {
                 check("2268 restore attempt cap rejected", false)
             }
+        }
+
+        // ===== JOE-2269: typed InsertionOutcome + central policy =====
+        do {
+            let verified = InsertionOutcome.verifiedInserted(
+                strategy: .axSelectedText, evidence: .postWriteSelectionReRead, warnings: [])
+            let unverified = InsertionOutcome.eventPostedUnverified(
+                strategy: .clipboardPaste, warnings: [.noPostWriteVerification])
+            let copied = InsertionOutcome.explicitlyCopiedByUser
+            let changed = InsertionOutcome.targetChanged
+            let gone = InsertionOutcome.targetGone
+            let unknown = InsertionOutcome.targetUnknown
+            let secure = InsertionOutcome.secureTarget
+            let notEditable = InsertionOutcome.notEditable
+            let clipboardChanged = InsertionOutcome.clipboardNotRestoredBecauseChanged
+            let restoreFailed = InsertionOutcome.clipboardRestoreFailed
+            let deadline = InsertionOutcome.deadlineExceeded
+            let cancelled = InsertionOutcome.cancelled
+            let failed = InsertionOutcome.failed("boom")
+
+            check("2269 verified is verified success + green UI", verified.isVerifiedSuccess && verified.permitsGreenSuccessUI)
+            check("2269 verified keeps history + auto-dismiss", verified.permitsHistoryRetention && verified.permitsAutomaticPanelDismissal)
+            check("2269 unverified never green", !unverified.permitsGreenSuccessUI)
+            check("2269 unverified never history", !unverified.permitsHistoryRetention)
+            check("2269 unverified is completed action but not verified",
+                  unverified.isCompletedAction && !unverified.isVerifiedSuccess)
+            check("2269 unverified message distinguishes", unverified.userFacingMessage == "Inserted — unverified")
+            check("2269 copied keeps history + green", copied.permitsGreenSuccessUI && copied.permitsHistoryRetention)
+            check("2269 changed/gone/unknown/secure/notEditable uncertain + no green",
+                  changed.isUncertain && gone.isUncertain && unknown.isUncertain
+                    && secure.isUncertain && notEditable.isUncertain
+                    && !changed.permitsGreenSuccessUI && !secure.permitsGreenSuccessUI)
+            check("2269 uncertain never history", !changed.permitsHistoryRetention && !secure.permitsHistoryRetention)
+            check("2269 uncertain no auto dismiss", !unknown.permitsAutomaticPanelDismissal)
+            check("2269 clipboard hygiene outcomes controlled",
+                  clipboardChanged.userFacingMessage.contains("left as-is")
+                    && restoreFailed.userFacingMessage.contains("restore clipboard")
+                    && !clipboardChanged.permitsGreenSuccessUI)
+            check("2269 deadline/cancelled/failed non-success",
+                  !deadline.permitsGreenSuccessUI && !cancelled.permitsGreenSuccessUI && !failed.permitsGreenSuccessUI)
+            check("2269 all outcomes permit metrics", verified.permitsReliabilityMetrics && unverified.permitsReliabilityMetrics
+                    && changed.permitsReliabilityMetrics && failed.permitsReliabilityMetrics)
+            // Golden mapping: strategy retained for verified/unverified.
+            check("2269 strategy retained", verified.strategy == .axSelectedText && unverified.strategy == .clipboardPaste)
+            check("2269 no strategy on copy/uncertain", copied.strategy == nil && changed.strategy == nil)
+        }
+        // Exhaustive policy test: adding a case must fail until UI/privacy/
+        // metrics policy is defined. Compile-time exhaustiveness + runtime
+        // sanity for every case.
+        do {
+            let all: [InsertionOutcome] = [
+                .verifiedInserted(strategy: .axSelectedText, evidence: .clipboardRestored, warnings: []),
+                .eventPostedUnverified(strategy: .terminalPaste, warnings: [.noPostWriteVerification]),
+                .explicitlyCopiedByUser,
+                .targetChanged, .targetGone, .targetUnknown, .secureTarget, .notEditable,
+                .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
+                .deadlineExceeded, .cancelled, .failed("x"),
+            ]
+            var policyComplete = true
+            for outcome in all {
+                // Every outcome must have user-facing language, green/uncertain/
+                // history/auto-dismiss/metrics policy (non-crash exhaustive switch).
+                _ = (outcome.userFacingMessage, outcome.permitsGreenSuccessUI,
+                     outcome.isUncertain, outcome.permitsHistoryRetention,
+                     outcome.permitsAutomaticPanelDismissal, outcome.permitsReliabilityMetrics,
+                     outcome.isVerifiedSuccess, outcome.isCompletedAction)
+                if outcome.userFacingMessage.isEmpty { policyComplete = false }
+            }
+            check("2269 policy defined for every outcome case", policyComplete)
         }
 
         print("")

@@ -360,27 +360,166 @@ public struct HistoryEntry: Identifiable, Codable, Equatable, Sendable {
 
 // MARK: - Insertion
 
-public enum InsertionResult: Sendable, Equatable {
-    case inserted
-    case pasted
-    case copiedToClipboard
+// MARK: - Insertion outcome (JOE-2269)
+
+/// Content-free controlled evidence about what actually happened at the
+/// target. Never contains field text or document titles.
+public enum InsertionEvidence: String, Codable, CaseIterable, Sendable, Equatable {
+    /// Post-write re-read of the selected-text/value range matched the
+    /// inserted payload (in-memory compare only; never logged).
+    case postWriteSelectionReRead
+    /// Clipboard was restored to its prior content after a paste.
+    case clipboardRestored
+    /// The strategy provides no post-write confirmation.
+    case none
+}
+
+/// Content-free warnings attached to an outcome.
+public enum InsertionWarning: String, Codable, CaseIterable, Sendable, Equatable {
+    case noPostWriteVerification
+    case clipboardFallbackUsed
+    case targetCapabilityUnknown
+    case restoreDeferred
+}
+
+/// Typed, controlled outcome of an insertion path (JOE-2269). Replaces the
+/// ambiguous legacy `InsertionResult` (`.pasted` / `.copiedToClipboard` were
+/// treated as verified success). Every insertion path returns exactly one of
+/// these; UI, history and metrics consume the outcome centrally through the
+/// policy properties below (exhaustive switches => adding a case is a compile
+/// error until policy is defined).
+public enum InsertionOutcome: Sendable, Equatable {
+    /// Confirmed at the target via post-write evidence.
+    case verifiedInserted(strategy: InsertionStrategy, evidence: InsertionEvidence, warnings: [InsertionWarning])
+    /// Event was posted (e.g. Cmd-V) but the target never confirmed receipt.
+    case eventPostedUnverified(strategy: InsertionStrategy, warnings: [InsertionWarning])
+    /// The user explicitly chose copy (review panel / copy-only adapter).
+    case explicitlyCopiedByUser
+    // --- no-side-effect uncertainty states (JOE-2268 mapping) ---
+    case targetChanged
+    case targetGone
+    case targetUnknown
+    case secureTarget
+    case notEditable
+    // --- clipboard hygiene failures ---
+    case clipboardNotRestoredBecauseChanged
+    case clipboardRestoreFailed
+    // --- timing / lifecycle ---
+    case deadlineExceeded
+    case cancelled
+    // --- typed failure (message is a user-safe reason, never transcript) ---
     case failed(String)
 
-    public var succeeded: Bool {
+    public var strategy: InsertionStrategy? {
         switch self {
-        case .inserted, .pasted, .copiedToClipboard: return true
-        case .failed: return false
+        case .verifiedInserted(let s, _, _), .eventPostedUnverified(let s, _):
+            return s
+        default:
+            return nil
         }
     }
 
-    public var userMessage: String? {
+    /// True only when the target confirmed the write.
+    public var isVerifiedSuccess: Bool {
+        if case .verifiedInserted = self { return true }
+        return false
+    }
+
+    /// Non-success, non-uncertain outcomes that still completed a user-visible
+    /// action (copy / unverified post).
+    public var isCompletedAction: Bool {
         switch self {
-        case .inserted, .pasted: return nil
-        case .copiedToClipboard: return "Copied to clipboard"
+        case .verifiedInserted, .explicitlyCopiedByUser, .eventPostedUnverified:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Outcomes that must never show green success UI.
+    public var permitsGreenSuccessUI: Bool {
+        switch self {
+        case .verifiedInserted, .explicitlyCopiedByUser: return true
+        case .eventPostedUnverified: return false
+        case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
+             .notEditable, .clipboardNotRestoredBecauseChanged,
+             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            return false
+        }
+    }
+
+    /// History retention policy (central, JOE-2269).
+    public var permitsHistoryRetention: Bool {
+        switch self {
+        case .verifiedInserted, .explicitlyCopiedByUser: return true
+        case .eventPostedUnverified: return false
+        case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
+             .notEditable, .clipboardNotRestoredBecauseChanged,
+             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            return false
+        }
+    }
+
+    /// Automatic panel dismissal policy.
+    public var permitsAutomaticPanelDismissal: Bool {
+        switch self {
+        case .verifiedInserted: return true
+        case .explicitlyCopiedByUser: return true
+        case .eventPostedUnverified: return true
+        case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
+             .notEditable, .clipboardNotRestoredBecauseChanged,
+             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            return false
+        }
+    }
+
+    /// Reliability metrics policy (content-free counters only).
+    public var permitsReliabilityMetrics: Bool {
+        switch self {
+        case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
+             .targetChanged, .targetGone, .targetUnknown, .secureTarget,
+             .notEditable, .clipboardNotRestoredBecauseChanged,
+             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            return true
+        }
+    }
+
+    /// Uncertain states that require the review UX (JOE-2272), never
+    /// auto-paste/copy/dismiss-as-success.
+    public var isUncertain: Bool {
+        switch self {
+        case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
+             .notEditable, .deadlineExceeded:
+            return true
+        case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
+             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
+             .cancelled, .failed:
+            return false
+        }
+    }
+
+    /// User-visible language distinguishing verified / unverified / copy /
+    /// no-side-effect. Never technical AX terminology, never content.
+    public var userFacingMessage: String {
+        switch self {
+        case .verifiedInserted: return "Inserted"
+        case .eventPostedUnverified: return "Inserted — unverified"
+        case .explicitlyCopiedByUser: return "Copied to clipboard"
+        case .targetChanged: return "Target changed — nothing was inserted"
+        case .targetGone: return "Target closed — nothing was inserted"
+        case .targetUnknown: return "Target unknown — nothing was inserted"
+        case .secureTarget: return "Secure field — review before copying"
+        case .notEditable: return "Field is not editable — nothing was inserted"
+        case .clipboardNotRestoredBecauseChanged:
+            return "Clipboard was left as-is because it changed"
+        case .clipboardRestoreFailed: return "Could not restore clipboard"
+        case .deadlineExceeded: return "Target validation timed out"
+        case .cancelled: return "Cancelled"
         case .failed(let msg): return msg
         }
     }
 }
+
 
 // MARK: - Panel State
 

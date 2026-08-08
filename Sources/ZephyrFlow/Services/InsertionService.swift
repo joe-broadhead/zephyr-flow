@@ -6,7 +6,7 @@ import ZephyrFlowCore
 actor InsertionService: InsertionServiceProtocol {
     static let shared = InsertionService()
 
-    func insert(_ text: String) async -> InsertionResult {
+    func insert(_ text: String) async -> InsertionOutcome {
         await insert(text, preferPaste: true, mode: .automatic, targetBundleID: nil)
     }
 
@@ -20,7 +20,7 @@ actor InsertionService: InsertionServiceProtocol {
         mode: InsertionMode = .automatic,
         targetBundleID: String? = nil,
         sensitivity: SessionSensitivity = .normal
-    ) async -> InsertionResult {
+    ) async -> InsertionOutcome {
         guard !text.isEmpty else { return .failed("Empty text") }
         // JOE-2259: domain rejection of automatic insertion for secure/unknown
         // sessions — cannot be bypassed by calling this service directly.
@@ -40,7 +40,7 @@ actor InsertionService: InsertionServiceProtocol {
         if InsertionStrategyResolver.isSecureRole(role) || secureFocused {
             await copyToClipboard(text)
             ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=secure")
-            return .copiedToClipboard
+            return .explicitlyCopiedByUser
         }
 
         var strategies = InsertionStrategyResolver.strategies(
@@ -64,44 +64,62 @@ actor InsertionService: InsertionServiceProtocol {
             case .copyOnly:
                 await copyToClipboard(text)
                 ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=ok")
-                return .copiedToClipboard
+                return .explicitlyCopiedByUser
 
             case .clipboardPaste, .terminalPaste:
                 let settle: UInt64 = InsertionStrategyResolver.isTerminal(bundle ?? "")
                     ? 40_000_000 : 16_000_000
                 try? await Task.sleep(nanoseconds: settle)
-                if await pasteViaClipboard(text) {
-                    ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=ok")
-                    return .pasted
+                let paste = await pasteViaClipboard(text)
+                switch paste {
+                case .pasted:
+                    ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=posted")
+                    // Cmd-V was posted but the target never confirmed receipt —
+                    // never describe this as verified insertion.
+                    return .eventPostedUnverified(strategy: strategy, warnings: [.noPostWriteVerification])
+                case .notRestoredBecauseChanged:
+                    ZFLog.info("insert strategy=\(strategy.rawValue) clipboard left changed")
+                    return .clipboardNotRestoredBecauseChanged
+                case .restoreFailed:
+                    ZFLog.info("insert strategy=\(strategy.rawValue) clipboard restore failed")
+                    return .clipboardRestoreFailed
+                case .failed:
+                    ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=fail")
                 }
-                ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=fail")
 
-            case .axSelectedText:
+            case .axSelectedText, .axValue:
                 guard AXIsProcessTrusted() else { continue }
-                if await insertViaAccessibility(text, allowValueFallback: false) {
-                    ZFLog.info("insert strategy=axSelectedText bundle=\(bundle ?? "nil") result=ok")
-                    return .inserted
+                let allowFallback = strategy == .axValue
+                let axOutcome = await insertViaAccessibility(text, allowValueFallback: allowFallback)
+                switch axOutcome {
+                case .verified:
+                    ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=verified")
+                    return .verifiedInserted(strategy: strategy,
+                                             evidence: .postWriteSelectionReRead,
+                                             warnings: [])
+                case .unverified:
+                    ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=unverified")
+                    return .eventPostedUnverified(strategy: strategy, warnings: [.noPostWriteVerification])
+                case .failed:
+                    ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=fail")
                 }
-                ZFLog.info("insert strategy=axSelectedText bundle=\(bundle ?? "nil") result=fail")
-
-            case .axValue:
-                guard AXIsProcessTrusted() else { continue }
-                if await insertViaAccessibility(text, allowValueFallback: true) {
-                    ZFLog.info("insert strategy=axValue bundle=\(bundle ?? "nil") result=ok")
-                    return .inserted
-                }
-                ZFLog.info("insert strategy=axValue bundle=\(bundle ?? "nil") result=fail")
             }
         }
 
         await copyToClipboard(text)
         ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=fallback")
-        return .copiedToClipboard
+        return .explicitlyCopiedByUser
     }
 
     // MARK: - Accessibility path
 
-    private func insertViaAccessibility(_ text: String, allowValueFallback: Bool) async -> Bool {
+    private enum AXInsertResult: Sendable {
+        case verified
+        case unverified
+        case failed
+    }
+
+    private func insertViaAccessibility(_ text: String, allowValueFallback: Bool) async -> AXInsertResult {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         let focusedResult = AXUIElementCopyAttributeValue(
@@ -112,21 +130,21 @@ actor InsertionService: InsertionServiceProtocol {
         guard focusedResult == .success, let focused = focusedRef,
               CFGetTypeID(focused) == AXUIElementGetTypeID() else {
             ZFLog.info("AX: no focused element (\(focusedResult.rawValue))")
-            return false
+            return .failed
         }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
 
         var pid: pid_t = 0
         if AXUIElementGetPid(element, &pid) == .success, pid == getpid() {
             ZFLog.info("AX: focused element is our own process — skip")
-            return false
+            return .failed
         }
 
         var roleRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef) == .success,
            let role = roleRef as? String {
             ZFLog.info("AX focused role=\(role) pid=\(pid)")
-            if InsertionStrategyResolver.isSecureRole(role) { return false }
+            if InsertionStrategyResolver.isSecureRole(role) { return .failed }
         }
 
         var selectedRef: CFTypeRef?
@@ -143,12 +161,20 @@ actor InsertionService: InsertionServiceProtocol {
                 text as CFTypeRef
             )
             if setResult == .success {
-                return true
+                // Post-write verification: re-read the selected text and
+                // compare in memory (never log field contents). Confirmed
+                // match => verified; otherwise unverified post.
+                var checkRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &checkRef) == .success,
+                   let check = checkRef as? String, check == text {
+                    return .verified
+                }
+                return .unverified
             }
             ZFLog.info("AX set selectedText failed \(setResult.rawValue)")
-            if !allowValueFallback { return false }
+            if !allowValueFallback { return .failed }
         } else if !allowValueFallback {
-            return false
+            return .failed
         }
 
         var valueRef: CFTypeRef?
@@ -158,7 +184,7 @@ actor InsertionService: InsertionServiceProtocol {
             &valueRef
         ) == .success,
               let current = valueRef as? String else {
-            return false
+            return .failed
         }
 
         var rangeRef: CFTypeRef?
@@ -189,7 +215,15 @@ actor InsertionService: InsertionServiceProtocol {
             kAXValueAttribute as CFString,
             newValue as CFTypeRef
         )
-        guard setVal == .success else { return false }
+        guard setVal == .success else { return .failed }
+
+        // Post-write verification for the value path (in-memory compare).
+        var checkRef: CFTypeRef?
+        var verified = false
+        if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &checkRef) == .success,
+           let check = checkRef as? String, check == newValue {
+            verified = true
+        }
 
         var newRange = CFRange(location: safeLoc + (text as NSString).length, length: 0)
         if let axRange = AXValueCreate(.cfRange, &newRange) {
@@ -199,12 +233,19 @@ actor InsertionService: InsertionServiceProtocol {
                 axRange
             )
         }
-        return true
+        return verified ? .verified : .unverified
     }
 
     // MARK: - Clipboard paste path
 
-    private func pasteViaClipboard(_ text: String) async -> Bool {
+    private enum ClipboardPasteResult: Sendable {
+        case pasted
+        case notRestoredBecauseChanged
+        case restoreFailed
+        case failed
+    }
+
+    private func pasteViaClipboard(_ text: String) async -> ClipboardPasteResult {
         let pasteboard = NSPasteboard.general
 
         let saved: [(NSPasteboard.PasteboardType, Data)] = (pasteboard.types ?? []).compactMap { type in
@@ -214,31 +255,36 @@ actor InsertionService: InsertionServiceProtocol {
         let changeBefore = pasteboard.changeCount
 
         pasteboard.clearContents()
-        guard pasteboard.setString(text, forType: .string) else { return false }
+        guard pasteboard.setString(text, forType: .string) else { return .failed }
         let ourChange = pasteboard.changeCount
 
         try? await Task.sleep(nanoseconds: 50_000_000)
 
         guard postCommandV() else {
             restorePasteboard(saved)
-            return false
+            return .failed
         }
 
         try? await Task.sleep(nanoseconds: 250_000_000)
 
-        let savedCopy = saved
-        Task {
-            try? await Task.sleep(nanoseconds: 400_000_000)
-            let pb = NSPasteboard.general
-            if pb.changeCount == ourChange || pb.string(forType: .string) == text {
-                self.restorePasteboard(savedCopy)
-                ZFLog.debug("Clipboard restored (prior changeCount=\(changeBefore))")
-            } else {
-                ZFLog.debug("Clipboard left alone — user or app changed it")
+        // Await clipboard restoration so the outcome is typed and controlled:
+        // the target received the paste event, and we restore our prior
+        // clipboard content unless the user/app changed it meanwhile.
+        try? await Task.sleep(nanoseconds: 400_000_000)
+        let pb = NSPasteboard.general
+        if pb.changeCount == ourChange || pb.string(forType: .string) == text {
+            restorePasteboard(saved)
+            let restored = pb.changeCount != ourChange || saved.isEmpty
+            if !restored {
+                ZFLog.debug("Clipboard restore failed (prior changeCount=\(changeBefore))")
+                return .restoreFailed
             }
+            ZFLog.debug("Clipboard restored (prior changeCount=\(changeBefore))")
+            return .pasted
+        } else {
+            ZFLog.debug("Clipboard left alone — user or app changed it")
+            return .notRestoredBecauseChanged
         }
-
-        return true
     }
 
     private nonisolated func postCommandV() -> Bool {
