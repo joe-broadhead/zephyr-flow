@@ -708,12 +708,25 @@
     "JOE-2267"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (outcome matrix validated/targetChanged/targetGone/targetUnknown/secureTarget/notEditable/deadlineExceeded; restore monitor bounded)",
+    "swift build: pass (AX capture/revalidate service + transactional controller wiring)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/TargetRevalidation.swift",
+    "Sources/ZephyrFlow/Services/TargetValidationService.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2268/REPORT.md",
+    "docs/development/contracts/target-snapshot.md"
+   ],
+   "remaining_action": "Real-device multi-window/relaunch manual validation (runbook in evidence report) retained for the human gate; deterministic fakes + AX service are the autonomous scope."
   },
   {
    "id": "JOE-2269",

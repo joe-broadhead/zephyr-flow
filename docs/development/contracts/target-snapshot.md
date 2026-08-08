@@ -38,9 +38,15 @@ write time.
 5. Diagnostics serialization contains no field text or private document title
    unless explicitly approved.
 
-## 4. Validation-time checks (JOE-2268)
+## 4. Validation-time checks (JOE-2268 — implemented)
 
-- PID/window/element compare before write; bounded observable restore, not a
-  blind sleep.
-- Target change/termination/secure ⇒ controlled outcome, no write.
+- PID/process-start/window/element-token/role-subrole/editable compare before
+  write via `TargetValidationSession` (`Sources/ZephyrFlowCore/
+  TargetRevalidation.swift`); bounded observable restore via
+  `TargetRestoreMonitor`, never a blind sleep.
+- Outcomes: validated / targetChanged / targetGone / targetUnknown /
+  secureTarget / notEditable / deadlineExceeded; any non-validated outcome ⇒
+  zero transcript-bearing side effects.
+- No stale `lastBundleID` fallback: the session-scoped snapshot is the only
+  insertion authority.
 - Serialized snapshot for diagnostics: positional metadata only.

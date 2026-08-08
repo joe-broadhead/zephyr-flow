@@ -560,6 +560,112 @@ struct CoreTests {
             check("normal allows history", SensitiveSessionPolicy.historyWriteAllowed(sensitivity: .normal))
         }
 
+        // ===== JOE-2268: deterministic target revalidation =====
+        do {
+            let sid = SessionID(token: "tv", sequence: 1, createdAtUptimeNanos: 0)
+            func snapshot(_ sid: SessionID, secure: Bool = false, window: UInt32 = 77,
+                          role: String = "AXTextField") -> TargetSnapshot {
+                TargetSnapshot(
+                    sessionID: sid, capturedAtUptimeNanos: 10_000,
+                    target: .init(pid: 42, bundleID: "com.example.Editor",
+                                  processStartUptimeNanos: 900, windowID: window, appVersion: "1.0"),
+                    element: .init(role: secure ? "AXSecureTextField" : role, subrole: nil, resolutionToken: "el-1"),
+                    settable: true, editable: true, enabled: true, selectionRange: nil,
+                    sensitivity: .init(sensitivity: secure ? .secure : .normal,
+                                       source: secure ? .accessibilityRole : .targetMetadata,
+                                       capturedAtNanos: 10_000))
+            }
+            func ctx(pid: Int32 = 42, bundle: String? = "com.example.Editor",
+                     start: UInt64? = 900, window: UInt32? = 77,
+                     role: String = "AXTextField", token: String? = "el-1",
+                     settable: Bool = true, editable: Bool = true, enabled: Bool = true,
+                     sens: SessionSensitivity = .normal, now: UInt64 = 10_100) -> TargetValidationContext {
+                TargetValidationContext(pid: pid, bundleID: bundle, processStartUptimeNanos: start,
+                                        windowID: window,
+                                        element: .init(role: role, subrole: nil, resolutionToken: token),
+                                        settable: settable, editable: editable, enabled: enabled,
+                                        sensitivity: .init(sensitivity: sens, source: .accessibilityRole,
+                                                           capturedAtNanos: now),
+                                        nowNanos: now)
+            }
+
+            var v = TargetValidationSession(sessionID: sid, snapshot: snapshot(sid), deadlineNanosAhead: 5_000)
+            v.start(nowNanos: 10_000)
+            check("2268 validated on identical context", v.validate(context: ctx(), nowNanos: 10_100) == .validated)
+            check("2268 single-shot idempotent", v.validate(context: ctx(), nowNanos: 10_200) == .validated)
+            check("2268 effective sensitivity normal", v.effectiveSensitivity == .normal && !v.upgradedBeforeInsertion)
+
+            func outcome(_ snap: TargetSnapshot, _ context: TargetValidationContext?,
+                         deadline: UInt64 = 5_000, startAt: UInt64 = 10_000, at: UInt64 = 10_100) -> (TargetValidationOutcome, TargetValidationReason?) {
+                var s = TargetValidationSession(sessionID: sid, snapshot: snap, deadlineNanosAhead: deadline)
+                s.start(nowNanos: startAt)
+                _ = s.validate(context: context, nowNanos: at)
+                return (s.outcome!, s.reason)
+            }
+
+            check("2268 window replaced => targetChanged",
+                  outcome(snapshot(sid), ctx(window: 78)).0 == .targetChanged)
+            check("2268 element token replaced => targetChanged",
+                  outcome(snapshot(sid), ctx(token: "el-2")).0 == .targetChanged)
+            check("2268 focus switched => targetChanged",
+                  outcome(snapshot(sid), ctx(role: "AXTextArea")).0 == .targetChanged)
+            check("2268 process gone => targetGone",
+                  outcome(snapshot(sid), ctx(pid: 99, start: 300)).0 == .targetGone)
+            check("2268 pid reuse => targetGone",
+                  outcome(snapshot(sid), ctx(pid: 42, start: 901)).0 == .targetGone)
+            check("2268 bundle changed => targetChanged",
+                  outcome(snapshot(sid), ctx(pid: 1, bundle: "com.other.Editor", start: 900)).0 == .targetChanged)
+            check("2268 not settable => notEditable",
+                  outcome(snapshot(sid), ctx(settable: false)).0 == .notEditable)
+            check("2268 secure reclass => secureTarget",
+                  outcome(snapshot(sid), ctx(sens: .secure)).0 == .secureTarget)
+            check("2268 unknown current => secureTarget",
+                  outcome(snapshot(sid), ctx(sens: .unknown)).0 == .secureTarget)
+            check("2268 no AX evidence => targetUnknown",
+                  outcome(snapshot(sid), nil).0 == .targetUnknown)
+            check("2268 secure captured never downgraded",
+                  outcome(snapshot(sid, secure: true), ctx()).0 == .secureTarget)
+            check("2268 deadline exceeded", outcome(snapshot(sid), ctx(), deadline: 5_000,
+                                                    at: 10_000 + 5_001).0 == .deadlineExceeded)
+
+            // most restrictive sensitivity helper
+            check("2268 mostRestrictive normal<secure<unknown",
+                  SessionSensitivity.mostRestrictive(.normal, .secure) == .secure
+                    && SessionSensitivity.mostRestrictive(.secure, .unknown) == .unknown
+                    && SessionSensitivity.mostRestrictive(.normal, .normal) == .normal)
+        }
+        // TargetRestoreMonitor: bounded observable restore (no blind sleep)
+        do {
+            var m = TargetRestoreMonitor(deadlineNanosAhead: 1_000, maxAttempts: 3)
+            m.start(nowNanos: 0)
+            if case .polling(let attempt, let remaining) = m.poll(isFrontmost: false, nowNanos: 100) {
+                check("2268 restore polls within budget", attempt == 1 && remaining <= 900)
+            } else {
+                check("2268 restore polls within budget", false)
+            }
+            if case .restored = m.poll(isFrontmost: true, nowNanos: 200) {
+                check("2268 restore restored once frontmost", true)
+            } else {
+                check("2268 restore restored once frontmost", false)
+            }
+            var d = TargetRestoreMonitor(deadlineNanosAhead: 1_000, maxAttempts: 3)
+            d.start(nowNanos: 0)
+            _ = d.poll(isFrontmost: false, nowNanos: 900)
+            if case .deadlineExceeded = d.poll(isFrontmost: false, nowNanos: 1001) {
+                check("2268 restore deadline exceeded", true)
+            } else {
+                check("2268 restore deadline exceeded", false)
+            }
+            var a = TargetRestoreMonitor(deadlineNanosAhead: 10_000, maxAttempts: 2)
+            a.start(nowNanos: 0)
+            _ = a.poll(isFrontmost: false, nowNanos: 100)
+            if case .rejected(attempt: 2) = a.poll(isFrontmost: false, nowNanos: 200) {
+                check("2268 restore attempt cap rejected", true)
+            } else {
+                check("2268 restore attempt cap rejected", false)
+            }
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

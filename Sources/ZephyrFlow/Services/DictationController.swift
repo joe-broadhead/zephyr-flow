@@ -55,6 +55,9 @@ final class DictationController: ObservableObject {
     private var sessionSensitivity: SessionSensitivity = .unknown
     private var reviewSession: SecureSessionReview?
     private var reviewClearTask: Task<Void, Never>?
+    // JOE-2268: immutable per-session AX target evidence + validator service.
+    private var targetSnapshot: TargetSnapshot?
+    private let targetService = TargetValidationService.shared
 
     private init() {
         activeEngine = whisperEngine
@@ -387,7 +390,15 @@ final class DictationController: ObservableObject {
 
         // Remember where the user was typing BEFORE any of our UI steals focus
         FocusStore.shared.captureNow()
-        sessionTargetBundleID = FocusStore.shared.lastBundleID
+        // JOE-2268: capture the immutable target snapshot (AX evidence).
+        // Missing AX permission => nil => session stays .unknown (fail closed).
+        targetSnapshot = targetService.captureSnapshot(
+            sessionID: sid,
+            nowNanos: DispatchTime.now().uptimeNanoseconds)
+        sessionSensitivity = targetSnapshot?.sensitivity.sensitivity ?? .unknown
+        // No stale lastBundleID fallback (JOE-2268): the snapshot is the only
+        // authority for the insert target; nil means fail-closed review-only.
+        sessionTargetBundleID = targetSnapshot?.target.bundleID
 
         // Surface model download state if Whisper isn't ready yet
         if !usingAppleEngine {
@@ -544,6 +555,27 @@ final class DictationController: ObservableObject {
             _ = control.stage(.drainFinished)   // draining -> transcribing
             _ = control.stage(.transcriptionFinished) // transcribing -> transforming
 
+            // JOE-2259: secure/unknown sessions never run structural/semantic
+            // Flow and never auto-insert/clipboard/history. Fail-closed: they
+            // are review-only with an explicit user copy. (JOE-2268 validates
+            // normal sessions transactionally right before insertion.)
+            if !sessionAllowsAutomaticSideEffects {
+                _ = control.stage(.transformationFinished) // transforming -> resolvingTarget
+                _ = control.stage(.targetSecure)           // resolvingTarget -> secureTarget (terminal)
+                let conservative = await flow.process(final.rawText, style: .clean)
+                let reviewText = conservative.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !reviewText.isEmpty else {
+                    showError("No speech detected — try again")
+                    ZFLog.info("Empty transcription")
+                    return
+                }
+                panelState = .processing
+                FloatingPanelController.shared.hide()
+                presentSecureReview(reviewText)
+                ZFLog.info("Sensitive session review-only len=\(reviewText.count) outcome=secureTarget")
+                return
+            }
+
             let style = activeFlowStyle
             let flowT0 = Date()
             let processed = await flow.process(final.rawText, style: style)
@@ -570,60 +602,112 @@ final class DictationController: ObservableObject {
             panelState = .processing
             FloatingPanelController.shared.hide()
             NSApp.deactivate()
-            let restored = await FocusStore.shared.restore()
-            ZFLog.info("Pre-insert focus restored=\(restored)")
 
-            let result = await insertion.insert(
-                trimmed,
-                preferPaste: restored,
-                mode: settings.settings.insertionMode,
-                targetBundleID: sessionTargetBundleID ?? FocusStore.shared.lastBundleID,
-                sensitivity: sessionSensitivity
-            )
-            ZFLog.info("Insertion result: \(String(describing: result))")
-            switch result {
-            case .inserted, .pasted:
+            // JOE-2268: transactional target validation — prove the current
+            // destination is the captured intended target before any write.
+            guard let snapshot = targetSnapshot, snapshot.sessionID == sid else {
+                // No captured snapshot (AX unavailable at session start, or
+                // capture raced): fail closed to unknown — review-only, no
+                // automatic side effects, explicit copy only.
+                ZFLog.info("target validation skipped — no snapshot, review-only")
+                _ = control.stage(.targetUnknown)
+                presentSecureReview(trimmed)
+                return
+            }
+
+            var validation = TargetValidationSession(
+                sessionID: sid,
+                snapshot: snapshot,
+                deadlineNanosAhead: 2_000_000_000)
+            validation.start(nowNanos: DispatchTime.now().uptimeNanoseconds)
+
+            // Bounded, observable restore (TargetRestoreMonitor): activates the
+            // captured app and polls frontmost state — never a blind sleep.
+            let monitor = await targetService.restoreToCapturedTarget(snapshot: snapshot)
+            let restored = monitor.status == .restored
+            ZFLog.info("target restore status=\(monitor.status.rawValue) attempts=\(monitor.attempts) restored=\(restored)")
+
+            // Re-resolve the current focused AX context immediately before any
+            // side effect and decide the controlled outcome (content-free).
+            let context = targetService.currentContext(
+                nowNanos: DispatchTime.now().uptimeNanoseconds)
+            let outcome = validation.validate(
+                context: context,
+                nowNanos: DispatchTime.now().uptimeNanoseconds)
+            ZFLog.info("target validation outcome=\(outcome.rawValue) reason=\(validation.reason?.rawValue ?? "nil")")
+
+            switch outcome {
+            case .validated:
+                // Zero transcript-bearing side effects happened before this.
                 _ = control.stage(.targetValidationSucceeded) // resolvingTarget -> inserting
-                _ = control.stage(.insertionSucceeded)        // inserting -> completed
-            case .copiedToClipboard:
-                // Copy-only is an explicit user-visible outcome, not an insert.
-                _ = control.stage(.targetValidationSucceeded)
-                _ = control.stage(.insertionSucceeded)
-            case .failed:
-                _ = control.stage(.insertionFailed)
-            }
-
-            // JOE-2259: history is a transcript-bearing mutation; secure/unknown
-            // sessions never write history even when save-history is on.
-            if settings.settings.saveHistory,
-               SensitiveSessionPolicy.historyWriteAllowed(sensitivity: sessionSensitivity) {
-                history.add(
-                    HistoryEntry(
-                        originalText: final.rawText,
-                        finalText: trimmed,
-                        duration: final.duration,
-                        modelUsed: final.modelUsed
-                    )
+                let result = await insertion.insert(
+                    trimmed,
+                    preferPaste: restored,
+                    mode: settings.settings.insertionMode,
+                    targetBundleID: snapshot.target.bundleID,
+                    sensitivity: validation.effectiveSensitivity
                 )
-            } else if settings.settings.saveHistory {
-                ZFLog.info("History skipped — sensitive session sensitivity=\(sessionSensitivity.rawValue)")
+                ZFLog.info("Insertion result: \(String(describing: result))")
+                switch result {
+                case .inserted, .pasted:
+                    _ = control.stage(.insertionSucceeded)    // inserting -> completed
+                case .copiedToClipboard:
+                    // Copy-only is an explicit user-visible outcome, not an insert.
+                    _ = control.stage(.insertionSucceeded)
+                case .failed:
+                    _ = control.stage(.insertionFailed)
+                }
+
+                // JOE-2259: history is a transcript-bearing mutation; only
+                // validated normal-sensitivity sessions may write it.
+                if settings.settings.saveHistory,
+                   SensitiveSessionPolicy.historyWriteAllowed(sensitivity: validation.effectiveSensitivity) {
+                    history.add(
+                        HistoryEntry(
+                            originalText: final.rawText,
+                            finalText: trimmed,
+                            duration: final.duration,
+                            modelUsed: final.modelUsed
+                        )
+                    )
+                } else if settings.settings.saveHistory {
+                    ZFLog.info("History skipped — sensitive session sensitivity=\(validation.effectiveSensitivity.rawValue)")
+                }
+
+                switch result {
+                case .inserted, .pasted:
+                    interimText = trimmed
+                    panelState = .success
+                    statusMessage = nil
+                    dismissPanelSoon()
+                case .copiedToClipboard:
+                    interimText = trimmed
+                    panelState = .success
+                    statusMessage = "Copied to clipboard — enable Accessibility to auto-insert"
+                    clearStatusLater()
+                    dismissPanelSoon()
+                case .failed(let msg):
+                    showError(msg)
+                }
+            case .targetChanged, .targetGone, .notEditable:
+                // Controlled abort: no write, honest terminal outcome.
+                _ = control.stage(.targetChanged)
+                showError("Target changed — insertion cancelled")
+                ZFLog.info("insertion cancelled outcome=\(outcome.rawValue)")
+            case .targetUnknown:
+                _ = control.stage(.targetUnknown)
+                // Fail closed: unknown target — review-only with explicit copy.
+                presentSecureReview(trimmed)
+            case .secureTarget:
+                _ = control.stage(.targetSecure)
+                // Fail closed: secure reclassification — review-only, no
+                // paste/AX/history, explicit copy only.
+                presentSecureReview(trimmed)
+            case .deadlineExceeded:
+                _ = control.stage(.deadlineViolated)
+                showError("Target validation timed out")
             }
 
-            switch result {
-            case .inserted, .pasted:
-                interimText = trimmed
-                panelState = .success
-                statusMessage = nil
-                dismissPanelSoon()
-            case .copiedToClipboard:
-                interimText = trimmed
-                panelState = .success
-                statusMessage = "Copied to clipboard — enable Accessibility to auto-insert"
-                clearStatusLater()
-                dismissPanelSoon()
-            case .failed(let msg):
-                showError(msg)
-            }
         } catch {
             ZFLog.error("Session finalize failed: \(error.localizedDescription)")
             if sessionGeneration == generation {
