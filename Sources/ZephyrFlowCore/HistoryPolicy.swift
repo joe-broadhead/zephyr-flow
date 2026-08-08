@@ -13,9 +13,11 @@ public struct HistoryRetentionPolicy: Sendable, Equatable {
     public let maxTotalBytes: Int
     public let maxEntries: Int
 
-    public init(maxAgeSeconds: TimeInterval = 30 * 24 * 3600,
-                maxTotalBytes: Int = 4_000_000,
-                maxEntries: Int = 500) {
+    public init(
+        maxAgeSeconds: TimeInterval = 30 * 24 * 3600,
+        maxTotalBytes: Int = 4_000_000,
+        maxEntries: Int = 500
+    ) {
         self.maxAgeSeconds = maxAgeSeconds
         self.maxTotalBytes = maxTotalBytes
         self.maxEntries = maxEntries
@@ -32,9 +34,11 @@ public struct HistoryStorageEntry: Codable, Sendable, Equatable, Identifiable {
     public let modelUsed: String
     public let sensitivityClass: String
 
-    public init(id: UUID = UUID(), timestamp: Date, text: String,
-                duration: TimeInterval, modelUsed: String,
-                sensitivityClass: String) {
+    public init(
+        id: UUID = UUID(), timestamp: Date, text: String,
+        duration: TimeInterval, modelUsed: String,
+        sensitivityClass: String
+    ) {
         self.id = id
         self.timestamp = timestamp
         self.text = text
@@ -64,8 +68,10 @@ public enum HistoryStoragePolicy {
     /// are preserved by versioned migration.
     public static let defaultEnabled = false
 
-    public static func allowsWrite(sensitivity: SessionSensitivity,
-                                   outcome: InsertionOutcome?) -> Bool {
+    public static func allowsWrite(
+        sensitivity: SessionSensitivity,
+        outcome: InsertionOutcome?
+    ) -> Bool {
         guard sensitivity.allowsAutomaticSideEffects else { return false }
         if let outcome {
             return outcome.permitsHistoryRetention
@@ -75,9 +81,11 @@ public enum HistoryStoragePolicy {
     }
 
     /// Applies retention: age + byte + entry bounds.
-    public static func trimmed(_ entries: [HistoryStorageEntry],
-                               policy: HistoryRetentionPolicy,
-                               now: Date) -> [HistoryStorageEntry] {
+    public static func trimmed(
+        _ entries: [HistoryStorageEntry],
+        policy: HistoryRetentionPolicy,
+        now: Date
+    ) -> [HistoryStorageEntry] {
         var list = entries.filter { now.timeIntervalSince($0.timestamp) <= policy.maxAgeSeconds }
         if list.count > policy.maxEntries {
             list = Array(list.prefix(policy.maxEntries))
@@ -93,7 +101,6 @@ public enum HistoryStoragePolicy {
         return result
     }
 }
-
 
 /// Injectable filesystem boundary for the history repository (tests inject
 /// failing/corrupting adapters).
@@ -118,11 +125,13 @@ public struct RealHistoryFileSystem: HistoryFileSystem {
     public func writeAtomic(data: Data, to url: URL) throws {
         let temp = url.appendingPathExtension("tmp")
         try data.write(to: temp, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                              ofItemAtPath: temp.path)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: temp.path)
         _ = try FileManager.default.replaceItemAt(url, withItemAt: temp)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600],
-                                              ofItemAtPath: url.path)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path)
     }
     public func move(_ from: URL, to: URL) throws { try FileManager.default.moveItem(at: from, to: to) }
     public func remove(_ url: URL) throws { try FileManager.default.removeItem(at: url) }

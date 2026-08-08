@@ -178,7 +178,7 @@ public struct SessionControlModel: Sendable, Equatable {
 /// Effect of a control event on the coordinator.
 public enum SessionControlEffect: Sendable, Equatable {
     case transitioned(SessionState)
-    case idempotentNoop   // duplicate press/release/cancel: no side effects
+    case idempotentNoop  // duplicate press/release/cancel: no side effects
     case illegal
     case noSessionOrTerminal
 }

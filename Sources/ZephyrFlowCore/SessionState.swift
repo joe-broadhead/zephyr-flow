@@ -24,13 +24,13 @@ public struct SessionID: Hashable, Sendable, Codable, CustomStringConvertible {
 /// outcome is emitted.
 public enum SessionState: String, Codable, CaseIterable, Sendable, Equatable {
     case idle
-    case preparing          // model load / engine preparation
-    case capturing          // microphone tap + ordered audio channel
-    case draining           // stop/drain barrier before final inference
-    case transcribing       // engine decode
-    case transforming       // Flow rules
-    case resolvingTarget    // target validation before insertion
-    case inserting          // pasteboard/AX mutation
+    case preparing  // model load / engine preparation
+    case capturing  // microphone tap + ordered audio channel
+    case draining  // stop/drain barrier before final inference
+    case transcribing  // engine decode
+    case transforming  // Flow rules
+    case resolvingTarget  // target validation before insertion
+    case inserting  // pasteboard/AX mutation
     // terminal
     case completed
     case degraded
@@ -46,11 +46,11 @@ public enum SessionState: String, Codable, CaseIterable, Sendable, Equatable {
     public var isTerminal: Bool {
         switch self {
         case .completed, .degraded, .partial, .truncated, .cancelled,
-             .deadlineExceeded, .targetChanged, .secureTarget, .failed,
-             .abandonedDuringShutdown:
+            .deadlineExceeded, .targetChanged, .secureTarget, .failed,
+            .abandonedDuringShutdown:
             return true
         case .idle, .preparing, .capturing, .draining, .transcribing,
-             .transforming, .resolvingTarget, .inserting:
+            .transforming, .resolvingTarget, .inserting:
             return false
         }
     }
@@ -61,14 +61,14 @@ public enum SessionState: String, Codable, CaseIterable, Sendable, Equatable {
 /// service layer by SessionID/generation checks; `stay` idempotence covers
 /// legal duplicate edges (e.g. a second press while capturing).
 public enum SessionEvent: String, Codable, CaseIterable, Sendable, Equatable {
-    case begin                 // user press / start
-    case cancel                // user cancel
-    case shutdownRequested     // app termination
+    case begin  // user press / start
+    case cancel  // user cancel
+    case shutdownRequested  // app termination
     case preparationFailed
-    case readyToCapture        // preparation succeeded
+    case readyToCapture  // preparation succeeded
     case captureFailed
-    case stop                  // user release; drain begins
-    case drainFinished         // all accepted frames delivered
+    case stop  // user release; drain begins
+    case drainFinished  // all accepted frames delivered
     case transcriptionFailed
     case transcriptionFinished
     case transformationFailed
@@ -215,8 +215,8 @@ public struct SessionStateMachine: Sendable {
 
         // ---- terminal states are absorbing (enumerated for exhaustiveness) ----
         case (.completed, _), (.degraded, _), (.partial, _), (.truncated, _),
-             (.cancelled, _), (.deadlineExceeded, _), (.targetChanged, _),
-             (.secureTarget, _), (.failed, _), (.abandonedDuringShutdown, _):
+            (.cancelled, _), (.deadlineExceeded, _), (.targetChanged, _),
+            (.secureTarget, _), (.failed, _), (.abandonedDuringShutdown, _):
             return .illegal
         }
     }

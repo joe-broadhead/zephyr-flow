@@ -1,7 +1,7 @@
+import AppKit
+import Combine
 import Foundation
 import SwiftUI
-import Combine
-import AppKit
 import ZephyrFlowCore
 
 /// JOE-2244: thin MainActor UI projection. Session truth, resource ownership
@@ -105,7 +105,8 @@ final class DictationController: ObservableObject {
 
     private func ensurePermissionsUpFront() async {
         privacy.refresh()
-        let needUI = !privacy.status.microphone
+        let needUI =
+            !privacy.status.microphone
             || !privacy.status.speechRecognition
             || !privacy.status.accessibility
         guard needUI else { return }
@@ -376,7 +377,9 @@ final class DictationController: ObservableObject {
             case .unverifiedPosted:
                 panelState = .warning
             case .review:
-                presentReview(outcome: state.outputs.insertion ?? .failed("Insertion outcome unavailable"), text: state.interimText)
+                presentReview(
+                    outcome: state.outputs.insertion ?? .failed("Insertion outcome unavailable"),
+                    text: state.interimText)
             case .warning:
                 panelState = .warning
             case .error:
@@ -391,8 +394,9 @@ final class DictationController: ObservableObject {
             if let insertion = state.outputs.insertion {
                 presentReview(outcome: insertion, text: state.interimText)
             } else if let validation = state.outputs.validation {
-                presentReview(outcome: Self.reviewOutcome(for: validation),
-                              text: state.interimText)
+                presentReview(
+                    outcome: Self.reviewOutcome(for: validation),
+                    text: state.interimText)
             } else {
                 // Secure/unknown session review (JOE-2259).
                 presentSecureReview(state.interimText)
@@ -415,9 +419,10 @@ final class DictationController: ObservableObject {
         reviewModel = model
         reviewText = text
         guard let sid = lastSessionID else { return }
-        let review = SecureSessionReview(sessionID: sid, text: text,
-                                         nowNanos: now,
-                                         deadlineNanosAhead: 30_000_000_000)
+        let review = SecureSessionReview(
+            sessionID: sid, text: text,
+            nowNanos: now,
+            deadlineNanosAhead: 30_000_000_000)
         reviewSession = review
         interimText = text
         reviewTitle = model.title
@@ -439,14 +444,16 @@ final class DictationController: ObservableObject {
     /// Review-only surface for secure/unknown sessions (JOE-2259).
     private func presentSecureReview(_ text: String) {
         guard let sid = lastSessionID else { return }
-        let review = SecureSessionReview(sessionID: sid, text: text,
-                                         nowNanos: environment.clock.nowNanos(),
-                                         deadlineNanosAhead: 30_000_000_000)
+        let review = SecureSessionReview(
+            sessionID: sid, text: text,
+            nowNanos: environment.clock.nowNanos(),
+            deadlineNanosAhead: 30_000_000_000)
         reviewSession = review
         reviewText = text
         interimText = text
         reviewTitle = "Sensitive session — review only"
-        reviewDetail = "This session was not automatically inserted. Copy the text below and paste it where you need it."
+        reviewDetail =
+            "This session was not automatically inserted. Copy the text below and paste it where you need it."
         reviewAllowsRetry = false
         reviewWarnsCopy = true
         reviewAllowsSettings = false
@@ -528,7 +535,8 @@ final class DictationController: ObservableObject {
         let consent = settingsStore.settings.allowModelDownloads
         guard consent else {
             self.isModelLoading = false
-            store.markFailed(model,
+            store.markFailed(
+                model,
                 message: settingsStore.settings.localOnlyMode
                     ? "Model not downloaded and downloads are disabled — enable Model Downloads in Settings."
                     : "Model not downloaded — enable Model Downloads in Settings to acquire it.")

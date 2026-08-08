@@ -9,12 +9,12 @@ import Foundation
 // when work could not quiesce.
 
 public enum TerminationStep: String, Codable, CaseIterable, Sendable, Equatable {
-    case admissionClosed      // close new-session/hotkey admission first
-    case sessionFinished      // active session cancelled/finished per lifecycle
-    case audioStopped         // tap stopped + drained
-    case enginesQuiesced      // WhisperKit/Apple operations quiesced (bounded)
-    case pasteboardResolved   // pasteboard restoration completed or abandoned
-    case storageFlushed       // settings/history/metrics flushed, handles closed
+    case admissionClosed  // close new-session/hotkey admission first
+    case sessionFinished  // active session cancelled/finished per lifecycle
+    case audioStopped  // tap stopped + drained
+    case enginesQuiesced  // WhisperKit/Apple operations quiesced (bounded)
+    case pasteboardResolved  // pasteboard restoration completed or abandoned
+    case storageFlushed  // settings/history/metrics flushed, handles closed
     case preferencesRestored  // Fn/global preference restored exactly
 }
 
@@ -22,7 +22,7 @@ public enum TerminationState: String, Codable, CaseIterable, Sendable, Equatable
     case idle
     case running
     case completed
-    case abandoned            // hard deadline hit; recovery marker recorded
+    case abandoned  // hard deadline hit; recovery marker recorded
 }
 
 public struct TerminationHandshake: Sendable, Equatable {
@@ -58,8 +58,10 @@ public struct TerminationHandshake: Sendable, Equatable {
     /// Complete one step; hitting the deadline abandons the handshake with a
     /// recovery marker for the next launch.
     @discardableResult
-    public mutating func completeStep(_ step: TerminationStep,
-                                      nowNanos: UInt64) -> TerminationState {
+    public mutating func completeStep(
+        _ step: TerminationStep,
+        nowNanos: UInt64
+    ) -> TerminationState {
         switch state {
         case .idle:
             begin(nowNanos: nowNanos)

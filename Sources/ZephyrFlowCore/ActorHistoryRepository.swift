@@ -32,13 +32,17 @@ public actor ActorHistoryRepository: HistoryRepository {
     public private(set) var recoveryState: String?
     private var usingEncryption = false
 
-    public init(fileURL: URL? = nil,
-                fileSystem: any HistoryFileSystem = RealHistoryFileSystem(),
-                retention: HistoryRetentionPolicy = HistoryRetentionPolicy(),
-                cipher: HistoryCipherEngine = .shared,
-                keyProvider: @escaping @Sendable () -> HistoryCryptoKey? = { nil }) {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory,
-                                                 in: .userDomainMask).first!
+    public init(
+        fileURL: URL? = nil,
+        fileSystem: any HistoryFileSystem = RealHistoryFileSystem(),
+        retention: HistoryRetentionPolicy = HistoryRetentionPolicy(),
+        cipher: HistoryCipherEngine = .shared,
+        keyProvider: @escaping @Sendable () -> HistoryCryptoKey? = { nil }
+    ) {
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first!
         let dir = appSupport.appendingPathComponent("ZephyrFlow", isDirectory: true)
         self.fileURL = fileURL ?? dir.appendingPathComponent("history.json")
         self.fileSystem = fileSystem
@@ -80,20 +84,23 @@ public actor ActorHistoryRepository: HistoryRepository {
             if let encrypted = try? decoder.decode(EncryptedHistoryDocument.self, from: data) {
                 usingEncryption = true
                 if let key = keyProvider(),
-                   let decrypted = HistoryEncryptionMigration.decrypt(
-                       document: encrypted, key: key, engine: cipher) {
+                    let decrypted = HistoryEncryptionMigration.decrypt(
+                        document: encrypted, key: key, engine: cipher)
+                {
                     document = decrypted
                     recoveryState = nil
                 } else {
                     document = HistoryDocument(entries: [])
-                    recoveryState = "history key missing or invalid — sealed content retained on disk, no plaintext exposed"
+                    recoveryState =
+                        "history key missing or invalid — sealed content retained on disk, no plaintext exposed"
                 }
             } else {
                 document = try decode(data)
             }
-            document.entries = HistoryStoragePolicy.trimmed(document.entries,
-                                                            policy: retention,
-                                                            now: Date())
+            document.entries = HistoryStoragePolicy.trimmed(
+                document.entries,
+                policy: retention,
+                now: Date())
         } catch {
             // Corruption: quarantine the file and start clean (recoverable).
             let quarantine = fileURL.appendingPathExtension("quarantined")
@@ -107,12 +114,14 @@ public actor ActorHistoryRepository: HistoryRepository {
         // v1 legacy: plain [HistoryEntry] array.
         if let v1 = try? decoder.decode([LegacyHistoryEntryV1].self, from: data) {
             let migrated = v1.map { entry in
-                HistoryStorageEntry(timestamp: entry.timestamp, text: entry.finalText,
-                                    duration: entry.duration, modelUsed: entry.modelUsed,
-                                    sensitivityClass: "normal")
+                HistoryStorageEntry(
+                    timestamp: entry.timestamp, text: entry.finalText,
+                    duration: entry.duration, modelUsed: entry.modelUsed,
+                    sensitivityClass: "normal")
             }
-            return HistoryDocument(schemaVersion: HistoryDocument.currentSchemaVersion,
-                                   entries: migrated)
+            return HistoryDocument(
+                schemaVersion: HistoryDocument.currentSchemaVersion,
+                entries: migrated)
         }
         return try decoder.decode(HistoryDocument.self, from: data)
     }
@@ -120,21 +129,23 @@ public actor ActorHistoryRepository: HistoryRepository {
     // MARK: HistoryRepository
 
     public func add(_ entry: HistoryEntry) async {
-        let storage = HistoryStorageEntry(timestamp: entry.timestamp,
-                                          text: entry.finalText,
-                                          duration: entry.duration,
-                                          modelUsed: entry.modelUsed,
-                                          sensitivityClass: "normal")
+        let storage = HistoryStorageEntry(
+            timestamp: entry.timestamp,
+            text: entry.finalText,
+            duration: entry.duration,
+            modelUsed: entry.modelUsed,
+            sensitivityClass: "normal")
         await add(storage)
     }
 
     /// Policy-gated add: only normal-sensitivity, outcome-permitted writes.
     public func add(_ entry: HistoryStorageEntry) async {
         document.entries.insert(entry, at: 0)
-        document.entries = HistoryStoragePolicy.trimmed(document.entries,
-                                                        policy: retention,
-                                                        now: Date())
-        try? await persist()
+        document.entries = HistoryStoragePolicy.trimmed(
+            document.entries,
+            policy: retention,
+            now: Date())
+        await persist()
     }
 
     public func entries() async -> [HistoryStorageEntry] { document.entries }
@@ -175,11 +186,13 @@ public actor ActorHistoryRepository: HistoryRepository {
             try fileSystem.writeAtomic(data: data, to: fileURL)
         } catch let error as NSError {
             if error.domain == NSCocoaErrorDomain,
-               error.code == NSFileWriteOutOfSpaceError {
+                error.code == NSFileWriteOutOfSpaceError
+            {
                 throw HistoryRepositoryError.diskFull
             }
             if error.domain == NSCocoaErrorDomain,
-               error.code == NSFileWriteNoPermissionError {
+                error.code == NSFileWriteNoPermissionError
+            {
                 throw HistoryRepositoryError.permissionDenied
             }
             throw HistoryRepositoryError.ioFailed

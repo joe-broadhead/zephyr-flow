@@ -13,12 +13,14 @@ public struct AudioChunk: Sendable, Equatable {
     public let channelCount: Int
     public let samples: [Float]
 
-    public init(sessionID: SessionID,
-                sequence: UInt64,
-                startSample: UInt64,
-                sampleRate: Double,
-                channelCount: Int,
-                samples: [Float]) {
+    public init(
+        sessionID: SessionID,
+        sequence: UInt64,
+        startSample: UInt64,
+        sampleRate: Double,
+        channelCount: Int,
+        samples: [Float]
+    ) {
         self.sessionID = sessionID
         self.sequence = sequence
         self.startSample = startSample
@@ -45,10 +47,10 @@ public final class BoundedAudioChannel: @unchecked Sendable {
     public let capacity: Int
 
     private var ring: [AudioChunk?]
-    private var head_ = 0
-    private var count_ = 0
+    private var headIndex = 0
+    private var elementCount = 0
     private let lock = NSLock()
-    private var closed_ = false
+    private var isClosedFlag = false
     private var continuation: AsyncStream<AudioChunk>.Continuation?
     private let stream: AsyncStream<AudioChunk>
 
@@ -77,24 +79,25 @@ public final class BoundedAudioChannel: @unchecked Sendable {
     /// chunk into the bounded ring before returning.
     @discardableResult
     public func enqueue(_ chunk: AudioChunk) -> AudioEnqueueResult {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         guard chunk.sessionID == sessionID else {
             wrongSessionRejected += 1
             wrongSessionDroppedSamples += UInt64(chunk.samples.count)
             return .wrongSessionRejected
         }
-        guard !closed_ else {
+        guard !isClosedFlag else {
             closedDropped += 1
             closedDroppedSamples += UInt64(chunk.samples.count)
             return .closed
         }
-        guard count_ < capacity else {
+        guard elementCount < capacity else {
             overflowDropped += 1
             overflowDroppedSamples += UInt64(chunk.samples.count)
             return .overflowDropped
         }
-        ring[(head_ + count_) % capacity] = chunk
-        count_ += 1
+        ring[(headIndex + elementCount) % capacity] = chunk
+        elementCount += 1
         enqueued += 1
         acceptedSamples += UInt64(chunk.samples.count)
         lastAcceptedSequence = chunk.sequence
@@ -106,14 +109,15 @@ public final class BoundedAudioChannel: @unchecked Sendable {
     public var chunks: AsyncStream<AudioChunk> { stream }
 
     public func close() {
-        lock.lock(); defer { lock.unlock() }
-        guard !closed_ else { return }
-        closed_ = true
+        lock.lock()
+        defer { lock.unlock() }
+        guard !isClosedFlag else { return }
+        isClosedFlag = true
         continuation?.finish()
     }
 
-    public var isClosed: Bool { lock.withLock { closed_ } }
-    public var occupancy: Int { lock.withLock { count_ } }
+    public var isClosed: Bool { lock.withLock { isClosedFlag } }
+    public var occupancy: Int { lock.withLock { elementCount } }
 
     /// ANY overflow or cross-session rejection makes the capture degraded:
     /// callers must map this to a non-ordinary outcome.
@@ -123,16 +127,17 @@ public final class BoundedAudioChannel: @unchecked Sendable {
 
     public func stats() -> AudioChannelStats {
         lock.withLock {
-            AudioChannelStats(capacity: capacity,
-                              enqueued: enqueued,
-                              overflowDropped: overflowDropped,
-                              wrongSessionRejected: wrongSessionRejected,
-                              closedDropped: closedDropped,
-                              acceptedSamples: acceptedSamples,
-                              overflowDroppedSamples: overflowDroppedSamples,
-                              wrongSessionDroppedSamples: wrongSessionDroppedSamples,
-                              closedDroppedSamples: closedDroppedSamples,
-                              lastAcceptedSequence: lastAcceptedSequence)
+            AudioChannelStats(
+                capacity: capacity,
+                enqueued: enqueued,
+                overflowDropped: overflowDropped,
+                wrongSessionRejected: wrongSessionRejected,
+                closedDropped: closedDropped,
+                acceptedSamples: acceptedSamples,
+                overflowDroppedSamples: overflowDroppedSamples,
+                wrongSessionDroppedSamples: wrongSessionDroppedSamples,
+                closedDroppedSamples: closedDroppedSamples,
+                lastAcceptedSequence: lastAcceptedSequence)
         }
     }
 }
@@ -157,11 +162,13 @@ public struct AudioChannelStats: Sendable, Equatable {
     public let closedDroppedSamples: UInt64
     public let lastAcceptedSequence: UInt64?
 
-    public init(capacity: Int, enqueued: UInt64, overflowDropped: UInt64,
-                wrongSessionRejected: UInt64, closedDropped: UInt64,
-                acceptedSamples: UInt64, overflowDroppedSamples: UInt64,
-                wrongSessionDroppedSamples: UInt64, closedDroppedSamples: UInt64,
-                lastAcceptedSequence: UInt64?) {
+    public init(
+        capacity: Int, enqueued: UInt64, overflowDropped: UInt64,
+        wrongSessionRejected: UInt64, closedDropped: UInt64,
+        acceptedSamples: UInt64, overflowDroppedSamples: UInt64,
+        wrongSessionDroppedSamples: UInt64, closedDroppedSamples: UInt64,
+        lastAcceptedSequence: UInt64?
+    ) {
         self.capacity = capacity
         self.enqueued = enqueued
         self.overflowDropped = overflowDropped

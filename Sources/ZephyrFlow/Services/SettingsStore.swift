@@ -1,6 +1,6 @@
+import Combine
 import Foundation
 import SwiftUI
-import Combine
 import ZephyrFlowCore
 
 @MainActor
@@ -58,8 +58,9 @@ final class SettingsStore: ObservableObject {
     @discardableResult
     func commit() -> Bool {
         do {
-            let data = try SettingsStorageCoordinator.encode(settings: settings,
-                                                             provenance: provenance)
+            let data = try SettingsStorageCoordinator.encode(
+                settings: settings,
+                provenance: provenance)
             UserDefaults.standard.set(data, forKey: defaultsKey)
             return true
         } catch {
@@ -80,7 +81,9 @@ final class SettingsStore: ObservableObject {
         if obj["flowBackend"] == nil { obj["flowBackend"] = defaults.flowBackend.rawValue }
         if obj["insertionMode"] == nil { obj["insertionMode"] = defaults.insertionMode.rawValue }
         if obj["panelPositionLocked"] == nil { obj["panelPositionLocked"] = defaults.panelPositionLocked }
-        if obj["copyOnlyOverrideBundleIDs"] == nil { obj["copyOnlyOverrideBundleIDs"] = defaults.copyOnlyOverrideBundleIDs }
+        if obj["copyOnlyOverrideBundleIDs"] == nil {
+            obj["copyOnlyOverrideBundleIDs"] = defaults.copyOnlyOverrideBundleIDs
+        }
         // JOE-2254: legacy free-form language string -> validated model.
         if let legacy = obj["language"] as? String, SupportedLanguage(rawValue: legacy) == nil {
             obj["language"] = SupportedLanguage.fromLegacy(legacy).rawValue
@@ -89,7 +92,8 @@ final class SettingsStore: ObservableObject {
         // Drop legacy no-op key if present
         obj.removeValue(forKey: "playSounds")
         guard let fixed = try? JSONSerialization.data(withJSONObject: obj),
-              let decoded = try? JSONDecoder().decode(AppSettings.self, from: fixed) else {
+            let decoded = try? JSONDecoder().decode(AppSettings.self, from: fixed)
+        else {
             return nil
         }
         return decoded

@@ -19,7 +19,7 @@ public enum DecodeOperationOutcome: String, Codable, CaseIterable, Sendable, Equ
     case completed
     case cancelled
     case deadlineExceeded
-    case degraded            // e.g. native error, ownership loss
+    case degraded  // e.g. native error, ownership loss
 }
 
 /// Immutable identity of one decode operation.
@@ -30,8 +30,10 @@ public struct DecodeOperation: Sendable, Equatable {
     public let startedAtNanos: UInt64
     public let deadlineNanosAhead: UInt64
 
-    public init(operationID: UInt64, purpose: DecodePurpose, sessionID: SessionID,
-                startedAtNanos: UInt64, deadlineNanosAhead: UInt64) {
+    public init(
+        operationID: UInt64, purpose: DecodePurpose, sessionID: SessionID,
+        startedAtNanos: UInt64, deadlineNanosAhead: UInt64
+    ) {
         self.operationID = operationID
         self.purpose = purpose
         self.sessionID = sessionID
@@ -64,19 +66,22 @@ public struct DecodeOwnership: Sendable, Equatable {
 
     /// Try to begin an operation. Returns nil when a decode is still running
     /// (exclusive) — the caller must never start a second native decode.
-    public mutating func begin(purpose: DecodePurpose,
-                               sessionID: SessionID,
-                               nowNanos: UInt64,
-                               deadlineNanosAhead: UInt64 = 3_000_000_000) -> DecodeOperation? {
+    public mutating func begin(
+        purpose: DecodePurpose,
+        sessionID: SessionID,
+        nowNanos: UInt64,
+        deadlineNanosAhead: UInt64 = 3_000_000_000
+    ) -> DecodeOperation? {
         guard owner == nil else {
             rejectedWhileBusy += 1
             return nil
         }
-        let op = DecodeOperation(operationID: nextOperationID,
-                                 purpose: purpose,
-                                 sessionID: sessionID,
-                                 startedAtNanos: nowNanos,
-                                 deadlineNanosAhead: deadlineNanosAhead)
+        let op = DecodeOperation(
+            operationID: nextOperationID,
+            purpose: purpose,
+            sessionID: sessionID,
+            startedAtNanos: nowNanos,
+            deadlineNanosAhead: deadlineNanosAhead)
         nextOperationID &+= 1
         owner = op
         maxObservedConcurrency = max(maxObservedConcurrency, 1)
@@ -85,8 +90,10 @@ public struct DecodeOwnership: Sendable, Equatable {
 
     /// The native call actually ended. Releases ownership ONLY for the
     /// current owner; records the outcome exactly once.
-    public mutating func finish(_ operation: DecodeOperation,
-                                outcome: DecodeOperationOutcome) -> Bool {
+    public mutating func finish(
+        _ operation: DecodeOperation,
+        outcome: DecodeOperationOutcome
+    ) -> Bool {
         guard owner == operation else { return false }
         owner = nil
         record(outcome)
@@ -134,20 +141,23 @@ public struct FakeDecode: Sendable {
     public init() {}
 
     public mutating func start() {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         started += 1
         running += 1
         maxConcurrent = max(maxConcurrent, running)
     }
 
     public mutating func end() {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         running -= 1
         finished += 1
     }
 
     public var currentRunning: Int {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return running
     }
 }

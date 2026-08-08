@@ -75,9 +75,9 @@ public struct PasteboardBudget: Sendable, Equatable {
 
 public enum PasteboardTransactionState: String, Codable, Sendable, Equatable {
     case idle
-    case ready              // snapshot taken; temporary not yet applied
-    case temporaryApplied   // temp content + marker on the pasteboard
-    case posted             // Cmd-V event posted
+    case ready  // snapshot taken; temporary not yet applied
+    case temporaryApplied  // temp content + marker on the pasteboard
+    case posted  // Cmd-V event posted
     case restored
     case notRestoredBecauseChanged
     case restoreFailed
@@ -119,10 +119,12 @@ public struct PasteboardTransaction: Sendable, Equatable {
     /// Begin the transaction: takes the snapshot and applies the budget.
     /// Returns nil (no transaction; NO clipboard mutation) when the snapshot
     /// exceeds the reviewed budget.
-    public init?(sessionID: SessionID,
-                 original: PasteboardSnapshot,
-                 marker: PasteboardMarker = PasteboardMarker(),
-                 budget: PasteboardBudget = PasteboardBudget()) {
+    public init?(
+        sessionID: SessionID,
+        original: PasteboardSnapshot,
+        marker: PasteboardMarker = PasteboardMarker(),
+        budget: PasteboardBudget = PasteboardBudget()
+    ) {
         guard budget.withinBudget(original) else {
             self.sessionID = sessionID
             self.original = original
@@ -158,8 +160,10 @@ public struct PasteboardTransaction: Sendable, Equatable {
     /// Decide restoration safety. The app writes `original` back iff this
     /// returns `.restored`. If the user/target changed the pasteboard, the new
     /// value is preserved (`notRestoredBecauseChanged`) — never overwritten.
-    public mutating func attemptRestore(currentChangeCount: Int,
-                                        currentIsOurMarker: Bool) -> PasteboardTransactionOutcome {
+    public mutating func attemptRestore(
+        currentChangeCount: Int,
+        currentIsOurMarker: Bool
+    ) -> PasteboardTransactionOutcome {
         if let outcome = outcome { return outcome }
         switch state {
         case .overBudget:

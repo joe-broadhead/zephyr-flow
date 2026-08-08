@@ -57,31 +57,36 @@ final class TargetValidationService: TargetValidationProviding {
         let isSecure = role == "AXSecureTextField"
         let sensitivity: SensitivityAssessment
         if isSecure {
-            sensitivity = SensitivityAssessment(sensitivity: .secure,
-                                                source: .accessibilityRole,
-                                                capturedAtNanos: nowNanos)
+            sensitivity = SensitivityAssessment(
+                sensitivity: .secure,
+                source: .accessibilityRole,
+                capturedAtNanos: nowNanos)
         } else if editable {
-            sensitivity = SensitivityAssessment(sensitivity: .normal,
-                                                source: .accessibilityRole,
-                                                capturedAtNanos: nowNanos)
+            sensitivity = SensitivityAssessment(
+                sensitivity: .normal,
+                source: .accessibilityRole,
+                capturedAtNanos: nowNanos)
         } else {
             // No evidence: fail closed to unknown (JOE-2258/2259).
-            sensitivity = SensitivityAssessment(sensitivity: .unknown,
-                                                source: .noEvidence,
-                                                capturedAtNanos: nowNanos)
+            sensitivity = SensitivityAssessment(
+                sensitivity: .unknown,
+                source: .noEvidence,
+                capturedAtNanos: nowNanos)
         }
 
         let snapshot = TargetSnapshot(
             sessionID: sessionID,
             capturedAtUptimeNanos: nowNanos,
-            target: .init(pid: pid,
-                          bundleID: bundle,
-                          processStartUptimeNanos: processStartNanos(pid: pid),
-                          windowID: frontmostWindowID(pid: pid),
-                          appVersion: bundleShortVersion(bundle)),
-            element: .init(role: role ?? "unknown",
-                           subrole: subrole,
-                           resolutionToken: identifier),
+            target: .init(
+                pid: pid,
+                bundleID: bundle,
+                processStartUptimeNanos: processStartNanos(pid: pid),
+                windowID: frontmostWindowID(pid: pid),
+                appVersion: bundleShortVersion(bundle)),
+            element: .init(
+                role: role ?? "unknown",
+                subrole: subrole,
+                resolutionToken: identifier),
             settable: settable,
             editable: editable,
             enabled: enabled,
@@ -106,26 +111,30 @@ final class TargetValidationService: TargetValidationProviding {
         let editable = element.map { textLikeRoles.contains(attr($0, kAXRoleAttribute) ?? "") } ?? false
         let sensitivity: SensitivityAssessment
         if isSecure {
-            sensitivity = SensitivityAssessment(sensitivity: .secure,
-                                                source: .accessibilityRole,
-                                                capturedAtNanos: nowNanos)
+            sensitivity = SensitivityAssessment(
+                sensitivity: .secure,
+                source: .accessibilityRole,
+                capturedAtNanos: nowNanos)
         } else if editable {
-            sensitivity = SensitivityAssessment(sensitivity: .normal,
-                                                source: .accessibilityRole,
-                                                capturedAtNanos: nowNanos)
+            sensitivity = SensitivityAssessment(
+                sensitivity: .normal,
+                source: .accessibilityRole,
+                capturedAtNanos: nowNanos)
         } else {
-            sensitivity = SensitivityAssessment(sensitivity: .unknown,
-                                                source: .noEvidence,
-                                                capturedAtNanos: nowNanos)
+            sensitivity = SensitivityAssessment(
+                sensitivity: .unknown,
+                source: .noEvidence,
+                capturedAtNanos: nowNanos)
         }
         return TargetValidationContext(
             pid: pid,
             bundleID: bundle,
             processStartUptimeNanos: processStartNanos(pid: pid),
             windowID: frontmostWindowID(pid: pid),
-            element: .init(role: role ?? "unknown",
-                           subrole: subrole,
-                           resolutionToken: identifier),
+            element: .init(
+                role: role ?? "unknown",
+                subrole: subrole,
+                resolutionToken: identifier),
             settable: element.map { axSettable($0) } ?? false,
             editable: editable,
             enabled: element.map { axBool($0, kAXEnabledAttribute) } ?? false,
@@ -136,16 +145,19 @@ final class TargetValidationService: TargetValidationProviding {
     /// Current frontmost user-facing pid (nil when Zephyr/ignored).
     func currentFrontmostPID() -> Int32? {
         guard let app = NSWorkspace.shared.frontmostApplication,
-              let bundle = app.bundleIdentifier,
-              !isIgnorable(bundleID: bundle) else { return nil }
+            let bundle = app.bundleIdentifier,
+            !isIgnorable(bundleID: bundle)
+        else { return nil }
         return app.processIdentifier
     }
 
     /// Bounded, observable restore: activates the captured app and polls the
     /// monitor until restored, rejected (attempt cap) or deadlineExceeded.
     /// Never sleeps blindly — every wait step re-observes frontmost state.
-    func restoreToCapturedTarget(snapshot: TargetSnapshot,
-                                 deadlineNanosAhead: UInt64 = 2_000_000_000) async -> TargetRestoreMonitor {
+    func restoreToCapturedTarget(
+        snapshot: TargetSnapshot,
+        deadlineNanosAhead: UInt64 = 2_000_000_000
+    ) async -> TargetRestoreMonitor {
         var monitor = TargetRestoreMonitor(deadlineNanosAhead: deadlineNanosAhead, maxAttempts: 40)
         monitor.start(nowNanos: DispatchTime.now().uptimeNanoseconds)
 
@@ -179,19 +191,24 @@ final class TargetValidationService: TargetValidationProviding {
 
     private func focusedAXApplication() -> NSRunningApplication? {
         if let frontmost = NSWorkspace.shared.frontmostApplication,
-           let bundle = frontmost.bundleIdentifier,
-           !isIgnorable(bundleID: bundle) {
+            let bundle = frontmost.bundleIdentifier,
+            !isIgnorable(bundleID: bundle)
+        {
             return frontmost
         }
         // Fall back to the AX focused application (without stealing focus).
         let systemWide = AXUIElementCreateSystemWide()
         var focusedApp: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &focusedApp) == .success,
-              let appElement = focusedApp else { return nil }
+        guard
+            AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &focusedApp)
+                == .success,
+            let appElement = focusedApp
+        else { return nil }
         var pid: pid_t = 0
         guard AXUIElementGetPid((appElement as! AXUIElement), &pid) == .success else { return nil }
         guard let app = NSRunningApplication(processIdentifier: pid),
-              let bundle = app.bundleIdentifier, !isIgnorable(bundleID: bundle) else { return nil }
+            let bundle = app.bundleIdentifier, !isIgnorable(bundleID: bundle)
+        else { return nil }
         return app
     }
 
@@ -199,7 +216,8 @@ final class TargetValidationService: TargetValidationProviding {
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-              let element = focused, CFGetTypeID(element) == AXUIElementGetTypeID() else { return nil }
+            let element = focused, CFGetTypeID(element) == AXUIElementGetTypeID()
+        else { return nil }
         return (element as! AXUIElement)
     }
 
@@ -224,14 +242,18 @@ final class TargetValidationService: TargetValidationProviding {
 
     /// Frontmost usable window id of a pid via CGWindowList (boundaries only).
     private func frontmostWindowID(pid: Int32) -> UInt32? {
-        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                                    kCGNullWindowID) as? [[String: Any]] else { return nil }
+        guard
+            let list = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements],
+                kCGNullWindowID) as? [[String: Any]]
+        else { return nil }
         let windows = list.filter {
             ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
                 && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
         }
         guard let first = windows.first,
-              let winID = first[kCGWindowNumber as String] as? NSNumber else { return nil }
+            let winID = first[kCGWindowNumber as String] as? NSNumber
+        else { return nil }
         return UInt32(winID.int32Value)
     }
 
@@ -247,7 +269,8 @@ final class TargetValidationService: TargetValidationProviding {
 
     private func bundleShortVersion(_ bundleID: String) -> String? {
         guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID),
-              let bundle = Bundle(url: appURL) else { return nil }
+            let bundle = Bundle(url: appURL)
+        else { return nil }
         return bundle.infoDictionary?["CFBundleShortVersionString"] as? String
     }
 

@@ -1,6 +1,6 @@
+import Combine
 import Foundation
 import SwiftUI
-import Combine
 import ZephyrFlowCore
 
 /// Observable readiness for Whisper models. JOE-2255: readiness = VERIFIED
@@ -18,7 +18,8 @@ final class ModelReadinessStore: ObservableObject {
     /// App-owned verified-cache controller (production filesystem).
     private let acquisition = ModelAcquisitionController(
         fs: ProductionModelAcquisitionFileSystem(downloader: ProductionModelAcquisitionFileSystem.whisperKitDownloader))
-    private var acquisitionTasks: [ModelIdentifier: Task<ModelAcquisitionController.ModelAcquisitionResult, Never>] = [:]
+    private var acquisitionTasks: [ModelIdentifier: Task<ModelAcquisitionController.ModelAcquisitionResult, Never>] =
+        [:]
 
     private init() {
         refreshAll()
@@ -73,8 +74,9 @@ final class ModelReadinessStore: ObservableObject {
         case .downloading, .queued:
             markDownloading(model, progress: nil)
         case .ready:
-            readiness[model] = ModelReadiness(state: .ready,
-                                              bytesOnDisk: nil)
+            readiness[model] = ModelReadiness(
+                state: .ready,
+                bytesOnDisk: nil)
             bannerMessage = "\(model.displayName) ready"
             clearBannerLater()
         case .cancelled:
@@ -83,7 +85,8 @@ final class ModelReadinessStore: ObservableObject {
             readiness[model] = ModelReadiness(state: .quarantined)
             bannerMessage = "\(model.displayName) corrupt content quarantined"
         case .failed:
-            readiness[model] = ModelReadiness(state: .failed(result.error?.localizedDescription ?? "acquisition failed"))
+            readiness[model] = ModelReadiness(
+                state: .failed(result.error?.localizedDescription ?? "acquisition failed"))
             bannerMessage = "\(model.displayName): acquisition failed"
         case .missing, .verifying:
             readiness[model] = ModelReadiness(state: .missing)

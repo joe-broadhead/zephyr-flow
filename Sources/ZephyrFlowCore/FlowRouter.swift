@@ -9,7 +9,6 @@ public actor FlowRouter: FlowProcessorProtocol {
     private var backendProvider: @Sendable () async -> FlowBackend = { .regex }
     private var enhancedReadyProvider: @Sendable () async -> Bool = { false }
 
-
     /// Soft deadline for enhanced rewrite (protects sessionChain).
     public var enhancedTimeoutNanoseconds: UInt64 = 1_000_000_000
 
@@ -39,8 +38,9 @@ public actor FlowRouter: FlowProcessorProtocol {
         // unknown sessions only ever get conservative/verbatim classes.
         let loss = FlowOutcome.lossClass(for: request.style)
         if !loss.allowedForSecureSessions && !request.sensitivity.allowsAutomaticSideEffects {
-            let conservative = await process(request.text, style: .clean,
-                                             language: request.language)
+            let conservative = await process(
+                request.text, style: .clean,
+                language: request.language)
             return FlowOutcome(
                 text: conservative,
                 requestedStyle: request.style,

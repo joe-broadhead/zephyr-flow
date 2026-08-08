@@ -35,15 +35,18 @@ public struct SessionSensitivityDecision: Sendable, Equatable {
 
     /// Combine a session-start and a pre-insertion assessment. Absence of
     /// evidence at either point yields `unknown` (fail closed — never normal).
-    public static func resolve(sessionStart: SensitivityAssessment,
-                               preInsertion: SensitivityAssessment?) -> SessionSensitivityDecision {
+    public static func resolve(
+        sessionStart: SensitivityAssessment,
+        preInsertion: SensitivityAssessment?
+    ) -> SessionSensitivityDecision {
         let fresh = preInsertion?.sensitivity
         let start = sessionStart.sensitivity
 
         guard let fresh else {
-            return SessionSensitivityDecision(sensitivity: .unknown,
-                                              source: .noEvidence,
-                                              upgradedBeforeInsertion: false)
+            return SessionSensitivityDecision(
+                sensitivity: .unknown,
+                source: .noEvidence,
+                upgradedBeforeInsertion: false)
         }
         // Most restrictive wins; ties keep the source.
         let selected: SessionSensitivity
@@ -55,9 +58,10 @@ public struct SessionSensitivityDecision: Sendable, Equatable {
             selected = .normal
         }
         let upgraded = start == .normal && selected != .normal
-        return SessionSensitivityDecision(sensitivity: selected,
-                                          source: selected == fresh ? preInsertion?.source ?? .noEvidence : sessionStart.source,
-                                          upgradedBeforeInsertion: upgraded)
+        return SessionSensitivityDecision(
+            sensitivity: selected,
+            source: selected == fresh ? preInsertion?.source ?? .noEvidence : sessionStart.source,
+            upgradedBeforeInsertion: upgraded)
     }
 }
 
@@ -123,8 +127,10 @@ public enum TranscriptStageGate {
         case blockedForSensitivity(surface: SessionPolicySurface)
     }
 
-    public static func gate(decision: SessionSensitivityDecision,
-                            surface: SessionPolicySurface) -> Result {
+    public static func gate(
+        decision: SessionSensitivityDecision,
+        surface: SessionPolicySurface
+    ) -> Result {
         if SensitivityPolicy.allowance(sensitivity: decision.sensitivity, surface: surface) {
             return .allowed
         }
@@ -135,14 +141,17 @@ public enum TranscriptStageGate {
     /// the automatic clipboard fallback surface. It never logs content — the
     /// audit record carries only class/timestamp/outcome.
     public static func explicitCopyAllowed(decision: SessionSensitivityDecision) -> Bool {
-        return true // explicit human action, preceded by a privacy notice
+        return true  // explicit human action, preceded by a privacy notice
     }
 
-    public static func recordExplicitCopy(decision: SessionSensitivityDecision,
-                                          now: Date = Date()) -> ExplicitCopyAuditRecord {
-        ExplicitCopyAuditRecord(sensitivity: decision.sensitivity,
-                                upgradedBeforeInsertion: decision.upgradedBeforeInsertion,
-                                timestampMillis: UInt64(now.timeIntervalSince1970 * 1000))
+    public static func recordExplicitCopy(
+        decision: SessionSensitivityDecision,
+        now: Date = Date()
+    ) -> ExplicitCopyAuditRecord {
+        ExplicitCopyAuditRecord(
+            sensitivity: decision.sensitivity,
+            upgradedBeforeInsertion: decision.upgradedBeforeInsertion,
+            timestampMillis: UInt64(now.timeIntervalSince1970 * 1000))
     }
 }
 

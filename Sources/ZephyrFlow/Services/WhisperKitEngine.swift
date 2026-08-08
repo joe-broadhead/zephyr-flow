@@ -1,5 +1,5 @@
-import Foundation
 import Accelerate
+import Foundation
 import WhisperKit
 import ZephyrFlowCore
 
@@ -98,7 +98,8 @@ actor WhisperKitEngine: WhisperEngineProtocol {
             self.modelName = "WhisperKit (\(model.displayName))"
             self.isReady = true
         } catch {
-            let hint = allowDownload
+            let hint =
+                allowDownload
                 ? error.localizedDescription
                 : "\(error.localizedDescription) — enable model downloads in Privacy settings or pick Apple Speech"
             throw WhisperEngineError.modelLoadFailed(hint)
@@ -164,23 +165,26 @@ actor WhisperKitEngine: WhisperEngineProtocol {
 
         guard samples.count >= 1_600 else {
             let fallback = lastPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
-            let accounting = EngineFrameAccounting(capturedSourceSamples: UInt64(samples.count),
-                                                   deliveredEngineSamples: 0,
-                                                   decodedEngineSamples: 0,
-                                                   droppedSourceSamples: 0)
+            let accounting = EngineFrameAccounting(
+                capturedSourceSamples: UInt64(samples.count),
+                deliveredEngineSamples: 0,
+                decodedEngineSamples: 0,
+                droppedSourceSamples: 0)
             cleanup()
-            return EngineResult(text: fallback,
-                                completeness: .partial,
-                                frameAccounting: accounting,
-                                engine: engineIdentity(),
-                                languageRequested: nil, languageDetected: nil,
-                                confidence: nil, confidenceSource: nil,
-                                startedAtUptimeNanos: startTime?.timeIntervalSince1970 != nil ? DispatchTime.now().uptimeNanoseconds : nil,
-                                endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
-                                inferenceDurationNanos: UInt64(duration * 1_000_000_000),
-                                warnings: [.shortAudioFallback],
-                                fallbackReason: "short-audio fallback",
-                                termination: .completed)
+            return EngineResult(
+                text: fallback,
+                completeness: .partial,
+                frameAccounting: accounting,
+                engine: engineIdentity(),
+                languageRequested: nil, languageDetected: nil,
+                confidence: nil, confidenceSource: nil,
+                startedAtUptimeNanos: startTime?.timeIntervalSince1970 != nil
+                    ? DispatchTime.now().uptimeNanoseconds : nil,
+                endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
+                inferenceDurationNanos: UInt64(duration * 1_000_000_000),
+                warnings: [.shortAudioFallback],
+                fallbackReason: "short-audio fallback",
+                termination: .completed)
         }
 
         guard let kit else {
@@ -190,68 +194,76 @@ actor WhisperKitEngine: WhisperEngineProtocol {
 
         let raw: String
         do {
-            raw = try await runTranscribe(kit: kit, samples: samples, options: currentDecodeOptions ?? decodeOptions(language: currentLanguage),
-                                          purpose: .final)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            raw = try await runTranscribe(
+                kit: kit, samples: samples, options: currentDecodeOptions ?? decodeOptions(language: currentLanguage),
+                purpose: .final
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         } catch {
             let fallback = lastPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !fallback.isEmpty {
                 ZFLog.info("Whisper finalize failed; using last partial len=\(fallback.count)")
-                let accounting = EngineFrameAccounting(capturedSourceSamples: UInt64(samples.count),
-                                                       deliveredEngineSamples: 0,
-                                                       decodedEngineSamples: 0,
-                                                       droppedSourceSamples: 0)
+                let accounting = EngineFrameAccounting(
+                    capturedSourceSamples: UInt64(samples.count),
+                    deliveredEngineSamples: 0,
+                    decodedEngineSamples: 0,
+                    droppedSourceSamples: 0)
                 cleanup()
                 // A final-decode failure with a rolling partial is NEVER
                 // `complete` (JOE-2252): it is `partial` with a warning.
-                return EngineResult(text: fallback,
-                                    completeness: .partial,
-                                    frameAccounting: accounting,
-                                    engine: engineIdentity(),
-                                    languageRequested: nil, languageDetected: nil,
-                                    confidence: nil, confidenceSource: nil,
-                                    startedAtUptimeNanos: nil,
-                                    endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
-                                    inferenceDurationNanos: UInt64(duration * 1_000_000_000),
-                                    warnings: [.partialFallback],
-                                    fallbackReason: "final decode failed; rolling partial used",
-                                    termination: .failed)
+                return EngineResult(
+                    text: fallback,
+                    completeness: .partial,
+                    frameAccounting: accounting,
+                    engine: engineIdentity(),
+                    languageRequested: nil, languageDetected: nil,
+                    confidence: nil, confidenceSource: nil,
+                    startedAtUptimeNanos: nil,
+                    endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
+                    inferenceDurationNanos: UInt64(duration * 1_000_000_000),
+                    warnings: [.partialFallback],
+                    fallbackReason: "final decode failed; rolling partial used",
+                    termination: .failed)
             }
             cleanup()
             throw WhisperEngineError.transcriptionFailed(error.localizedDescription)
         }
 
-        let finalText = raw.isEmpty
+        let finalText =
+            raw.isEmpty
             ? lastPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
             : raw
         // Frame evidence: captured == delivered (16 kHz reference), decoded
         // == delivered — required for a `complete` claim.
         let captured = UInt64(samples.count)
         let delivered = UInt64(samples.count)
-        let accounting = EngineFrameAccounting(capturedSourceSamples: captured,
-                                               deliveredEngineSamples: delivered,
-                                               decodedEngineSamples: delivered,
-                                               droppedSourceSamples: 0)
+        let accounting = EngineFrameAccounting(
+            capturedSourceSamples: captured,
+            deliveredEngineSamples: delivered,
+            decodedEngineSamples: delivered,
+            droppedSourceSamples: 0)
         let completeness: EngineResultCompleteness = raw.isEmpty ? .partial : .complete
         let warnings: [EngineWarning] = raw.isEmpty ? [.partialFallback] : []
         cleanup()
-        return EngineResult(text: finalText,
-                            completeness: completeness,
-                            frameAccounting: accounting,
-                            engine: engineIdentity(),
-                            languageRequested: nil, languageDetected: nil,
-                            confidence: nil, confidenceSource: nil,
-                            startedAtUptimeNanos: nil,
-                            endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
-                            inferenceDurationNanos: UInt64(duration * 1_000_000_000),
-                            warnings: warnings,
-                            fallbackReason: raw.isEmpty ? "no final decode; partial used" : nil,
-                            termination: .completed)
+        return EngineResult(
+            text: finalText,
+            completeness: completeness,
+            frameAccounting: accounting,
+            engine: engineIdentity(),
+            languageRequested: nil, languageDetected: nil,
+            confidence: nil, confidenceSource: nil,
+            startedAtUptimeNanos: nil,
+            endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
+            inferenceDurationNanos: UInt64(duration * 1_000_000_000),
+            warnings: warnings,
+            fallbackReason: raw.isEmpty ? "no final decode; partial used" : nil,
+            termination: .completed)
     }
 
     private func engineIdentity() -> EngineIdentity {
-        EngineIdentity(kind: .whisper, modelName: modelName,
-                       modelVersion: nil, modelDigest: nil)
+        EngineIdentity(
+            kind: .whisper, modelName: modelName,
+            modelVersion: nil, modelDigest: nil)
     }
 
     func cancel() async {
@@ -282,9 +294,10 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         guard !Task.isCancelled else { throw CancellationError() }
 
         let now = DispatchTime.now().uptimeNanoseconds
-        let op = decodeOwnership.begin(purpose: purpose,
-                                       sessionID: sessionID,
-                                       nowNanos: now)
+        let op = decodeOwnership.begin(
+            purpose: purpose,
+            sessionID: sessionID,
+            nowNanos: now)
         guard let op else {
             throw WhisperEngineError.decodeBusy
         }
@@ -345,10 +358,12 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         guard energy >= Self.minPartialRMS else { return }
 
         do {
-            let text = try await runTranscribe(kit: kit, samples: slice,
-                                                options: partialDecodeOptions(language: currentLanguage),
-                                                purpose: .partial)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = try await runTranscribe(
+                kit: kit, samples: slice,
+                options: partialDecodeOptions(language: currentLanguage),
+                purpose: .partial
+            )
+            .trimmingCharacters(in: .whitespacesAndNewlines)
 
             guard isStreaming, !isFinalizing else { return }
             guard !text.isEmpty, text != lastPartialText else { return }

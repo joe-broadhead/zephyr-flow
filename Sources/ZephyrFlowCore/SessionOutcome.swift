@@ -44,8 +44,10 @@ public struct OutcomePolicy: Sendable, Equatable {
     /// May this outcome enter release/qualification evidence?
     public let entersReleaseEvidence: Bool
 
-    public init(showsSuccessUI: Bool, maySaveHistory: Bool, mayWriteClipboard: Bool,
-                emitsMetrics: Bool, entersReleaseEvidence: Bool) {
+    public init(
+        showsSuccessUI: Bool, maySaveHistory: Bool, mayWriteClipboard: Bool,
+        emitsMetrics: Bool, entersReleaseEvidence: Bool
+    ) {
         self.showsSuccessUI = showsSuccessUI
         self.maySaveHistory = maySaveHistory
         self.mayWriteClipboard = mayWriteClipboard
@@ -59,36 +61,43 @@ public struct OutcomePolicy: Sendable, Equatable {
         emitsMetrics: false, entersReleaseEvidence: false)
 }
 
-public extension OutcomePolicy {
-    static func policy(for outcome: StageOutcomeCategory) -> OutcomePolicy {
+extension OutcomePolicy {
+    public static func policy(for outcome: StageOutcomeCategory) -> OutcomePolicy {
         switch outcome {
         case .completed:
-            return OutcomePolicy(showsSuccessUI: true, maySaveHistory: true, mayWriteClipboard: true,
-                                 emitsMetrics: true, entersReleaseEvidence: true)
+            return OutcomePolicy(
+                showsSuccessUI: true, maySaveHistory: true, mayWriteClipboard: true,
+                emitsMetrics: true, entersReleaseEvidence: true)
         case .degraded:
             // Content was delivered but not at the requested fidelity: visible
             // but never presented as unqualified success.
-            return OutcomePolicy(showsSuccessUI: false, maySaveHistory: true, mayWriteClipboard: true,
-                                 emitsMetrics: true, entersReleaseEvidence: true)
+            return OutcomePolicy(
+                showsSuccessUI: false, maySaveHistory: true, mayWriteClipboard: true,
+                emitsMetrics: true, entersReleaseEvidence: true)
         case .partial, .truncated:
             // Never present incomplete content as success; partial text stays
             // inert and is never silently persisted as finished dictation.
-            return OutcomePolicy(showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
-                                 emitsMetrics: true, entersReleaseEvidence: false)
+            return OutcomePolicy(
+                showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
+                emitsMetrics: true, entersReleaseEvidence: false)
         case .cancelled, .deadlineExceeded, .abandonedDuringShutdown:
-            return OutcomePolicy(showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
-                                 emitsMetrics: true, entersReleaseEvidence: false)
+            return OutcomePolicy(
+                showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
+                emitsMetrics: true, entersReleaseEvidence: false)
         case .targetChanged:
             // The text is real but never reached its intended destination.
-            return OutcomePolicy(showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
-                                 emitsMetrics: true, entersReleaseEvidence: true)
+            return OutcomePolicy(
+                showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
+                emitsMetrics: true, entersReleaseEvidence: true)
         case .secureTarget:
             // Privacy confinement: no history, no clipboard, no payload evidence.
-            return OutcomePolicy(showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
-                                 emitsMetrics: false, entersReleaseEvidence: false)
+            return OutcomePolicy(
+                showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
+                emitsMetrics: false, entersReleaseEvidence: false)
         case .failed:
-            return OutcomePolicy(showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
-                                 emitsMetrics: true, entersReleaseEvidence: false)
+            return OutcomePolicy(
+                showsSuccessUI: false, maySaveHistory: false, mayWriteClipboard: false,
+                emitsMetrics: true, entersReleaseEvidence: false)
         }
     }
 }

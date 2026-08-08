@@ -1,7 +1,7 @@
-import Foundation
-import Speech
 import AVFoundation
 import Accelerate
+import Foundation
+import Speech
 import ZephyrFlowCore
 
 /// On-device transcription via Apple's Speech framework.
@@ -34,7 +34,8 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
     func load(model: ModelIdentifier) async throws {
         let identifier = Locale.current.identifier
-        let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: identifier))
+        let speechRecognizer =
+            SFSpeechRecognizer(locale: Locale(identifier: identifier))
             ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
             ?? SFSpeechRecognizer()
 
@@ -44,7 +45,9 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
         // Don't block on auth prompts during load — mark ready and enforce at startStreaming.
         let status = SFSpeechRecognizer.authorizationStatus()
-        ZFLog.info("Speech auth status=\(status.rawValue) locale=\(speechRecognizer.locale.identifier) available=\(speechRecognizer.isAvailable) onDevice=\(speechRecognizer.supportsOnDeviceRecognition)")
+        ZFLog.info(
+            "Speech auth status=\(status.rawValue) locale=\(speechRecognizer.locale.identifier) available=\(speechRecognizer.isAvailable) onDevice=\(speechRecognizer.supportsOnDeviceRecognition)"
+        )
 
         recognizer = speechRecognizer
         modelName = "Apple Speech (\(speechRecognizer.locale.identifier))"
@@ -79,7 +82,8 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         // silently fall back to network recognition.
         if localOnly && !recognizer.supportsOnDeviceRecognition {
             throw WhisperEngineError.modelLoadFailed(
-                "Local Only: on-device speech is unavailable for \(recognizer.locale.identifier). Download the language pack in System Settings → Apple Intelligence & Siri, or turn off Local Only.")
+                "Local Only: on-device speech is unavailable for \(recognizer.locale.identifier). Download the language pack in System Settings → Apple Intelligence & Siri, or turn off Local Only."
+            )
         }
         self.recognizer = recognizer
         currentLanguage = language
@@ -91,12 +95,14 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         if speechStatus != .authorized {
             let granted = await requestAuth()
             guard granted else {
-                throw WhisperEngineError.transcriptionFailed("Speech Recognition permission denied — System Settings → Privacy & Security → Speech Recognition")
+                throw WhisperEngineError.transcriptionFailed(
+                    "Speech Recognition permission denied — System Settings → Privacy & Security → Speech Recognition")
             }
         }
         let micOK = await requestMic()
         guard micOK else {
-            throw WhisperEngineError.transcriptionFailed("Microphone permission denied — System Settings → Privacy & Security → Microphone")
+            throw WhisperEngineError.transcriptionFailed(
+                "Microphone permission denied — System Settings → Privacy & Security → Microphone")
         }
 
         guard recognizer.isAvailable else {
@@ -128,7 +134,9 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         }
         request.taskHint = .dictation
         self.request = request
-        ZFLog.info("Recognition supportsOnDevice=\(recognizer.supportsOnDeviceRecognition) requireOnDevice=\(request.requiresOnDeviceRecognition) localOnly=\(localOnly)")
+        ZFLog.info(
+            "Recognition supportsOnDevice=\(recognizer.supportsOnDeviceRecognition) requireOnDevice=\(request.requiresOnDeviceRecognition) localOnly=\(localOnly)"
+        )
 
         let engine = AVAudioEngine()
         let input = engine.inputNode
@@ -232,24 +240,27 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
             if !finalText.isEmpty { return [.partialFallback] }
             return [.captureDegraded]
         }()
-        let accounting = EngineFrameAccounting(capturedSourceSamples: 0,
-                                               deliveredEngineSamples: 0,
-                                               decodedEngineSamples: 0,
-                                               droppedSourceSamples: 0)
-        return EngineResult(text: finalText,
-                            completeness: completeness,
-                            frameAccounting: accounting,
-                            engine: EngineIdentity(kind: .appleSpeech, modelName: modelName,
-                                                   modelVersion: nil, modelDigest: nil),
-                            languageRequested: currentLanguage.bcp47,
-                            languageDetected: currentLanguage.bcp47,
-                            confidence: nil, confidenceSource: nil,
-                            startedAtUptimeNanos: nil,
-                            endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
-                            inferenceDurationNanos: UInt64(duration * 1_000_000_000),
-                            warnings: warnings,
-                            fallbackReason: (sawFinal && err == nil) ? nil : "rolling partial / degraded",
-                            termination: err == nil ? .completed : .failed)
+        let accounting = EngineFrameAccounting(
+            capturedSourceSamples: 0,
+            deliveredEngineSamples: 0,
+            decodedEngineSamples: 0,
+            droppedSourceSamples: 0)
+        return EngineResult(
+            text: finalText,
+            completeness: completeness,
+            frameAccounting: accounting,
+            engine: EngineIdentity(
+                kind: .appleSpeech, modelName: modelName,
+                modelVersion: nil, modelDigest: nil),
+            languageRequested: currentLanguage.bcp47,
+            languageDetected: currentLanguage.bcp47,
+            confidence: nil, confidenceSource: nil,
+            startedAtUptimeNanos: nil,
+            endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
+            inferenceDurationNanos: UInt64(duration * 1_000_000_000),
+            warnings: warnings,
+            fallbackReason: (sawFinal && err == nil) ? nil : "rolling partial / degraded",
+            termination: err == nil ? .completed : .failed)
     }
 
     func cancel() async {
@@ -272,9 +283,11 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         }
     }
 
-    private func handleRecognition(token: RecognitionToken,
-                                    result: SFSpeechRecognitionResult?,
-                                    error: Error?) {
+    private func handleRecognition(
+        token: RecognitionToken,
+        result: SFSpeechRecognitionResult?,
+        error: Error?
+    ) {
         // JOE-2253: reject callbacks whose token is no longer current.
         guard recognitionTracker.isCurrent(token: token) else {
             ZFLog.info("stale recognition callback rejected (token mismatch)")
@@ -304,14 +317,15 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
             // 201 = Siri/Dictation disabled system-wide (blocks SFSpeechRecognizer)
             let friendly = Self.friendlySpeechError(ns)
             lastError = friendly
-            let outcome = recognitionTracker.noteError(token: token,
-                                                       code: Int32(ns.code),
-                                                       friendly: friendly)
+            let outcome = recognitionTracker.noteError(
+                token: token,
+                code: Int32(ns.code),
+                friendly: friendly)
             ZFLog.info("recognition error outcome=\(outcome.rawValue) domain=\(ns.domain) code=\(ns.code)")
             ZFLog.error("recognition error domain=\(ns.domain) code=\(ns.code) \(ns.localizedDescription)")
             if !accumulated.isEmpty {
                 sawFinal = true
-                lastError = nil // we have usable text
+                lastError = nil  // we have usable text
             }
             finishRecognition()
         }

@@ -13,7 +13,7 @@ public final class SecureSessionReview: @unchecked Sendable {
         case sessionCancelled
         case appTerminating
         case consumedByExplicitCopy
-        case retriedWithFreshIntent   // JOE-2272
+        case retriedWithFreshIntent  // JOE-2272
     }
 
     private final class Box {
@@ -39,12 +39,14 @@ public final class SecureSessionReview: @unchecked Sendable {
 
     /// In-memory content; nil once cleared.
     public var text: String? {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return box.text
     }
 
     public var clearReason: ClearReason? {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return box.clearedReason
     }
 
@@ -54,7 +56,8 @@ public final class SecureSessionReview: @unchecked Sendable {
     }
 
     public func clear(reason: ClearReason) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         guard box.clearedReason == nil else { return }
         box.text = nil
         box.clearedReason = reason
@@ -63,15 +66,22 @@ public final class SecureSessionReview: @unchecked Sendable {
     /// Explicit user copy: consumes the content, produces a content-free
     /// audit record, and returns the bytes the caller may place on the
     /// clipboard ONLY after this call (never before).
-    public func consumeForExplicitCopy(decision: SessionSensitivityDecision,
-                                       nowNanos: UInt64) -> (text: String, audit: ExplicitCopyAuditRecord)? {
-        lock.lock(); defer { lock.unlock() }
+    public func consumeForExplicitCopy(
+        decision: SessionSensitivityDecision,
+        nowNanos: UInt64
+    ) -> (text: String, audit: ExplicitCopyAuditRecord)? {
+        lock.lock()
+        defer { lock.unlock() }
         guard box.clearedReason == nil, let t = box.text else { return nil }
         box.text = nil
         box.clearedReason = .consumedByExplicitCopy
-        return (t, ExplicitCopyAuditRecord(sensitivity: decision.sensitivity,
-                                           upgradedBeforeInsertion: decision.upgradedBeforeInsertion,
-                                           timestampMillis: nowNanos / 1_000_000))
+        return (
+            t,
+            ExplicitCopyAuditRecord(
+                sensitivity: decision.sensitivity,
+                upgradedBeforeInsertion: decision.upgradedBeforeInsertion,
+                timestampMillis: nowNanos / 1_000_000)
+        )
     }
 }
 

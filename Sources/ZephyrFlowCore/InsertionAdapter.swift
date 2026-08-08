@@ -42,11 +42,13 @@ public struct InsertionAdapter: Sendable, Equatable {
     /// False => first failure aborts (never cascades into a less-safe path).
     public let allowsStrategyCascade: Bool
 
-    public init(id: String, bundleIDs: Set<String>, roles: Set<String>?,
-                appVersionRange: ClosedRange<String>?, macOSMin: String?,
-                strategies: [InsertionStrategy], settleNanos: UInt64,
-                verification: AdapterVerification, limitations: [String],
-                evidenceReference: String, allowsStrategyCascade: Bool) {
+    public init(
+        id: String, bundleIDs: Set<String>, roles: Set<String>?,
+        appVersionRange: ClosedRange<String>?, macOSMin: String?,
+        strategies: [InsertionStrategy], settleNanos: UInt64,
+        verification: AdapterVerification, limitations: [String],
+        evidenceReference: String, allowsStrategyCascade: Bool
+    ) {
         self.id = id
         self.bundleIDs = bundleIDs
         self.roles = roles
@@ -76,14 +78,22 @@ public struct InsertionAdapter: Sendable, Equatable {
         allowsStrategyCascade: true)
 
     /// Whether an exact bundle matches this adapter (plus optional filters).
-    public func matches(bundleID: String?, role: String?, appVersion: String?,
-                        macOSVersion: String?) -> Bool {
+    public func matches(
+        bundleID: String?, role: String?, appVersion: String?,
+        macOSVersion: String?
+    ) -> Bool {
         guard let bundleID, bundleIDs.contains(bundleID) else { return false }
         if let roles, let role, !roles.contains(role) { return false }
         if let appVersionRange, let appVersion,
-           !Self.version(appVersion, within: appVersionRange) { return false }
+            !Self.version(appVersion, within: appVersionRange)
+        {
+            return false
+        }
         if let macOSMin, let macOSVersion,
-           !Self.version(macOSVersion, atLeast: macOSMin) { return false }
+            !Self.version(macOSVersion, atLeast: macOSMin)
+        {
+            return false
+        }
         return true
     }
 
@@ -91,8 +101,9 @@ public struct InsertionAdapter: Sendable, Equatable {
     /// or the list is exhausted) — deterministic, unit-testable.
     public func nextStrategy(after strategy: InsertionStrategy) -> InsertionStrategy? {
         guard allowsStrategyCascade,
-              let idx = strategies.firstIndex(of: strategy),
-              idx + 1 < strategies.count else { return nil }
+            let idx = strategies.firstIndex(of: strategy),
+            idx + 1 < strategies.count
+        else { return nil }
         return strategies[idx + 1]
     }
 
@@ -118,61 +129,78 @@ public struct InsertionAdapterRegistry: Sendable {
     }
 
     /// Current registry — exact-bundle entries only (guesses removed).
-    public static let current = InsertionAdapterRegistry(version: 1, adapters: [
-        // Terminals: paste-first (terminal paste), unverified, longer settle.
-        InsertionAdapter(id: "terminal.v1",
-                         bundleIDs: ["com.apple.Terminal", "com.googlecode.iterm2",
-                                     "dev.warp.Warp-Stable", "dev.warp.Warp",
-                                     "co.zeit.hyper", "com.github.wez.wezterm"],
-                         roles: nil, appVersionRange: nil, macOSMin: nil,
-                         strategies: [.terminalPaste, .clipboardPaste, .copyOnly],
-                         settleNanos: 40_000_000,
-                         verification: .none,
-                         limitations: ["paste unverified in terminals"],
-                         evidenceReference: "docs/development/evidence/JOE-2271",
-                         allowsStrategyCascade: true),
-        // Editors/IDEs: paste + AX selected-text + (qualified) value.
-        InsertionAdapter(id: "editor.v1",
-                         bundleIDs: ["com.microsoft.VSCode", "com.apple.dt.Xcode"],
-                         roles: nil, appVersionRange: nil, macOSMin: nil,
-                         strategies: [.clipboardPaste, .axSelectedText, .axValue, .copyOnly],
-                         settleNanos: 16_000_000,
-                         verification: .postWriteReRead,
-                         limitations: ["axValue requires explicit adapter qualification (JOE-2270)"],
-                         evidenceReference: "docs/development/evidence/JOE-2271",
-                         allowsStrategyCascade: true),
-        // Browsers: paste + AX selected-text only — never whole-value AX.
-        InsertionAdapter(id: "browser.v1",
-                         bundleIDs: ["com.apple.Safari", "com.google.Chrome",
-                                     "org.mozilla.firefox", "com.microsoft.edgemac"],
-                         roles: nil, appVersionRange: nil, macOSMin: nil,
-                         strategies: [.clipboardPaste, .axSelectedText, .copyOnly],
-                         settleNanos: 16_000_000,
-                         verification: .postWriteReRead,
-                         limitations: ["no axValue in browsers", "paste unverified"],
-                         evidenceReference: "docs/development/evidence/JOE-2271",
-                         allowsStrategyCascade: true),
-        // Electron/browser-shell apps: explicit exact entries (no guesses).
-        InsertionAdapter(id: "electron-shell.v1",
-                         bundleIDs: ["com.tinyspeck.slackmacgap", "notion.id",
-                                     "com.figma.Desktop", "com.linear"],
-                         roles: nil, appVersionRange: nil, macOSMin: nil,
-                         strategies: [.clipboardPaste, .axSelectedText, .copyOnly],
-                         settleNanos: 16_000_000,
-                         verification: .postWriteReRead,
-                         limitations: ["shell apps vary; paste unverified"],
-                         evidenceReference: "docs/development/evidence/JOE-2271",
-                         allowsStrategyCascade: true),
-    ])
+    public static let current = InsertionAdapterRegistry(
+        version: 1,
+        adapters: [
+            // Terminals: paste-first (terminal paste), unverified, longer settle.
+            InsertionAdapter(
+                id: "terminal.v1",
+                bundleIDs: [
+                    "com.apple.Terminal", "com.googlecode.iterm2",
+                    "dev.warp.Warp-Stable", "dev.warp.Warp",
+                    "co.zeit.hyper", "com.github.wez.wezterm",
+                ],
+                roles: nil, appVersionRange: nil, macOSMin: nil,
+                strategies: [.terminalPaste, .clipboardPaste, .copyOnly],
+                settleNanos: 40_000_000,
+                verification: .none,
+                limitations: ["paste unverified in terminals"],
+                evidenceReference: "docs/development/evidence/JOE-2271",
+                allowsStrategyCascade: true),
+            // Editors/IDEs: paste + AX selected-text + (qualified) value.
+            InsertionAdapter(
+                id: "editor.v1",
+                bundleIDs: ["com.microsoft.VSCode", "com.apple.dt.Xcode"],
+                roles: nil, appVersionRange: nil, macOSMin: nil,
+                strategies: [.clipboardPaste, .axSelectedText, .axValue, .copyOnly],
+                settleNanos: 16_000_000,
+                verification: .postWriteReRead,
+                limitations: ["axValue requires explicit adapter qualification (JOE-2270)"],
+                evidenceReference: "docs/development/evidence/JOE-2271",
+                allowsStrategyCascade: true),
+            // Browsers: paste + AX selected-text only — never whole-value AX.
+            InsertionAdapter(
+                id: "browser.v1",
+                bundleIDs: [
+                    "com.apple.Safari", "com.google.Chrome",
+                    "org.mozilla.firefox", "com.microsoft.edgemac",
+                ],
+                roles: nil, appVersionRange: nil, macOSMin: nil,
+                strategies: [.clipboardPaste, .axSelectedText, .copyOnly],
+                settleNanos: 16_000_000,
+                verification: .postWriteReRead,
+                limitations: ["no axValue in browsers", "paste unverified"],
+                evidenceReference: "docs/development/evidence/JOE-2271",
+                allowsStrategyCascade: true),
+            // Electron/browser-shell apps: explicit exact entries (no guesses).
+            InsertionAdapter(
+                id: "electron-shell.v1",
+                bundleIDs: [
+                    "com.tinyspeck.slackmacgap", "notion.id",
+                    "com.figma.Desktop", "com.linear",
+                ],
+                roles: nil, appVersionRange: nil, macOSMin: nil,
+                strategies: [.clipboardPaste, .axSelectedText, .copyOnly],
+                settleNanos: 16_000_000,
+                verification: .postWriteReRead,
+                limitations: ["shell apps vary; paste unverified"],
+                evidenceReference: "docs/development/evidence/JOE-2271",
+                allowsStrategyCascade: true),
+        ])
 
     /// Resolve the adapter for a bundle: exact match or the conservative
     /// default. Never guesses.
-    public func adapter(forBundle bundleID: String?, role: String?,
-                        appVersion: String?, macOSVersion: String?) -> InsertionAdapter {
+    public func adapter(
+        forBundle bundleID: String?, role: String?,
+        appVersion: String?, macOSVersion: String?
+    ) -> InsertionAdapter {
         guard let bundleID else { return .conservativeDefault }
-        for adapter in adapters where adapter.matches(bundleID: bundleID, role: role,
-                                                      appVersion: appVersion,
-                                                      macOSVersion: macOSVersion) {
+        for adapter in adapters
+        where adapter.matches(
+            bundleID: bundleID, role: role,
+            appVersion: appVersion,
+            macOSVersion: macOSVersion)
+        {
             return adapter
         }
         return .conservativeDefault
@@ -202,8 +230,10 @@ public struct AdapterIdentity: Sendable, Equatable {
     public let verification: AdapterVerification
     public let confidence: TargetConfidence
 
-    public init(adapterID: String, registryVersion: Int, strategy: InsertionStrategy?,
-                verification: AdapterVerification, confidence: TargetConfidence) {
+    public init(
+        adapterID: String, registryVersion: Int, strategy: InsertionStrategy?,
+        verification: AdapterVerification, confidence: TargetConfidence
+    ) {
         self.adapterID = adapterID
         self.registryVersion = registryVersion
         self.strategy = strategy

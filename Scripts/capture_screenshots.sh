@@ -79,7 +79,7 @@ largest_window_id() {
 window_id_min_size() {
   local min_w="$1"
   local min_h="$2"
-  list_windows | while IFS=$'\t' read -r id name dim area; do
+  list_windows | while IFS=$'\t' read -r id _ dim _; do
     local w="${dim%x*}"
     local h="${dim#*x}"
     if (( w >= min_w && h >= min_h )); then
@@ -137,7 +137,7 @@ fi
 
 echo "→ Menu bar strip…"
 # Primary display top strip
-read -r sw sh <<<"$(swift -e 'import AppKit; let f=NSScreen.main!.frame; print(Int(f.width), Int(f.height))')"
+read -r sw _ <<<"$(swift -e 'import AppKit; let f=NSScreen.main!.frame; print(Int(f.width), Int(f.height))')"
 screencapture -x -R"0,0,${sw},48" "$OUT/04-menubar.png" 2>/dev/null || true
 [[ -f "$OUT/04-menubar.png" ]] && echo "  ✓ $OUT/04-menubar.png"
 

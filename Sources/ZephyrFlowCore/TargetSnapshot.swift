@@ -19,11 +19,13 @@ public struct TargetSnapshot: Sendable, Equatable {
         /// Bundle/version of the target application.
         public let appVersion: String?
 
-        public init(pid: Int32,
-                    bundleID: String?,
-                    processStartUptimeNanos: UInt64?,
-                    windowID: UInt32?,
-                    appVersion: String?) {
+        public init(
+            pid: Int32,
+            bundleID: String?,
+            processStartUptimeNanos: UInt64?,
+            windowID: UInt32?,
+            appVersion: String?
+        ) {
             self.pid = pid
             self.bundleID = bundleID
             self.processStartUptimeNanos = processStartUptimeNanos
@@ -59,15 +61,17 @@ public struct TargetSnapshot: Sendable, Equatable {
     public let selectionRange: Range<Int>?
     public let sensitivity: SensitivityAssessment
 
-    public init(sessionID: SessionID,
-                capturedAtUptimeNanos: UInt64,
-                target: Identity,
-                element: ElementIdentity?,
-                settable: Bool,
-                editable: Bool,
-                enabled: Bool,
-                selectionRange: Range<Int>?,
-                sensitivity: SensitivityAssessment) {
+    public init(
+        sessionID: SessionID,
+        capturedAtUptimeNanos: UInt64,
+        target: Identity,
+        element: ElementIdentity?,
+        settable: Bool,
+        editable: Bool,
+        enabled: Bool,
+        selectionRange: Range<Int>?,
+        sensitivity: SensitivityAssessment
+    ) {
         self.sessionID = sessionID
         self.capturedAtUptimeNanos = capturedAtUptimeNanos
         self.target = target

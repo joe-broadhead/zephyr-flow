@@ -1,6 +1,6 @@
+import CryptoKit
 import Foundation
 import Security
-import CryptoKit
 import ZephyrFlowCore
 
 // JOE-2262: per-installation history encryption key in the Keychain.

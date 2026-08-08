@@ -32,10 +32,10 @@ public actor FlowProcessor: FlowProcessorProtocol {
 
     /// JOE-2279: typed outcome for the deterministic rules backend.
     public func process(_ request: FlowRequest) async -> FlowOutcome {
-        let t0 = DispatchTime.now().uptimeNanoseconds
         let started = Date()
-        let output = await process(request.text, style: request.style,
-                                   language: request.language)
+        let output = await process(
+            request.text, style: request.style,
+            language: request.language)
         let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
         let loss = FlowOutcome.lossClass(for: request.style)
         // Deterministic backend: guardrails already applied inside rules.
@@ -43,7 +43,8 @@ public actor FlowProcessor: FlowProcessorProtocol {
         let outTokens = FlowGuardrails.tokens(in: output)
         let protectedSpansPreserved = FlowGuardrails.inputCovered(
             input: FlowGuardrails.tokens(in: request.text),
-            output: outTokens).ok
+            output: outTokens
+        ).ok
         let changed = request.text != output ? 1 : 0
         return FlowOutcome(
             text: output,
@@ -63,10 +64,11 @@ public actor FlowProcessor: FlowProcessorProtocol {
             termination: .completed)
     }
 
-
-    public func process(_ text: String,
-                        style: FlowStyle,
-                        language: SupportedLanguage = .auto) async -> String {
+    public func process(
+        _ text: String,
+        style: FlowStyle,
+        language: SupportedLanguage = .auto
+    ) async -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
@@ -100,9 +102,11 @@ public actor FlowProcessor: FlowProcessorProtocol {
     private func protect(_ text: String) -> (protected: String, spans: [String]) {
         var protected = text
         var spans: [String] = []
-        let patterns = [Self.urlPattern, Self.emailPattern, Self.pathPattern,
-                        Self.versionPattern, Self.quotedPattern, Self.codePattern,
-                        Self.abbreviationPattern]
+        let patterns = [
+            Self.urlPattern, Self.emailPattern, Self.pathPattern,
+            Self.versionPattern, Self.quotedPattern, Self.codePattern,
+            Self.abbreviationPattern,
+        ]
         var all: [(NSRange, String)] = []
         for pattern in patterns {
             guard let pattern else { continue }
@@ -169,27 +173,32 @@ public actor FlowProcessor: FlowProcessorProtocol {
             if english {
                 for filler in Self.fillerMulti {
                     let pattern = "\\b\(NSRegularExpression.escapedPattern(for: filler))\\b[,.]?"
-                    line = line.replacingOccurrences(of: pattern, with: "",
-                                                     options: [.regularExpression, .caseInsensitive])
+                    line = line.replacingOccurrences(
+                        of: pattern, with: "",
+                        options: [.regularExpression, .caseInsensitive])
                 }
                 for filler in Self.fillerSingle {
                     let pattern = "\\b\(filler)\\b[,.]?"
-                    line = line.replacingOccurrences(of: pattern, with: "",
-                                                     options: [.regularExpression, .caseInsensitive])
+                    line = line.replacingOccurrences(
+                        of: pattern, with: "",
+                        options: [.regularExpression, .caseInsensitive])
                 }
             }
-            line = line.replacingOccurrences(of: #"\s+([,.!?;:])"#, with: "$1",
-                                             options: .regularExpression)
+            line = line.replacingOccurrences(
+                of: #"\s+([,.!?;:])"#, with: "$1",
+                options: .regularExpression)
             // Filler removal can leave double spaces — collapse intra-line
             // only (paragraph newlines are preserved separately).
-            line = line.replacingOccurrences(of: #"[ \t]{2,}"#, with: " ",
-                                             options: .regularExpression)
+            line = line.replacingOccurrences(
+                of: #"[ \t]{2,}"#, with: " ",
+                options: .regularExpression)
             cleanedLines.append(line.trimmingCharacters(in: .whitespaces))
         }
         var result = cleanedLines.joined(separator: "\n")
         // Collapse 3+ newlines to a paragraph break.
-        result = result.replacingOccurrences(of: "\n{3,}", with: "\n\n",
-                                             options: .regularExpression)
+        result = result.replacingOccurrences(
+            of: "\n{3,}", with: "\n\n",
+            options: .regularExpression)
         // Capitalize the placeholder-protected text, THEN restore spans so
         // sentence rules never alter protected content.
         result = capitalizeSentencesProtected(result)
@@ -249,8 +258,9 @@ public actor FlowProcessor: FlowProcessorProtocol {
                     options: [.regularExpression, .caseInsensitive])
             }
         }
-        result = result.replacingOccurrences(of: #"\s{2,}"#, with: " ",
-                                             options: .regularExpression)
+        result = result.replacingOccurrences(
+            of: #"\s{2,}"#, with: " ",
+            options: .regularExpression)
         // Capitalize protected text, then restore technical spans.
         result = capitalizeSentencesProtected(result.trimmingCharacters(in: .whitespacesAndNewlines))
         return restore(result, spans: spans)
@@ -269,7 +279,8 @@ public actor FlowProcessor: FlowProcessorProtocol {
         if parts.count <= 1 {
             return "• \(text)"
         }
-        return parts
+        return
+            parts
             .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".!?;: ")) }
             .filter { !$0.isEmpty }
             .map { "• \(capitalizeFirst($0))" }

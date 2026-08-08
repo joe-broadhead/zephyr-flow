@@ -1,6 +1,6 @@
-import Foundation
 import AppKit
 import ApplicationServices
+import Foundation
 import ZephyrFlowCore
 
 actor InsertionService: InsertionServiceProtocol {
@@ -52,7 +52,9 @@ actor InsertionService: InsertionServiceProtocol {
             mode: mode,
             copyOnlyOverrides: copyOnlyOverrides
         )
-        ZFLog.info("adapter id=\(adapter.id) version=\(InsertionAdapterRegistry.current.version) strategies=\(strategies.map { $0.rawValue }.joined(separator: ","))")
+        ZFLog.info(
+            "adapter id=\(adapter.id) version=\(InsertionAdapterRegistry.current.version) strategies=\(strategies.map { $0.rawValue }.joined(separator: ","))"
+        )
         // Honor preferPaste=false by trying AX before paste when automatic.
         // Keep copyOnly strictly last so paste remains a fallback.
         if mode == .automatic, !preferPaste {
@@ -98,9 +100,10 @@ actor InsertionService: InsertionServiceProtocol {
                 switch axOutcome {
                 case .verified:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=verified")
-                    return .verifiedInserted(strategy: strategy,
-                                             evidence: .postWriteSelectionReRead,
-                                             warnings: [])
+                    return .verifiedInserted(
+                        strategy: strategy,
+                        evidence: .postWriteSelectionReRead,
+                        warnings: [])
                 case .unverified:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=unverified")
                     return .eventPostedUnverified(strategy: strategy, warnings: [.noPostWriteVerification])
@@ -144,7 +147,8 @@ actor InsertionService: InsertionServiceProtocol {
             &focusedRef
         )
         guard focusedResult == .success, let focused = focusedRef,
-              CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+            CFGetTypeID(focused) == AXUIElementGetTypeID()
+        else {
             ZFLog.info("AX: no focused element (\(focusedResult.rawValue))")
             return .failed
         }
@@ -161,13 +165,15 @@ actor InsertionService: InsertionServiceProtocol {
         let subrole = axString(element, kAXSubroleAttribute)
         let isSecure = role == "AXSecureTextField" || InsertionStrategyResolver.isSecureRole(role)
         var settableFlag = DarwinBoolean(false)
-        let settable = AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settableFlag) == .success
+        let settable =
+            AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settableFlag) == .success
             && settableFlag.boolValue
         let editable = role.map { InsertionService.textLikeRoles.contains($0) } ?? false
         let enabled = axBool(element, kAXEnabledAttribute)
-        let capability = AxElementCapability(settable: settable, editable: editable,
-                                             enabled: enabled, isSecure: isSecure,
-                                             role: role, subrole: subrole)
+        let capability = AxElementCapability(
+            settable: settable, editable: editable,
+            enabled: enabled, isSecure: isSecure,
+            role: role, subrole: subrole)
 
         // Current selection (positional only) + current value length.
         let selection = axSelectionRange(element)
@@ -178,11 +184,12 @@ actor InsertionService: InsertionServiceProtocol {
         let qualification = AxValueAdapterRegistry.default.qualification(
             forBundle: bundle, role: role)
 
-        let plan = AxWritePolicy.plan(capability: capability,
-                                      selection: selection,
-                                      currentUTF16Length: currentUTF16Length,
-                                      text: text,
-                                      qualification: qualification)
+        let plan = AxWritePolicy.plan(
+            capability: capability,
+            selection: selection,
+            currentUTF16Length: currentUTF16Length,
+            text: text,
+            qualification: qualification)
         switch plan {
         case .rejected(let reason):
             ZFLog.info("AX write rejected reason=\(reason.rawValue) role=\(role ?? "nil")")
@@ -197,10 +204,10 @@ actor InsertionService: InsertionServiceProtocol {
         let writeResult = await AxBoundedRunner.run(
             deadlineNanosAhead: 1_500_000_000,
             startedAtNanos: startNanos,
-            nowNanos: { DispatchTime.now().uptimeNanoseconds }
-        ) { [element] in
-            self.performAXWrite(element: element, text: text, plan: plan)
-        }
+            nowNanos: { DispatchTime.now().uptimeNanoseconds },
+            operation: { [element] in
+                self.performAXWrite(element: element, text: text, plan: plan)
+            })
         guard let outcome = writeResult.value else {
             return .deadlineExceeded
         }
@@ -215,10 +222,10 @@ actor InsertionService: InsertionServiceProtocol {
         let verifyResult = await AxBoundedRunner.run(
             deadlineNanosAhead: 1_500_000_000,
             startedAtNanos: verifyStart,
-            nowNanos: { DispatchTime.now().uptimeNanoseconds }
-        ) { [element] in
-            self.axString(element, kAXSelectedTextAttribute)
-        }
+            nowNanos: { DispatchTime.now().uptimeNanoseconds },
+            operation: { [element] in
+                self.axString(element, kAXSelectedTextAttribute)
+            })
         guard let verifiedText = verifyResult.value else {
             return .unverified
         }
@@ -227,10 +234,10 @@ actor InsertionService: InsertionServiceProtocol {
             _ = await AxBoundedRunner.run(
                 deadlineNanosAhead: 1_500_000_000,
                 startedAtNanos: DispatchTime.now().uptimeNanoseconds,
-                nowNanos: { DispatchTime.now().uptimeNanoseconds }
-            ) { [element] in
-                self.placeCaret(element: element, afterInserting: text, plan: plan)
-            }
+                nowNanos: { DispatchTime.now().uptimeNanoseconds },
+                operation: { [element] in
+                    self.placeCaret(element: element, afterInserting: text, plan: plan)
+                })
             return .verified
         }
         return .unverified
@@ -292,14 +299,15 @@ actor InsertionService: InsertionServiceProtocol {
     private nonisolated func axSelectionRange(_ element: AXUIElement) -> AxSelection? {
         var rangeRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
-              let rangeValue = rangeRef, CFGetTypeID(rangeValue) == AXValueGetTypeID() else { return nil }
+            let rangeValue = rangeRef, CFGetTypeID(rangeValue) == AXValueGetTypeID()
+        else { return nil }
         var cfRange = CFRange(location: 0, length: 0)
         let axValue = unsafeBitCast(rangeValue, to: AXValue.self)
         guard AXValueGetValue(axValue, .cfRange, &cfRange) else { return nil }
         return AxSelection(location: max(0, cfRange.location), length: max(0, cfRange.length))
     }
 
-// MARK: - Clipboard paste path
+    // MARK: - Clipboard paste path
 
     private enum ClipboardPasteResult: Sendable {
         case pasted
@@ -308,7 +316,9 @@ actor InsertionService: InsertionServiceProtocol {
         case failed
     }
 
-    private func pasteViaClipboard(_ text: String, sessionID: SessionID?, sensitivity: SessionSensitivity) async -> ClipboardPasteResult {
+    private func pasteViaClipboard(_ text: String, sessionID: SessionID?, sensitivity: SessionSensitivity) async
+        -> ClipboardPasteResult
+    {
         // JOE-2260: lossless bounded transaction. Snapshot EVERY item with
         // every available type/data (no flattening); enforce the reviewed
         // budget BEFORE any mutation; restore byte-for-byte unless the
@@ -318,13 +328,14 @@ actor InsertionService: InsertionServiceProtocol {
         let markerType = NSPasteboard.PasteboardType("io.zephyr-flow.transaction")
 
         // Ordered snapshot of all items + all types.
-        let items: [PasteboardItemSnapshot] = pasteboard.pasteboardItems?.map { pbItem in
-            let types = (pbItem.types ?? []).compactMap { type -> PasteboardTypeRecord? in
-                guard let data = pbItem.data(forType: type) else { return nil }
-                return PasteboardTypeRecord(type: type.rawValue, data: data)
-            }
-            return PasteboardItemSnapshot(types: types)
-        } ?? []
+        let items: [PasteboardItemSnapshot] =
+            pasteboard.pasteboardItems?.map { pbItem in
+                let types = (pbItem.types ?? []).compactMap { type -> PasteboardTypeRecord? in
+                    guard let data = pbItem.data(forType: type) else { return nil }
+                    return PasteboardTypeRecord(type: type.rawValue, data: data)
+                }
+                return PasteboardItemSnapshot(types: types)
+            } ?? []
         let original = PasteboardSnapshot(items: items, changeCount: pasteboard.changeCount)
 
         guard let sessionID else {
@@ -339,7 +350,9 @@ actor InsertionService: InsertionServiceProtocol {
         }
         guard var tx = PasteboardTransaction(sessionID: sessionID, original: original) else {
             // Budget overflow: NO destructive clipboard mutation.
-            ZFLog.info("paste transaction refused — snapshot over budget bytes=\(original.byteCount) items=\(original.itemCount)")
+            ZFLog.info(
+                "paste transaction refused — snapshot over budget bytes=\(original.byteCount) items=\(original.itemCount)"
+            )
             return .failed
         }
 
@@ -365,10 +378,12 @@ actor InsertionService: InsertionServiceProtocol {
         // Equivalence: unchanged since our temp write, or our marker still
         // present => safe to restore exactly.
         let pb = NSPasteboard.general
-        let currentIsOurs = pb.string(forType: markerType) == marker.value
+        let currentIsOurs =
+            pb.string(forType: markerType) == marker.value
             || pb.changeCount == tempChange
-        let outcome = tx.attemptRestore(currentChangeCount: pb.changeCount,
-                                        currentIsOurMarker: currentIsOurs)
+        let outcome = tx.attemptRestore(
+            currentChangeCount: pb.changeCount,
+            currentIsOurMarker: currentIsOurs)
         switch outcome {
         case .restored:
             restoreSnapshot(original, markerType: markerType)
@@ -406,7 +421,9 @@ actor InsertionService: InsertionServiceProtocol {
     }
 
     /// Post-restore verification: original types/data present, marker gone.
-    private nonisolated func restoreVerified(_ snapshot: PasteboardSnapshot, markerType: NSPasteboard.PasteboardType) -> Bool {
+    private nonisolated func restoreVerified(_ snapshot: PasteboardSnapshot, markerType: NSPasteboard.PasteboardType)
+        -> Bool
+    {
         let pb = NSPasteboard.general
         if snapshot.isEmpty { return pb.string(forType: markerType) == nil }
         guard let items = pb.pasteboardItems, items.count == snapshot.items.count else { return false }
@@ -420,7 +437,7 @@ actor InsertionService: InsertionServiceProtocol {
         return pb.string(forType: markerType) == nil
     }
 
-private nonisolated func postCommandV() -> Bool {
+    private nonisolated func postCommandV() -> Bool {
         let source = CGEventSource(stateID: .combinedSessionState)
         guard
             let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
@@ -447,13 +464,15 @@ private nonisolated func postCommandV() -> Bool {
         guard AXIsProcessTrusted() else { return nil }
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            systemWide,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedRef
-        ) == .success,
-              let focused = focusedRef,
-              CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+        guard
+            AXUIElementCopyAttributeValue(
+                systemWide,
+                kAXFocusedUIElementAttribute as CFString,
+                &focusedRef
+            ) == .success,
+            let focused = focusedRef,
+            CFGetTypeID(focused) == AXUIElementGetTypeID()
+        else {
             return nil
         }
         let element = unsafeBitCast(focused, to: AXUIElement.self)

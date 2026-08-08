@@ -8,17 +8,17 @@ public enum LaunchAtLoginState: String, Codable, CaseIterable, Sendable, Equatab
     case registered
     case notRegistered
     case requiresApproval
-    case notFound              // unpackaged development build
+    case notFound  // unpackaged development build
     case denied
     case unsupported
-    case stale                 // system registration diverges from settings
+    case stale  // system registration diverges from settings
 }
 
 public enum LaunchAtLoginTransactionState: String, Codable, CaseIterable, Sendable, Equatable {
     case idle
-    case pending               // external change in flight; UI shows pending
-    case applied               // external change succeeded + verified
-    case rolledBack            // external change failed; desired value reverted
+    case pending  // external change in flight; UI shows pending
+    case applied  // external change succeeded + verified
+    case rolledBack  // external change failed; desired value reverted
 }
 
 public struct LaunchAtLoginTransaction: Sendable, Equatable {
@@ -57,8 +57,10 @@ public struct LaunchAtLoginTransaction: Sendable, Equatable {
     public var isPending: Bool { state == .pending }
 
     /// Convergence rule: status matches the desired value.
-    public static func statusConverges(status: LaunchAtLoginState,
-                                       desiredEnabled: Bool) -> Bool {
+    public static func statusConverges(
+        status: LaunchAtLoginState,
+        desiredEnabled: Bool
+    ) -> Bool {
         switch status {
         case .registered: return desiredEnabled
         case .notRegistered: return !desiredEnabled

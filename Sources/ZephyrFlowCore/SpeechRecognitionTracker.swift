@@ -32,11 +32,11 @@ public enum SpeechFinalEvent: Sendable, Equatable {
 /// Outcome classification for observability (no transcript bodies).
 public enum SpeechFinalizationOutcome: String, Codable, CaseIterable, Sendable, Equatable {
     case finalResult
-    case emptyFinalWithPartial    // empty final; latest partial preserved
-    case terminalErrorWithPartial // error; partial preserved
+    case emptyFinalWithPartial  // empty final; latest partial preserved
+    case terminalErrorWithPartial  // error; partial preserved
     case terminalErrorNoText
     case cancelled
-    case deadlineWithPartial      // deadline; partial preserved (never complete)
+    case deadlineWithPartial  // deadline; partial preserved (never complete)
     case deadlineNoText
 }
 
@@ -84,7 +84,7 @@ public struct SpeechRecognitionTracker: Sendable, Equatable {
             staleCallbackRejections += 1
             return .cancelled
         }
-        if !hasText, let _ = latestPartial {
+        if !hasText, latestPartial != nil {
             finalEvent = .finalResult(hasText: false)
             return .emptyFinalWithPartial
         }
@@ -94,7 +94,8 @@ public struct SpeechRecognitionTracker: Sendable, Equatable {
 
     /// Terminal error: keep partial if present (with provenance), else no
     /// text outcome. Single-shot.
-    public mutating func noteError(token: RecognitionToken, code: Int32, friendly: String) -> SpeechFinalizationOutcome {
+    public mutating func noteError(token: RecognitionToken, code: Int32, friendly: String) -> SpeechFinalizationOutcome
+    {
         guard isCurrent(token: token) else {
             staleCallbackRejections += 1
             return .cancelled

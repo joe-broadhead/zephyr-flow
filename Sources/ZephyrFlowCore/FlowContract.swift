@@ -51,7 +51,7 @@ public enum ProtectedSpanKind: String, Codable, CaseIterable, Sendable, Equatabl
     case filePath
     case codeSpan
     case quote
-    case identifier       // issue/commit ids, product/proper names
+    case identifier  // issue/commit ids, product/proper names
     case paragraphBreak
     case listBoundary
 }
@@ -94,7 +94,6 @@ public struct FlowLanguageContext: Sendable, Equatable {
     }
 }
 
-
 // MARK: - JOE-2279 typed Flow outcome
 
 /// Context for a Flow transformation (session, sensitivity, cancellation).
@@ -108,9 +107,11 @@ public struct FlowRequest: Sendable, Equatable {
     /// a late result must never overwrite the fallback.
     public let deadlineNanosAhead: UInt64
 
-    public init(sessionID: SessionID, text: String, style: FlowStyle,
-                language: SupportedLanguage, sensitivity: SessionSensitivity,
-                deadlineNanosAhead: UInt64 = 2_000_000_000) {
+    public init(
+        sessionID: SessionID, text: String, style: FlowStyle,
+        language: SupportedLanguage, sensitivity: SessionSensitivity,
+        deadlineNanosAhead: UInt64 = 2_000_000_000
+    ) {
         self.sessionID = sessionID
         self.text = text
         self.style = style
@@ -122,10 +123,10 @@ public struct FlowRequest: Sendable, Equatable {
 
 public enum FlowOutcomeStatus: String, Codable, CaseIterable, Sendable, Equatable {
     case accepted
-    case rejected            // guardrails rejected; fallback returned
-    case deadlineExceeded    // backend exceeded deadline; fallback returned
+    case rejected  // guardrails rejected; fallback returned
+    case deadlineExceeded  // backend exceeded deadline; fallback returned
     case cancelled
-    case superseded          // produced after session superseded
+    case superseded  // produced after session superseded
 }
 
 public enum FlowOutcomeTermination: String, Codable, CaseIterable, Sendable, Equatable {
@@ -164,13 +165,15 @@ public struct FlowOutcome: Sendable, Equatable {
     public let durationNanos: UInt64
     public let termination: FlowOutcomeTermination
 
-    public init(text: String, requestedStyle: FlowStyle, resolvedLossClass: FlowLossClass,
-                backend: FlowBackend, capabilityID: String, capabilityVersion: Int,
-                language: SupportedLanguage, changedRangeCount: Int,
-                protectedSpanCount: Int, protectedSpansPreserved: Bool,
-                status: FlowOutcomeStatus, warnings: [FlowWarning],
-                fallbackReason: String?, durationNanos: UInt64,
-                termination: FlowOutcomeTermination) {
+    public init(
+        text: String, requestedStyle: FlowStyle, resolvedLossClass: FlowLossClass,
+        backend: FlowBackend, capabilityID: String, capabilityVersion: Int,
+        language: SupportedLanguage, changedRangeCount: Int,
+        protectedSpanCount: Int, protectedSpansPreserved: Bool,
+        status: FlowOutcomeStatus, warnings: [FlowWarning],
+        fallbackReason: String?, durationNanos: UInt64,
+        termination: FlowOutcomeTermination
+    ) {
         self.text = text
         self.requestedStyle = requestedStyle
         self.resolvedLossClass = resolvedLossClass
@@ -196,20 +199,21 @@ public struct FlowOutcome: Sendable, Equatable {
 
     /// Diagnostic serialization: redacts text and content-bearing ranges.
     public var diagnostics: FlowOutcomeDiagnostics {
-        FlowOutcomeDiagnostics(requestedStyle: requestedStyle,
-                               resolvedLossClass: resolvedLossClass,
-                               backend: backend,
-                               capabilityID: capabilityID,
-                               capabilityVersion: capabilityVersion,
-                               language: language,
-                               changedRangeCount: changedRangeCount,
-                               protectedSpanCount: protectedSpanCount,
-                               protectedSpansPreserved: protectedSpansPreserved,
-                               status: status,
-                               warnings: warnings,
-                               fallbackReason: fallbackReason,
-                               durationNanos: durationNanos,
-                               termination: termination)
+        FlowOutcomeDiagnostics(
+            requestedStyle: requestedStyle,
+            resolvedLossClass: resolvedLossClass,
+            backend: backend,
+            capabilityID: capabilityID,
+            capabilityVersion: capabilityVersion,
+            language: language,
+            changedRangeCount: changedRangeCount,
+            protectedSpanCount: protectedSpanCount,
+            protectedSpansPreserved: protectedSpansPreserved,
+            status: status,
+            warnings: warnings,
+            fallbackReason: fallbackReason,
+            durationNanos: durationNanos,
+            termination: termination)
     }
 
     public static func lossClass(for style: FlowStyle) -> FlowLossClass {

@@ -57,8 +57,10 @@ public struct EngineFrameAccounting: Sendable, Equatable {
     public let decodedEngineSamples: UInt64
     public let droppedSourceSamples: UInt64
 
-    public init(capturedSourceSamples: UInt64, deliveredEngineSamples: UInt64,
-                decodedEngineSamples: UInt64, droppedSourceSamples: UInt64) {
+    public init(
+        capturedSourceSamples: UInt64, deliveredEngineSamples: UInt64,
+        decodedEngineSamples: UInt64, droppedSourceSamples: UInt64
+    ) {
         self.capturedSourceSamples = capturedSourceSamples
         self.deliveredEngineSamples = deliveredEngineSamples
         self.decodedEngineSamples = decodedEngineSamples
@@ -69,8 +71,10 @@ public struct EngineFrameAccounting: Sendable, Equatable {
     /// equals decoded, and captured−dropped equals delivered at the reference
     /// ratio, within the defined rounding tolerance. Missing/zero evidence
     /// cannot enable a completeness claim.
-    public func reconciled(converterRatio: Double,
-                           roundingToleranceSamples: UInt64) -> Bool {
+    public func reconciled(
+        converterRatio: Double,
+        roundingToleranceSamples: UInt64
+    ) -> Bool {
         guard capturedSourceSamples > 0 || deliveredEngineSamples > 0 else { return false }
         guard deliveredEngineSamples == decodedEngineSamples else { return false }
         let expected = Double(capturedSourceSamples &- droppedSourceSamples) * converterRatio
@@ -100,20 +104,22 @@ public struct EngineResult: Sendable, Equatable {
     public let fallbackReason: String?
     public let termination: EngineResultTermination
 
-    public init(text: String,
-                completeness: EngineResultCompleteness,
-                frameAccounting: EngineFrameAccounting?,
-                engine: EngineIdentity,
-                languageRequested: String?,
-                languageDetected: String?,
-                confidence: Float?,
-                confidenceSource: String?,
-                startedAtUptimeNanos: UInt64?,
-                endedAtUptimeNanos: UInt64?,
-                inferenceDurationNanos: UInt64?,
-                warnings: [EngineWarning],
-                fallbackReason: String?,
-                termination: EngineResultTermination) {
+    public init(
+        text: String,
+        completeness: EngineResultCompleteness,
+        frameAccounting: EngineFrameAccounting?,
+        engine: EngineIdentity,
+        languageRequested: String?,
+        languageDetected: String?,
+        confidence: Float?,
+        confidenceSource: String?,
+        startedAtUptimeNanos: UInt64?,
+        endedAtUptimeNanos: UInt64?,
+        inferenceDurationNanos: UInt64?,
+        warnings: [EngineWarning],
+        fallbackReason: String?,
+        termination: EngineResultTermination
+    ) {
         self.text = text
         self.completeness = completeness
         self.frameAccounting = frameAccounting
@@ -139,17 +145,18 @@ public struct EngineResult: Sendable, Equatable {
 
     /// Diagnostics serialization EXCLUDES transcript content by default.
     public var diagnosticsPayload: EngineResultDiagnostics {
-        EngineResultDiagnostics(completeness: completeness,
-                                termination: termination,
-                                engine: engine,
-                                languageRequested: languageRequested,
-                                languageDetected: languageDetected,
-                                confidence: confidence,
-                                confidenceSource: confidenceSource,
-                                inferenceDurationNanos: inferenceDurationNanos,
-                                warnings: warnings,
-                                fallbackReason: fallbackReason,
-                                frameAccounting: frameAccounting)
+        EngineResultDiagnostics(
+            completeness: completeness,
+            termination: termination,
+            engine: engine,
+            languageRequested: languageRequested,
+            languageDetected: languageDetected,
+            confidence: confidence,
+            confidenceSource: confidenceSource,
+            inferenceDurationNanos: inferenceDurationNanos,
+            warnings: warnings,
+            fallbackReason: fallbackReason,
+            frameAccounting: frameAccounting)
     }
 }
 
@@ -175,8 +182,10 @@ public struct EngineIdentity: Sendable, Equatable {
     public let modelVersion: String?
     public let modelDigest: String?
 
-    public init(kind: EngineKind, modelName: String, modelVersion: String?,
-                modelDigest: String?) {
+    public init(
+        kind: EngineKind, modelName: String, modelVersion: String?,
+        modelDigest: String?
+    ) {
         self.kind = kind
         self.modelName = modelName
         self.modelVersion = modelVersion
@@ -188,7 +197,6 @@ public struct EngineIdentity: Sendable, Equatable {
 /// success-shaped container is replaced by `EngineResult`. This alias keeps
 /// the migration explicit (compile error surfaces remain in callers).
 public typealias FinalTranscription = EngineResult
-
 
 // MARK: - Flow
 
@@ -267,7 +275,7 @@ public enum ModelReadinessState: Sendable, Equatable {
     case notApplicable
     case missing
     case queued
-    case downloading(Double?) // 0...1 when known; nil = indeterminate
+    case downloading(Double?)  // 0...1 when known; nil = indeterminate
     case verifying
     case ready
     case cancelled
@@ -371,8 +379,8 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
     )
 
     public static let controlSpace = HotkeyConfig(
-        keyCode: 49, // space
-        modifiers: 1 << 18, // NSEvent.ModifierFlags.control / CGEventFlags.maskControl
+        keyCode: 49,  // space
+        modifiers: 1 << 18,  // NSEvent.ModifierFlags.control / CGEventFlags.maskControl
         displayName: "Control + Space",
         specialKey: nil
     )
@@ -614,8 +622,8 @@ public enum InsertionOutcome: Sendable, Equatable {
         case .verifiedInserted, .explicitlyCopiedByUser: return true
         case .eventPostedUnverified: return false
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
-             .notEditable, .clipboardNotRestoredBecauseChanged,
-             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            .notEditable, .clipboardNotRestoredBecauseChanged,
+            .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
             return false
         }
     }
@@ -626,8 +634,8 @@ public enum InsertionOutcome: Sendable, Equatable {
         case .verifiedInserted, .explicitlyCopiedByUser: return true
         case .eventPostedUnverified: return false
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
-             .notEditable, .clipboardNotRestoredBecauseChanged,
-             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            .notEditable, .clipboardNotRestoredBecauseChanged,
+            .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
             return false
         }
     }
@@ -639,8 +647,8 @@ public enum InsertionOutcome: Sendable, Equatable {
         case .explicitlyCopiedByUser: return true
         case .eventPostedUnverified: return true
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
-             .notEditable, .clipboardNotRestoredBecauseChanged,
-             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            .notEditable, .clipboardNotRestoredBecauseChanged,
+            .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
             return false
         }
     }
@@ -649,9 +657,9 @@ public enum InsertionOutcome: Sendable, Equatable {
     public var permitsReliabilityMetrics: Bool {
         switch self {
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
-             .targetChanged, .targetGone, .targetUnknown, .secureTarget,
-             .notEditable, .clipboardNotRestoredBecauseChanged,
-             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            .targetChanged, .targetGone, .targetUnknown, .secureTarget,
+            .notEditable, .clipboardNotRestoredBecauseChanged,
+            .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
             return true
         }
     }
@@ -661,11 +669,11 @@ public enum InsertionOutcome: Sendable, Equatable {
     public var isUncertain: Bool {
         switch self {
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
-             .notEditable, .deadlineExceeded:
+            .notEditable, .deadlineExceeded:
             return true
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
-             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
-             .cancelled, .failed:
+            .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
+            .cancelled, .failed:
             return false
         }
     }
@@ -691,7 +699,6 @@ public enum InsertionOutcome: Sendable, Equatable {
         }
     }
 }
-
 
 // MARK: - Panel State
 

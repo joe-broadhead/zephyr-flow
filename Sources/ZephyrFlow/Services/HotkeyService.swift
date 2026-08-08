@@ -1,8 +1,8 @@
-import Foundation
 import AppKit
 import ApplicationServices
 import Carbon.HIToolbox
 import Combine
+import Foundation
 import ZephyrFlowCore
 
 /// Global hotkey monitor (Wispr-style Fn / Globe).
@@ -379,8 +379,10 @@ final class HotkeyTapEngine: @unchecked Sendable {
             return
         }
 
-        let fnDown = event.modifierFlags.contains(.function)
-            || event.modifierFlags.contains(NSEvent.ModifierFlags(rawValue: UInt(CGEventFlags.maskSecondaryFn.rawValue)))
+        let fnDown =
+            event.modifierFlags.contains(.function)
+            || event.modifierFlags.contains(
+                NSEvent.ModifierFlags(rawValue: UInt(CGEventFlags.maskSecondaryFn.rawValue)))
             || (event.modifierFlags.rawValue & UInt(CGEventFlags.maskSecondaryFn.rawValue)) != 0
             || event.keyCode == 63
 
@@ -398,7 +400,9 @@ final class HotkeyTapEngine: @unchecked Sendable {
             if down != was {
                 previousFnDown = down
                 lock.unlock()
-                onDebug?("NSEvent Fn edge down=\(down) keyCode=\(event.keyCode) flags=0x\(String(event.modifierFlags.rawValue, radix: 16))")
+                onDebug?(
+                    "NSEvent Fn edge down=\(down) keyCode=\(event.keyCode) flags=0x\(String(event.modifierFlags.rawValue, radix: 16))"
+                )
                 onEdge?(down)
                 return
             }
@@ -410,9 +414,15 @@ final class HotkeyTapEngine: @unchecked Sendable {
         let expected: UInt16
         let flag: NSEvent.ModifierFlags
         switch special {
-        case .rightOption: expected = 61; flag = .option
-        case .rightCommand: expected = 54; flag = .command
-        case .rightControl: expected = 62; flag = .control
+        case .rightOption:
+            expected = 61
+            flag = .option
+        case .rightCommand:
+            expected = 54
+            flag = .command
+        case .rightControl:
+            expected = 62
+            flag = .control
         default: return
         }
         guard event.keyCode == expected else {
@@ -442,7 +452,8 @@ final class HotkeyTapEngine: @unchecked Sendable {
     // MARK: CGEvent tap thread
 
     private func threadMain(preferDefaultTap: Bool) {
-        let mask: CGEventMask = (1 << CGEventType.flagsChanged.rawValue)
+        let mask: CGEventMask =
+            (1 << CGEventType.flagsChanged.rawValue)
             | (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
 
@@ -548,7 +559,9 @@ final class HotkeyTapEngine: @unchecked Sendable {
                 let kc = event.getIntegerValueField(.keyboardEventKeycode)
                 let fr = event.flags.rawValue
                 let secFn = event.flags.contains(.maskSecondaryFn)
-                onDebug?("flagsChanged #\(debugEventCount) key=0x\(String(kc, radix: 16)) flags=0x\(String(fr, radix: 16)) secFn=\(secFn)")
+                onDebug?(
+                    "flagsChanged #\(debugEventCount) key=0x\(String(kc, radix: 16)) flags=0x\(String(fr, radix: 16)) secFn=\(secFn)"
+                )
             }
         }
 
@@ -575,7 +588,8 @@ final class HotkeyTapEngine: @unchecked Sendable {
 
         let flags = event.flags
         let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-        let fnIsDown = flags.contains(.maskSecondaryFn)
+        let fnIsDown =
+            flags.contains(.maskSecondaryFn)
             || (flags.rawValue & 0x800000) != 0
 
         lock.lock()
@@ -592,14 +606,20 @@ final class HotkeyTapEngine: @unchecked Sendable {
         // Don't trigger on Fn+Cmd chords etc.
         let other: CGEventFlags = [.maskCommand, .maskAlternate, .maskShift, .maskControl]
         if fnIsDown && !flags.intersection(other).isEmpty {
-            lock.lock(); previousFnDown = fnIsDown; lock.unlock()
+            lock.lock()
+            previousFnDown = fnIsDown
+            lock.unlock()
             return Unmanaged.passUnretained(event)
         }
 
         if fnChanged || isFnKey {
             let down = fnIsDown
-            lock.lock(); previousFnDown = down; lock.unlock()
-            onDebug?("CG Fn edge down=\(down) key=0x\(String(keyCode, radix: 16)) flags=0x\(String(flags.rawValue, radix: 16))")
+            lock.lock()
+            previousFnDown = down
+            lock.unlock()
+            onDebug?(
+                "CG Fn edge down=\(down) key=0x\(String(keyCode, radix: 16)) flags=0x\(String(flags.rawValue, radix: 16))"
+            )
             onEdge?(down)
             // Consume when defaultTap; listenOnly ignores nil vs pass.
             return nil
@@ -631,7 +651,9 @@ final class HotkeyTapEngine: @unchecked Sendable {
         let was = previousModDown
         lock.unlock()
         if was && !flagDown {
-            lock.lock(); previousModDown = false; lock.unlock()
+            lock.lock()
+            previousModDown = false
+            lock.unlock()
             onEdge?(false)
         }
         return Unmanaged.passUnretained(event)

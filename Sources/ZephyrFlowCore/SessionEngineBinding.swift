@@ -60,9 +60,11 @@ public struct CallbackGate: Sendable, Equatable {
 
     /// Accepts a callback only when the gate is open AND the binding matches
     /// the current session + engine token (engine replacement closes it).
-    public func accepts(binding: SessionEngineBinding,
-                        currentSessionID: SessionID?,
-                        currentEngineToken: EngineToken) -> Bool {
+    public func accepts(
+        binding: SessionEngineBinding,
+        currentSessionID: SessionID?,
+        currentEngineToken: EngineToken
+    ) -> Bool {
         guard state == .open else { return false }
         guard let currentSessionID, binding.sessionID == currentSessionID else { return false }
         return binding.engineToken == currentEngineToken

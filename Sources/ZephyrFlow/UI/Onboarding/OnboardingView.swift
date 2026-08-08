@@ -40,7 +40,8 @@ struct OnboardingView: View {
             case .accessibility:
                 return "Lets Fn work globally and insert text at the caret in other apps."
             case .dictation:
-                return "macOS blocks Apple Speech unless Keyboard → Dictation is On. This is a system switch, not an app permission."
+                return
+                    "macOS blocks Apple Speech unless Keyboard → Dictation is On. This is a system switch, not an app permission."
             case .ready:
                 return "Click into any text field, hold Fn, speak, and release."
             }
@@ -86,10 +87,12 @@ struct OnboardingView: View {
 
                 stepContent
                     .padding(.horizontal, 36)
-                    .transition(.asymmetric(
-                        insertion: .move(edge: .trailing).combined(with: .opacity),
-                        removal: .move(edge: .leading).combined(with: .opacity)
-                    ))
+                    .transition(
+                        .asymmetric(
+                            insertion: .move(edge: .trailing).combined(with: .opacity),
+                            removal: .move(edge: .leading).combined(with: .opacity)
+                        )
+                    )
                     .id(step)
 
                 Spacer(minLength: 12)
@@ -195,7 +198,9 @@ struct OnboardingView: View {
     private var readyTips: some View {
         VStack(alignment: .leading, spacing: 10) {
             tipRow(icon: "fn", text: "Hold Fn to talk · release to insert")
-            tipRow(icon: "lock.shield.fill", text: "Local Only — your voice stays on this Mac; Whisper Tiny may download once")
+            tipRow(
+                icon: "lock.shield.fill",
+                text: "Local Only — your voice stays on this Mac; Whisper Tiny may download once")
             tipRow(icon: "gearshape", text: "Menu bar mic → Settings anytime")
         }
         .padding(16)

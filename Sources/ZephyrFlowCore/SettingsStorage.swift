@@ -63,11 +63,12 @@ public enum SettingsStorageCoordinator {
         guard let data else {
             // No stored settings: brand-new install => documented defaults
             // (privacy-safe: localOnly on; history off by default).
-            return SettingsStorageLoadResult(settings: .default,
-                                             recoveredFromCorruption: false,
-                                             quarantinePath: nil,
-                                             migratedFromVersion: nil,
-                                             unknownSchemaVersion: nil)
+            return SettingsStorageLoadResult(
+                settings: .default,
+                recoveredFromCorruption: false,
+                quarantinePath: nil,
+                migratedFromVersion: nil,
+                unknownSchemaVersion: nil)
         }
         // Try current envelope.
         if let envelope = try? JSONDecoder().decode(SettingsEnvelope.self, from: data) {
@@ -75,49 +76,55 @@ public enum SettingsStorageCoordinator {
         }
         // Legacy v1: flat AppSettings payload (no envelope).
         if let legacy = try? JSONDecoder().decode(AppSettings.self, from: data) {
-            let migrated = SettingsEnvelope(schemaVersion: currentSchemaVersion,
-                                            payload: legacy,
-                                            migrationProvenance: ["v1-flat"])
-            return SettingsStorageLoadResult(settings: migrated.payload,
-                                             recoveredFromCorruption: false,
-                                             quarantinePath: nil,
-                                             migratedFromVersion: 1,
-                                             unknownSchemaVersion: nil)
+            let migrated = SettingsEnvelope(
+                schemaVersion: currentSchemaVersion,
+                payload: legacy,
+                migrationProvenance: ["v1-flat"])
+            return SettingsStorageLoadResult(
+                settings: migrated.payload,
+                recoveredFromCorruption: false,
+                quarantinePath: nil,
+                migratedFromVersion: 1,
+                unknownSchemaVersion: nil)
         }
         // Corrupt: quarantine original + safe baseline.
-        return SettingsStorageLoadResult(settings: safeBaseline,
-                                         recoveredFromCorruption: true,
-                                         quarantinePath: quarantineName(),
-                                         migratedFromVersion: nil,
-                                         unknownSchemaVersion: nil)
+        return SettingsStorageLoadResult(
+            settings: safeBaseline,
+            recoveredFromCorruption: true,
+            quarantinePath: quarantineName(),
+            migratedFromVersion: nil,
+            unknownSchemaVersion: nil)
     }
 
     private static func loadEnvelope(_ envelope: SettingsEnvelope, data: Data) -> SettingsStorageLoadResult {
         switch envelope.schemaVersion {
         case currentSchemaVersion:
-            return SettingsStorageLoadResult(settings: envelope.payload,
-                                             recoveredFromCorruption: false,
-                                             quarantinePath: nil,
-                                             migratedFromVersion: nil,
-                                             unknownSchemaVersion: nil)
+            return SettingsStorageLoadResult(
+                settings: envelope.payload,
+                recoveredFromCorruption: false,
+                quarantinePath: nil,
+                migratedFromVersion: nil,
+                unknownSchemaVersion: nil)
         case 1:
             // v1 envelope (future schema without a migration yet) — migrate
             // by filling missing keys (forward-compatible decode).
             var payload = envelope.payload
             fillMissingKeys(&payload)
-            return SettingsStorageLoadResult(settings: payload,
-                                             recoveredFromCorruption: false,
-                                             quarantinePath: nil,
-                                             migratedFromVersion: 1,
-                                             unknownSchemaVersion: nil)
+            return SettingsStorageLoadResult(
+                settings: payload,
+                recoveredFromCorruption: false,
+                quarantinePath: nil,
+                migratedFromVersion: 1,
+                unknownSchemaVersion: nil)
         default:
             // Unknown/newer schema: quarantine original + safe baseline,
             // retaining the original for recovery.
-            return SettingsStorageLoadResult(settings: safeBaseline,
-                                             recoveredFromCorruption: true,
-                                             quarantinePath: quarantineName(),
-                                             migratedFromVersion: nil,
-                                             unknownSchemaVersion: envelope.schemaVersion)
+            return SettingsStorageLoadResult(
+                settings: safeBaseline,
+                recoveredFromCorruption: true,
+                quarantinePath: quarantineName(),
+                migratedFromVersion: nil,
+                unknownSchemaVersion: envelope.schemaVersion)
         }
     }
 
@@ -136,11 +143,14 @@ public enum SettingsStorageCoordinator {
     // MARK: - Atomic commit
 
     /// Encode the envelope; throws on failure so the UI never claims success.
-    public static func encode(settings: AppSettings,
-                              provenance: [String]) throws -> Data {
-        let envelope = SettingsEnvelope(schemaVersion: currentSchemaVersion,
-                                        payload: settings,
-                                        migrationProvenance: provenance)
+    public static func encode(
+        settings: AppSettings,
+        provenance: [String]
+    ) throws -> Data {
+        let envelope = SettingsEnvelope(
+            schemaVersion: currentSchemaVersion,
+            payload: settings,
+            migrationProvenance: provenance)
         do {
             return try JSONEncoder().encode(envelope)
         } catch {

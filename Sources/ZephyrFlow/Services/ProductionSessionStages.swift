@@ -29,10 +29,12 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
     private var targetSnapshot: TargetSnapshot?
     private var effectiveSensitivity: SessionSensitivity = .unknown
 
-    init(environment: AppEnvironment,
-         engine: any WhisperEngineProtocol,
-         engineKind: SessionEngineChoice,
-         engineToken: EngineToken = EngineToken()) {
+    init(
+        environment: AppEnvironment,
+        engine: any WhisperEngineProtocol,
+        engineKind: SessionEngineChoice,
+        engineToken: EngineToken = EngineToken()
+    ) {
         self.environment = environment
         self.engine = engine
         self.engineKind = engineKind
@@ -61,8 +63,10 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         targetSnapshot
     }
 
-    func startCapture(sessionID: SessionID, localOnly: Bool,
-                      language: SupportedLanguage) async throws -> SessionCaptureHandle {
+    func startCapture(
+        sessionID: SessionID, localOnly: Bool,
+        language: SupportedLanguage
+    ) async throws -> SessionCaptureHandle {
         let interim = AsyncStream<SessionPartial> { self.interimContinuation = $0 }
         let levels = AsyncStream<Float> { self.levelsContinuation = $0 }
 
@@ -72,10 +76,12 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             language: language
         ) { [weak self] partial in
             guard let self,
-                  let binding = self.binding,
-                  self.callbackGate.accepts(binding: binding,
-                                            currentSessionID: sessionID,
-                                            currentEngineToken: self.engineToken) else { return }
+                let binding = self.binding,
+                self.callbackGate.accepts(
+                    binding: binding,
+                    currentSessionID: sessionID,
+                    currentEngineToken: self.engineToken)
+            else { return }
             self.interimContinuation?.yield(SessionPartial(text: partial.text))
         }
 
@@ -96,14 +102,16 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                     }
                     self.sequencer.accept(chunk)
                     guard let mono = converter.convert(chunk) else {
-                        self.accounting.noteDropped(sourceSamples: UInt64(chunk.samples.count), reason: .converterFailure)
+                        self.accounting.noteDropped(
+                            sourceSamples: UInt64(chunk.samples.count), reason: .converterFailure)
                         continue
                     }
                     self.accounting.noteConverted(engineSamples: UInt64(mono.count))
                     await engine.appendAudio(mono)
                     self.accounting.noteDelivered(engineSamples: UInt64(mono.count))
-                    _ = self.drainBarrier.noteDelivered(sequence: chunk.sequence,
-                                                        nowNanos: self.environment.clock.nowNanos())
+                    _ = self.drainBarrier.noteDelivered(
+                        sequence: chunk.sequence,
+                        nowNanos: self.environment.clock.nowNanos())
                 }
             }
             try await audio.start(sessionID: sessionID, channel: channel)
@@ -112,7 +120,8 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // Levels polling (content-free). Apple engine exposes levels
         // directly; Whisper path samples the capture tap.
         let audio = self.audio
-        let appleEngine: AppleSpeechEngine? = self.engineKind == .appleSpeech
+        let appleEngine: AppleSpeechEngine? =
+            self.engineKind == .appleSpeech
             ? (self.engine as? AppleSpeechEngine) : nil
         self.levelsPollTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -137,19 +146,21 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         await audio.stop()
         guard engineKind == .whisper else {
             // Apple path: no bounded channel; no frame accounting.
-            return SessionAudioSummary(capturedSourceSamples: 0,
-                                       deliveredEngineSamples: 0,
-                                       droppedSamples: 0,
-                                       degraded: false,
-                                       reconciled: true,
-                                       drainState: "n/a")
+            return SessionAudioSummary(
+                capturedSourceSamples: 0,
+                deliveredEngineSamples: 0,
+                droppedSamples: 0,
+                degraded: false,
+                reconciled: true,
+                drainState: "n/a")
         }
         // JOE-2248: end-of-stream drain barrier at the final accepted
         // producer sequence; the delivery task drains through it.
         var channel = self.channel
         if let finalSeq = channel?.stats().lastAcceptedSequence {
-            drainBarrier.begin(finalSequence: finalSeq,
-                               nowNanos: environment.clock.nowNanos())
+            drainBarrier.begin(
+                finalSequence: finalSeq,
+                nowNanos: environment.clock.nowNanos())
         }
         await deliveryTask?.value
         let channelStats = channel?.stats()
@@ -169,8 +180,9 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             }
         }
         let ratio = SessionAudioConverter.targetSampleRate / 16000.0
-        let reconciled = accounting.reconciles(converterRatio: ratio,
-                                               roundingToleranceSamples: 64)
+        let reconciled = accounting.reconciles(
+            converterRatio: ratio,
+            roundingToleranceSamples: 64)
         let degraded = seqDegraded || channelDegraded || barrierTimedOut || lateAppends > 0 || !reconciled
         let summary = SessionAudioSummary(
             capturedSourceSamples: accounting.capturedSourceSamples,
@@ -195,8 +207,9 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
 
     func validateTarget() async -> SessionValidationResult {
         guard let snapshot = targetSnapshot else {
-            return SessionValidationResult(outcome: .targetUnknown,
-                                           effectiveSensitivity: .unknown)
+            return SessionValidationResult(
+                outcome: .targetUnknown,
+                effectiveSensitivity: .unknown)
         }
         var validation = TargetValidationSession(
             sessionID: snapshot.sessionID,
@@ -208,11 +221,13 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             snapshot: snapshot, deadlineNanosAhead: 2_000_000_000)
         let context = environment.targetValidation.currentContext(
             nowNanos: environment.clock.nowNanos())
-        let outcome = validation.validate(context: context,
-                                          nowNanos: environment.clock.nowNanos())
+        let outcome = validation.validate(
+            context: context,
+            nowNanos: environment.clock.nowNanos())
         effectiveSensitivity = validation.effectiveSensitivity
-        return SessionValidationResult(outcome: outcome,
-                                       effectiveSensitivity: validation.effectiveSensitivity)
+        return SessionValidationResult(
+            outcome: outcome,
+            effectiveSensitivity: validation.effectiveSensitivity)
     }
 
     func insert(_ request: SessionInsertRequest) async -> InsertionOutcome {
@@ -226,13 +241,16 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             copyOnlyOverrides: request.copyOnlyOverrides)
     }
 
-    func recordHistory(originalText: String, finalText: String,
-                       duration: TimeInterval, modelName: String) async {
-        await environment.history.add(HistoryEntry(
-            originalText: originalText,
-            finalText: finalText,
-            duration: duration,
-            modelUsed: modelName))
+    func recordHistory(
+        originalText: String, finalText: String,
+        duration: TimeInterval, modelName: String
+    ) async {
+        await environment.history.add(
+            HistoryEntry(
+                originalText: originalText,
+                finalText: finalText,
+                duration: duration,
+                modelUsed: modelName))
     }
 
     func cancel() async {

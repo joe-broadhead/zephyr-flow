@@ -13,10 +13,10 @@ import Foundation
 public enum AxErrorOutcome: String, Codable, CaseIterable, Sendable, Equatable {
     case ok
     case failed
-    case notEditable          // attributeUnsupported / notImplemented on value
+    case notEditable  // attributeUnsupported / notImplemented on value
     case notSupported
-    case axDisabled           // apiDisabled / not trusted
-    case timeout              // cannotComplete / hung target
+    case axDisabled  // apiDisabled / not trusted
+    case timeout  // cannotComplete / hung target
     case illegalArgument
     case unknown
 
@@ -75,8 +75,10 @@ public struct AxElementCapability: Sendable, Equatable {
     public let role: String?
     public let subrole: String?
 
-    public init(settable: Bool, editable: Bool, enabled: Bool, isSecure: Bool,
-                role: String?, subrole: String?) {
+    public init(
+        settable: Bool, editable: Bool, enabled: Bool, isSecure: Bool,
+        role: String?, subrole: String?
+    ) {
         self.settable = settable
         self.editable = editable
         self.enabled = enabled
@@ -104,8 +106,10 @@ public struct AxValueAdapterQualification: Sendable, Equatable {
     /// Evidence reference (doc path or report id) — never field content.
     public let evidenceReference: String
 
-    public init(capabilityKey: String, bundleID: String, roles: Set<String>?,
-                macOSMin: String?, evidenceReference: String) {
+    public init(
+        capabilityKey: String, bundleID: String, roles: Set<String>?,
+        macOSMin: String?, evidenceReference: String
+    ) {
         self.capabilityKey = capabilityKey
         self.bundleID = bundleID
         self.roles = roles

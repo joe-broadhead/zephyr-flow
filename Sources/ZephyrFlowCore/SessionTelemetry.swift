@@ -28,12 +28,12 @@ public struct SessionTelemetryID: Sendable, Equatable, Hashable, Codable {
 /// Controlled telemetry event kinds (typed; no free-form labels).
 public enum TelemetryEventKind: String, Codable, CaseIterable, Sendable, Equatable {
     case stageEntered
-    case terminal            // exactly one per session (TerminalGuard)
-    case abandoned           // unfinished guard dropped
-    case captureAccounting   // frame counts (captured/delivered/dropped/decoded)
-    case flowOutcome         // status/loss class/fallback
-    case insertionConfidence // verified/unverified/copy/uncertain
-    case sinkDropped         // event sink overflow (count only)
+    case terminal  // exactly one per session (TerminalGuard)
+    case abandoned  // unfinished guard dropped
+    case captureAccounting  // frame counts (captured/delivered/dropped/decoded)
+    case flowOutcome  // status/loss class/fallback
+    case insertionConfidence  // verified/unverified/copy/uncertain
+    case sinkDropped  // event sink overflow (count only)
 }
 
 /// Terminal category (JOE-2240 taxonomy).
@@ -67,14 +67,16 @@ public struct TelemetryEvent: Sendable, Equatable, Codable {
     public let insertionConfidence: InsertionConfidence?
     public let atNanos: UInt64
 
-    public init(sessionID: SessionTelemetryID, kind: TelemetryEventKind,
-                terminal: TerminalCategory? = nil, stage: SessionState? = nil,
-                engineKind: EngineKind? = nil, modelName: String? = nil,
-                durationNanos: UInt64? = nil, frameCounts: FrameCountSnapshot? = nil,
-                completeness: EngineResultCompleteness? = nil,
-                flowStatus: FlowOutcomeStatus? = nil, lossClass: FlowLossClass? = nil,
-                insertionConfidence: InsertionConfidence? = nil,
-                atNanos: UInt64) {
+    public init(
+        sessionID: SessionTelemetryID, kind: TelemetryEventKind,
+        terminal: TerminalCategory? = nil, stage: SessionState? = nil,
+        engineKind: EngineKind? = nil, modelName: String? = nil,
+        durationNanos: UInt64? = nil, frameCounts: FrameCountSnapshot? = nil,
+        completeness: EngineResultCompleteness? = nil,
+        flowStatus: FlowOutcomeStatus? = nil, lossClass: FlowLossClass? = nil,
+        insertionConfidence: InsertionConfidence? = nil,
+        atNanos: UInt64
+    ) {
         self.schemaVersion = TelemetrySchemaVersion.current.rawValue
         self.sessionID = sessionID
         self.kind = kind
@@ -128,13 +130,16 @@ public struct TerminalGuard: Sendable, Equatable {
     }
 
     /// Record the single terminal outcome (idempotent; second call refused).
-    public mutating func finalize(terminal: TerminalCategory, durationNanos: UInt64,
-                                  atNanos: UInt64) -> TelemetryEvent? {
+    public mutating func finalize(
+        terminal: TerminalCategory, durationNanos: UInt64,
+        atNanos: UInt64
+    ) -> TelemetryEvent? {
         guard !finalized else { return nil }
         finalized = true
-        let event = TelemetryEvent(sessionID: sessionID, kind: .terminal,
-                                   terminal: terminal, durationNanos: durationNanos,
-                                   atNanos: atNanos)
+        let event = TelemetryEvent(
+            sessionID: sessionID, kind: .terminal,
+            terminal: terminal, durationNanos: durationNanos,
+            atNanos: atNanos)
         terminalEvent = event
         return event
     }
@@ -143,8 +148,9 @@ public struct TerminalGuard: Sendable, Equatable {
     public mutating func abandon(atNanos: UInt64) -> TelemetryEvent? {
         guard !finalized else { return nil }
         finalized = true
-        let event = TelemetryEvent(sessionID: sessionID, kind: .abandoned,
-                                   terminal: .abandonedDuringShutdown, atNanos: atNanos)
+        let event = TelemetryEvent(
+            sessionID: sessionID, kind: .abandoned,
+            terminal: .abandonedDuringShutdown, atNanos: atNanos)
         terminalEvent = event
         return event
     }
@@ -196,7 +202,8 @@ public final class BoundedEventSink: @unchecked Sendable {
     }
 
     public var pendingCount: Int {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return buffer.count
     }
 }
@@ -208,9 +215,9 @@ public final class BoundedEventSink: @unchecked Sendable {
 /// so a positive scan means a schema violation.
 public enum PrivacyCanary {
     public static let forbiddenPatterns: [String] = [
-        "-----BEGIN", "API-KEY", "sk-", "AKIA",   // keys/secrets
-        "/Users/", "/private/", "/etc/", "/var/", // private paths
-        "Password:", "password=", "token=",       // credential shapes
+        "-----BEGIN", "API-KEY", "sk-", "AKIA",  // keys/secrets
+        "/Users/", "/private/", "/etc/", "/var/",  // private paths
+        "Password:", "password=", "token=",  // credential shapes
     ]
 
     /// Returns the first violating pattern, or nil when clean.
@@ -228,7 +235,8 @@ public enum PrivacyCanary {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         guard let data = try? encoder.encode(event),
-              let text = String(data: data, encoding: .utf8) else {
+            let text = String(data: data, encoding: .utf8)
+        else {
             return "unserializable"
         }
         return scan(text)

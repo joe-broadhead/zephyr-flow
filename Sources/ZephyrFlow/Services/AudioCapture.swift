@@ -1,6 +1,6 @@
-import Foundation
 import AVFoundation
 import Accelerate
+import Foundation
 import ZephyrFlowCore
 
 /// Mutable producer sequence state owned by the tap callout thread only.
@@ -26,7 +26,9 @@ actor AudioCapture: AudioCaptureProtocol {
     func levels() async -> [Float] { latestLevels }
 
     /// Diagnostics from the current/last capture session (JOE-2247).
-    func captureStats() async -> (enqueued: UInt64, overflowDropped: UInt64, wrongSessionRejected: UInt64, peakRMS: Float) {
+    func captureStats() async -> (
+        enqueued: UInt64, overflowDropped: UInt64, wrongSessionRejected: UInt64, peakRMS: Float
+    ) {
         let st = channel?.stats()
         return (st?.enqueued ?? 0, st?.overflowDropped ?? 0, st?.wrongSessionRejected ?? 0, peakRMS)
     }
@@ -94,10 +96,11 @@ actor AudioCapture: AudioCaptureProtocol {
                 let start = producer.startSample
                 producer.sequence &+= 1
                 producer.startSample += UInt64(copy.frameLength)
-                let chunk = AudioChunk(sessionID: sessionID, sequence: seq, startSample: start,
-                                       sampleRate: copy.format.sampleRate,
-                                       channelCount: Int(copy.format.channelCount),
-                                       samples: Self.makeFloatArray(copy))
+                let chunk = AudioChunk(
+                    sessionID: sessionID, sequence: seq, startSample: start,
+                    sampleRate: copy.format.sampleRate,
+                    channelCount: Int(copy.format.channelCount),
+                    samples: Self.makeFloatArray(copy))
                 if boundChannel.enqueue(chunk) != .accepted, !producer.overflowLogged {
                     producer.overflowLogged = true
                     ZFLog.info("AudioCapture channel non-enqueue (overflow/cross-session) — degraded")

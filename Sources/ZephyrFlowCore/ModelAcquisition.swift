@@ -42,18 +42,20 @@ public struct ModelManifest: Codable, Sendable, Equatable {
     public static let schemaVersion = 1
 
     public let schemaVersion: Int
-    public let engineIdentity: String       // "whisperkit-coreml"
-    public let modelID: String              // ModelIdentifier raw value
+    public let engineIdentity: String  // "whisperkit-coreml"
+    public let modelID: String  // ModelIdentifier raw value
     public let artifacts: [ModelArtifactSpec]
     /// Total size bounds for the whole folder (bytes).
     public let minTotalBytes: UInt64
     public let maxTotalBytes: UInt64
     public let createdAtUptimeNanos: UInt64
 
-    public init(engineIdentity: String, modelID: String,
-                artifacts: [ModelArtifactSpec],
-                minTotalBytes: UInt64, maxTotalBytes: UInt64,
-                createdAtUptimeNanos: UInt64) {
+    public init(
+        engineIdentity: String, modelID: String,
+        artifacts: [ModelArtifactSpec],
+        minTotalBytes: UInt64, maxTotalBytes: UInt64,
+        createdAtUptimeNanos: UInt64
+    ) {
         self.schemaVersion = Self.schemaVersion
         self.engineIdentity = engineIdentity
         self.modelID = modelID
@@ -67,10 +69,10 @@ public struct ModelManifest: Codable, Sendable, Equatable {
 // MARK: - Typed errors
 
 public enum ModelAcquisitionError: Error, Sendable, Equatable {
-    case consentDenied              // explicit download consent required
+    case consentDenied  // explicit download consent required
     case modelNotWhisperKit
     case downloadFailed(String)
-    case verificationFailed(String) // digest/size mismatch or missing artifact
+    case verificationFailed(String)  // digest/size mismatch or missing artifact
     case promotionFailed(String)
     case cancelled
     case quarantineFailed(String)
@@ -107,8 +109,9 @@ public protocol ModelAcquisitionFileSystem: Sendable {
     func fileSize(_ url: URL) -> UInt64?
     func sha256Hex(of url: URL) -> String?
     /// Download the model into the staging directory. Must report progress.
-    func download(model: ModelIdentifier, to stagingURL: URL,
-                  onProgress: @escaping @Sendable (ModelDownloadProgress) -> Void) async throws
+    func download(
+        model: ModelIdentifier, to stagingURL: URL,
+        onProgress: @escaping @Sendable (ModelDownloadProgress) -> Void) async throws
     /// Atomic promotion: rename/move staging -> final. Must be atomic
     /// (same volume) or fail without leaving a partial final.
     func promote(from: URL, to: URL) throws
@@ -142,15 +145,18 @@ public actor ModelAcquisitionController {
     /// defaults to size bounds without digests.
     private let manifestProvider: @Sendable (ModelIdentifier) -> ModelManifest?
 
-    public init(fs: any ModelAcquisitionFileSystem,
-                manifestProvider: (@Sendable (ModelIdentifier) -> ModelManifest?)? = nil,
-                nowNanos: @escaping @Sendable () -> UInt64 = {
-                    DispatchTime.now().uptimeNanoseconds
-                }) {
-        self.fs = fs
-        self.manifestProvider = manifestProvider ?? { model in
-            Self.makeManifest(for: model, createdAtUptimeNanos: 0)
+    public init(
+        fs: any ModelAcquisitionFileSystem,
+        manifestProvider: (@Sendable (ModelIdentifier) -> ModelManifest?)? = nil,
+        nowNanos: @escaping @Sendable () -> UInt64 = {
+            DispatchTime.now().uptimeNanoseconds
         }
+    ) {
+        self.fs = fs
+        self.manifestProvider =
+            manifestProvider ?? { model in
+                Self.makeManifest(for: model, createdAtUptimeNanos: 0)
+            }
         self.nowNanos = nowNanos
     }
 
@@ -160,8 +166,10 @@ public actor ModelAcquisitionController {
         public let verifiedURL: URL?
         public let error: ModelAcquisitionError?
 
-        public init(model: ModelIdentifier, state: ModelAcquisitionState,
-                    verifiedURL: URL?, error: ModelAcquisitionError?) {
+        public init(
+            model: ModelIdentifier, state: ModelAcquisitionState,
+            verifiedURL: URL?, error: ModelAcquisitionError?
+        ) {
             self.model = model
             self.state = state
             self.verifiedURL = verifiedURL
@@ -204,8 +212,9 @@ public actor ModelAcquisitionController {
                 return nil
             }
             if let digest = artifact.sha256Digest,
-               let actual = fs.sha256Hex(of: artifactURL),
-               actual != digest {
+                let actual = fs.sha256Hex(of: artifactURL),
+                actual != digest
+            {
                 return nil
             }
         }
@@ -214,19 +223,23 @@ public actor ModelAcquisitionController {
 
     /// Acquire a verified model. Concurrent calls for the same model share
     /// ONE acquisition and receive consistent results (singleflight).
-    public func acquire(model: ModelIdentifier,
-                        consent: Bool) async -> ModelAcquisitionResult {
+    public func acquire(
+        model: ModelIdentifier,
+        consent: Bool
+    ) async -> ModelAcquisitionResult {
         if let existing = inflight[model] {
             return await existing.value
         }
         guard consent else {
             states[model] = .failed
-            return ModelAcquisitionResult(model: model, state: .failed,
-                                          verifiedURL: nil, error: .consentDenied)
+            return ModelAcquisitionResult(
+                model: model, state: .failed,
+                verifiedURL: nil, error: .consentDenied)
         }
         guard model.isWhisperKit else {
-            return ModelAcquisitionResult(model: model, state: .failed,
-                                          verifiedURL: nil, error: .modelNotWhisperKit)
+            return ModelAcquisitionResult(
+                model: model, state: .failed,
+                verifiedURL: nil, error: .modelNotWhisperKit)
         }
         let task = Task { await self.runAcquisition(model: model) }
         inflight[model] = task
@@ -238,7 +251,8 @@ public actor ModelAcquisitionController {
     public func cancel(model: ModelIdentifier) {
         cancelled.insert(model)
         if let state = states[model],
-           state == .downloading || state == .verifying || state == .queued {
+            state == .downloading || state == .verifying || state == .queued
+        {
             states[model] = .cancelled
         }
     }
@@ -255,8 +269,9 @@ public actor ModelAcquisitionController {
             // Best effort: the lock marker is stale — clean and retry once.
             if !fs.acquireLock(for: model) {
                 states[model] = .failed
-                return ModelAcquisitionResult(model: model, state: .failed,
-                                              verifiedURL: nil, error: .staleLockDetected)
+                return ModelAcquisitionResult(
+                    model: model, state: .failed,
+                    verifiedURL: nil, error: .staleLockDetected)
             }
         }
         defer { fs.releaseLock(for: model) }
@@ -264,16 +279,18 @@ public actor ModelAcquisitionController {
         // Fast path: already verified.
         if let url = verifiedURL(for: model) {
             states[model] = .ready
-            return ModelAcquisitionResult(model: model, state: .ready,
-                                          verifiedURL: url, error: nil)
+            return ModelAcquisitionResult(
+                model: model, state: .ready,
+                verifiedURL: url, error: nil)
         }
 
         states[model] = .queued
         // Re-check cancellation before download.
         if cancelled.contains(model) {
             states[model] = .cancelled
-            return ModelAcquisitionResult(model: model, state: .cancelled,
-                                          verifiedURL: nil, error: .cancelled)
+            return ModelAcquisitionResult(
+                model: model, state: .cancelled,
+                verifiedURL: nil, error: .cancelled)
         }
 
         states[model] = .downloading
@@ -291,15 +308,17 @@ public actor ModelAcquisitionController {
             return ModelAcquisitionResult(
                 model: model, state: states[model] ?? .failed,
                 verifiedURL: nil,
-                error: cancelled.contains(model) ? .cancelled
+                error: cancelled.contains(model)
+                    ? .cancelled
                     : .downloadFailed(error.localizedDescription))
         }
 
         if cancelled.contains(model) {
             try? fs.remove(staging)
             states[model] = .cancelled
-            return ModelAcquisitionResult(model: model, state: .cancelled,
-                                          verifiedURL: nil, error: .cancelled)
+            return ModelAcquisitionResult(
+                model: model, state: .cancelled,
+                verifiedURL: nil, error: .cancelled)
         }
 
         // Verify completeness/integrity against the reviewed manifest.
@@ -336,34 +355,38 @@ public actor ModelAcquisitionController {
                 try? fs.remove(staging)
                 states[model] = .failed
             }
-            return ModelAcquisitionResult(model: model,
-                                          state: states[model] ?? .failed,
-                                          verifiedURL: nil, error: e)
+            return ModelAcquisitionResult(
+                model: model,
+                state: states[model] ?? .failed,
+                verifiedURL: nil, error: e)
         } catch {
             try? fs.remove(staging)
             states[model] = .failed
-            return ModelAcquisitionResult(model: model, state: .failed,
-                                          verifiedURL: nil, error: .verificationFailed("unknown"))
+            return ModelAcquisitionResult(
+                model: model, state: .failed,
+                verifiedURL: nil, error: .verificationFailed("unknown"))
         }
 
         // Atomic promotion into the verified cache, then manifest.
         let final = fs.verifiedCacheRoot().appendingPathComponent(model.rawValue)
         do {
             try fs.createDirectory(fs.verifiedCacheRoot(), permissions: 0o700)
-            try fs.remove(final)               // clear any stale verified dir
+            try fs.remove(final)  // clear any stale verified dir
             try fs.promote(from: staging, to: final)
             try fs.writeManifest(manifest, for: model)
         } catch {
             try? fs.quarantine(staging, reason: "promotion failed")
             states[model] = .failed
-            return ModelAcquisitionResult(model: model, state: .failed,
-                                          verifiedURL: nil,
-                                          error: .promotionFailed(error.localizedDescription))
+            return ModelAcquisitionResult(
+                model: model, state: .failed,
+                verifiedURL: nil,
+                error: .promotionFailed(error.localizedDescription))
         }
 
         states[model] = .ready
-        return ModelAcquisitionResult(model: model, state: .ready,
-                                      verifiedURL: final, error: nil)
+        return ModelAcquisitionResult(
+            model: model, state: .ready,
+            verifiedURL: final, error: nil)
     }
 
     private func recordProgress(model: ModelIdentifier, _ p: ModelDownloadProgress) {
@@ -373,19 +396,22 @@ public actor ModelAcquisitionController {
     /// Reviewed metadata for a WhisperKit model. Digests are supplied by the
     /// app layer's manifest store where the upstream format permits; Core
     /// carries the contract and the size bounds.
-    public static func makeManifest(for model: ModelIdentifier,
-                                    createdAtUptimeNanos: UInt64,
-                                    artifactNames: [String] = ["config.json", "model.mlmodelc"],
-                                    minArtifactBytes: UInt64 = 1_000,
-                                    minTotalBytes: UInt64 = 1_000_000,
-                                    maxTotalBytes: UInt64 = 4_000_000_000,
-                                    digests: [String: String] = [:]) -> ModelManifest {
+    public static func makeManifest(
+        for model: ModelIdentifier,
+        createdAtUptimeNanos: UInt64,
+        artifactNames: [String] = ["config.json", "model.mlmodelc"],
+        minArtifactBytes: UInt64 = 1_000,
+        minTotalBytes: UInt64 = 1_000_000,
+        maxTotalBytes: UInt64 = 4_000_000_000,
+        digests: [String: String] = [:]
+    ) -> ModelManifest {
         ModelManifest(
             engineIdentity: "whisperkit-coreml",
             modelID: model.rawValue,
             artifacts: artifactNames.map {
-                ModelArtifactSpec(name: $0, minBytes: minArtifactBytes,
-                                  sha256Digest: digests[$0])
+                ModelArtifactSpec(
+                    name: $0, minBytes: minArtifactBytes,
+                    sha256Digest: digests[$0])
             },
             minTotalBytes: minTotalBytes,
             maxTotalBytes: maxTotalBytes,

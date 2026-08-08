@@ -60,6 +60,48 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  gates:
+    name: Gates (XCTest, strict concurrency, lint, format, docs, version, drift, coverage)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          swift --version
+          xcodebuild -version || true
+
+      - name: Run all gates (fail closed)
+        run: |
+          set -euo pipefail
+          chmod +x Scripts/ci_checks.sh
+          ./Scripts/ci_checks.sh
+
+      - name: Upload gate report (success)
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-gates-report
+          path: docs/development/ci/coverage-baseline-report.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload gate report (failure)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-gates-failure-log
+          path: |
+            docs/development/ci/coverage-baseline-report.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+
   docs:
     name: Docs
     runs-on: ubuntu-22.04

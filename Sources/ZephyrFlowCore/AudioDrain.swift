@@ -69,8 +69,10 @@ public struct AudioFrameAccounting: Sendable, Equatable {
     /// 2. Converted ≈ (captured − dropped) × ratio within the explicitly
     ///    defined converter rounding tolerance.
     /// Any gap, overflow, drain timeout or mismatch => false (fail closed).
-    public func reconciles(converterRatio: Double,
-                           roundingToleranceSamples: UInt64) -> Bool {
+    public func reconciles(
+        converterRatio: Double,
+        roundingToleranceSamples: UInt64
+    ) -> Bool {
         guard !isDegraded else { return false }
         guard deliveredEngineSamples == convertedEngineSamples else { return false }
         let expected = Double(capturedSourceSamples &- droppedSourceSamples) * converterRatio

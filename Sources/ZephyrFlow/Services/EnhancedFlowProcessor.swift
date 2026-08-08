@@ -33,16 +33,20 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
     func process(_ request: FlowRequest) async -> FlowOutcome {
         let t0 = DispatchTime.now().uptimeNanoseconds
         let started = Date()
-        let output = await process(request.text, style: request.style,
-                                   language: request.language)
+        let output = await process(
+            request.text, style: request.style,
+            language: request.language)
         let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
         let loss = FlowOutcome.lossClass(for: request.style)
         let protectedSpanCount = FlowGuardrails.tokens(in: request.text).count
         // Evaluate guardrails on the enhanced output; fallback is explicit.
-        let fallback = await regex.process(request.text, style: request.style,
-                                           language: request.language)
-        switch FlowGuardrails.evaluate(input: request.text, output: output,
-                                       conservativeFallback: fallback) {
+        let fallback = await regex.process(
+            request.text, style: request.style,
+            language: request.language)
+        switch FlowGuardrails.evaluate(
+            input: request.text, output: output,
+            conservativeFallback: fallback)
+        {
         case .approved(let out):
             return FlowOutcome(
                 text: out,
@@ -56,7 +60,8 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
                 protectedSpanCount: protectedSpanCount,
                 protectedSpansPreserved: FlowGuardrails.inputCovered(
                     input: FlowGuardrails.tokens(in: request.text),
-                    output: FlowGuardrails.tokens(in: out)).ok,
+                    output: FlowGuardrails.tokens(in: out)
+                ).ok,
                 status: .accepted,
                 warnings: [],
                 fallbackReason: nil,
@@ -110,11 +115,15 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
 
     /// JOE-2278: guardrail gate — on rejection return the approved
     /// conservative fallback (regex) with the controlled reason logged.
-    private func guardrail(_ input: String, _ output: String,
-                           style: FlowStyle, language: SupportedLanguage) async -> String {
+    private func guardrail(
+        _ input: String, _ output: String,
+        style: FlowStyle, language: SupportedLanguage
+    ) async -> String {
         let fallback = await regex.process(input, style: style, language: language)
-        switch FlowGuardrails.evaluate(input: input, output: output,
-                                       conservativeFallback: fallback) {
+        switch FlowGuardrails.evaluate(
+            input: input, output: output,
+            conservativeFallback: fallback)
+        {
         case .approved(let out):
             return out
         case .rejected(let reason, let conservative):
@@ -168,7 +177,8 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
             .filter { !$0.isEmpty }
 
         if parts.count <= 1 {
-            let andSplit = cleaned
+            let andSplit =
+                cleaned
                 .replacingOccurrences(of: #"\s+and\s+"#, with: "\u{1e}", options: .regularExpression)
                 .split(separator: "\u{1e}")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -195,7 +205,8 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
         let cleaned = await regex.process(text, style: .clean)
         if Task.isCancelled { return await regex.process(text, style: .summary) }
 
-        let sentences = cleaned
+        let sentences =
+            cleaned
             .components(separatedBy: CharacterSet(charactersIn: ".!?"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }

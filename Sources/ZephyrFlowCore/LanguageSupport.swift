@@ -84,11 +84,13 @@ public struct LanguageCapability: Sendable, Equatable {
     /// Actionable message when a language pack is missing (Local Only).
     public let missingPackMessage: String?
 
-    public init(language: SupportedLanguage,
-                whisperOnDevice: Bool,
-                appleOnDevice: Bool,
-                appleAvailable: Bool,
-                missingPackMessage: String?) {
+    public init(
+        language: SupportedLanguage,
+        whisperOnDevice: Bool,
+        appleOnDevice: Bool,
+        appleAvailable: Bool,
+        missingPackMessage: String?
+    ) {
         self.language = language
         self.whisperOnDevice = whisperOnDevice
         self.appleOnDevice = appleOnDevice

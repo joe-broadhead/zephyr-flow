@@ -1,5 +1,5 @@
-import SwiftUI
 import AppKit
+import SwiftUI
 import ZephyrFlowCore
 
 struct MenuBarView: View {
@@ -31,7 +31,7 @@ struct MenuBarView: View {
                 WindowRouter.openSettings()
                 Task { await UpdateChecker.shared.checkForUpdates() }
             }
-                .keyboardShortcut(",", modifiers: [.command])
+            .keyboardShortcut(",", modifiers: [.command])
 
             Divider()
 
@@ -40,9 +40,10 @@ struct MenuBarView: View {
                     Button {
                         settings.update { $0.defaultFlowStyle = style }
                     } label: {
-                        Text(settings.settings.defaultFlowStyle == style
-                           ? "✓ \(style.displayName)"
-                           : style.displayName)
+                        Text(
+                            settings.settings.defaultFlowStyle == style
+                                ? "✓ \(style.displayName)"
+                                : style.displayName)
                     }
                 }
             }
@@ -53,9 +54,10 @@ struct MenuBarView: View {
                         settings.update { $0.preferredModel = model }
                         controller.reloadEngine()
                     } label: {
-                        Text(settings.settings.preferredModel == model
-                           ? "✓ \(model.displayName)"
-                           : model.displayName)
+                        Text(
+                            settings.settings.preferredModel == model
+                                ? "✓ \(model.displayName)"
+                                : model.displayName)
                     }
                 }
             }

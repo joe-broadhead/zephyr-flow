@@ -38,9 +38,11 @@ public struct InsertionReviewModel: Sendable, Equatable {
     public private(set) var clearReason: ClearReason?
     public private(set) var consumedAction: InsertionReviewAction?
 
-    public init(outcome: InsertionOutcome,
-                createdAtNanos: UInt64,
-                retentionNanosAhead: UInt64 = 30_000_000_000) {
+    public init(
+        outcome: InsertionOutcome,
+        createdAtNanos: UInt64,
+        retentionNanosAhead: UInt64 = 30_000_000_000
+    ) {
         self.outcome = outcome
         self.createdAtNanos = createdAtNanos
         self.retentionNanosAhead = retentionNanosAhead
@@ -58,8 +60,8 @@ public struct InsertionReviewModel: Sendable, Equatable {
         case .notEditable: return "Field is not editable"
         case .deadlineExceeded: return "Timed out waiting for the target"
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
-             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
-             .cancelled, .failed:
+            .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
+            .cancelled, .failed:
             return "Nothing was inserted"
         }
     }
@@ -80,8 +82,8 @@ public struct InsertionReviewModel: Sendable, Equatable {
         case .deadlineExceeded:
             return "The target did not respond in time. Nothing was inserted."
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
-             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
-             .cancelled, .failed:
+            .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
+            .cancelled, .failed:
             return "Nothing was inserted."
         }
     }
@@ -92,10 +94,10 @@ public struct InsertionReviewModel: Sendable, Equatable {
         case .targetChanged, .targetGone, .notEditable, .deadlineExceeded:
             return true
         case .targetUnknown, .secureTarget:
-            return false   // retry cannot fix missing permission or a secure field
+            return false  // retry cannot fix missing permission or a secure field
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
-             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
-             .cancelled, .failed:
+            .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
+            .cancelled, .failed:
             return false
         }
     }

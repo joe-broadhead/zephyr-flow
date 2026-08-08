@@ -27,18 +27,20 @@ public struct FlowCapability: Sendable, Equatable {
     public let resourceRequirement: FlowResourceRequirement
     public let entryGate: FlowBackendEntryGate
 
-    public init(id: String,
-                version: String,
-                networkUse: FlowBackendNetworkUse,
-                requiresModelWeights: Bool,
-                isDeterministic: Bool,
-                styles: Set<FlowStyle>,
-                enhancedStyles: Set<FlowStyle>,
-                lossClasses: Set<FlowLossClass>,
-                languages: Set<String>,
-                cancellation: FlowBackendCancellation,
-                resourceRequirement: FlowResourceRequirement,
-                entryGate: FlowBackendEntryGate = .deterministicRules) {
+    public init(
+        id: String,
+        version: String,
+        networkUse: FlowBackendNetworkUse,
+        requiresModelWeights: Bool,
+        isDeterministic: Bool,
+        styles: Set<FlowStyle>,
+        enhancedStyles: Set<FlowStyle>,
+        lossClasses: Set<FlowLossClass>,
+        languages: Set<String>,
+        cancellation: FlowBackendCancellation,
+        resourceRequirement: FlowResourceRequirement,
+        entryGate: FlowBackendEntryGate = .deterministicRules
+    ) {
         self.id = id
         self.version = version
         self.networkUse = networkUse

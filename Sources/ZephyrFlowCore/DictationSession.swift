@@ -26,12 +26,14 @@ public struct SessionAudioSummary: Sendable, Equatable {
     public let reconciled: Bool
     public let drainState: String
 
-    public init(capturedSourceSamples: UInt64,
-                deliveredEngineSamples: UInt64,
-                droppedSamples: UInt64,
-                degraded: Bool,
-                reconciled: Bool,
-                drainState: String) {
+    public init(
+        capturedSourceSamples: UInt64,
+        deliveredEngineSamples: UInt64,
+        droppedSamples: UInt64,
+        degraded: Bool,
+        reconciled: Bool,
+        drainState: String
+    ) {
         self.capturedSourceSamples = capturedSourceSamples
         self.deliveredEngineSamples = deliveredEngineSamples
         self.droppedSamples = droppedSamples
@@ -49,11 +51,13 @@ public struct SessionStageOutputs: Sendable, Equatable {
     public var validation: TargetValidationOutcome?
     public var insertion: InsertionOutcome?
 
-    public init(audioSummary: SessionAudioSummary? = nil,
-                engineResult: EngineResult? = nil,
-                flowOutcome: FlowOutcome? = nil,
-                validation: TargetValidationOutcome? = nil,
-                insertion: InsertionOutcome? = nil) {
+    public init(
+        audioSummary: SessionAudioSummary? = nil,
+        engineResult: EngineResult? = nil,
+        flowOutcome: FlowOutcome? = nil,
+        validation: TargetValidationOutcome? = nil,
+        insertion: InsertionOutcome? = nil
+    ) {
         self.audioSummary = audioSummary
         self.engineResult = engineResult
         self.flowOutcome = flowOutcome
@@ -73,11 +77,13 @@ public struct SessionUIState: Sendable, Equatable {
     public var audioLevel: Float
     public var outputs: SessionStageOutputs
 
-    public init(phase: SessionPhase = .idle,
-                interimText: String = "",
-                interimLength: Int = 0,
-                audioLevel: Float = 0.05,
-                outputs: SessionStageOutputs = SessionStageOutputs()) {
+    public init(
+        phase: SessionPhase = .idle,
+        interimText: String = "",
+        interimLength: Int = 0,
+        audioLevel: Float = 0.05,
+        outputs: SessionStageOutputs = SessionStageOutputs()
+    ) {
         self.phase = phase
         self.interimText = interimText
         self.interimLength = interimLength
@@ -148,12 +154,14 @@ public struct SessionSettingsSnapshot: Sendable, Equatable {
     public let saveHistory: Bool
     public let copyOnlyOverrideBundleIDs: [String]
 
-    public init(localOnly: Bool,
-                language: SupportedLanguage,
-                defaultFlowStyle: FlowStyle,
-                insertionMode: String,
-                saveHistory: Bool,
-                copyOnlyOverrideBundleIDs: [String]) {
+    public init(
+        localOnly: Bool,
+        language: SupportedLanguage,
+        defaultFlowStyle: FlowStyle,
+        insertionMode: String,
+        saveHistory: Bool,
+        copyOnlyOverrideBundleIDs: [String]
+    ) {
         self.localOnly = localOnly
         self.language = language
         self.defaultFlowStyle = defaultFlowStyle
@@ -174,9 +182,11 @@ public struct SessionInsertRequest: Sendable, Equatable {
     public let sessionID: SessionID
     public let copyOnlyOverrides: Set<String>
 
-    public init(text: String, preferPaste: Bool, insertionMode: String,
-                targetBundleID: String?, sensitivity: SessionSensitivity,
-                sessionID: SessionID, copyOnlyOverrides: Set<String>) {
+    public init(
+        text: String, preferPaste: Bool, insertionMode: String,
+        targetBundleID: String?, sensitivity: SessionSensitivity,
+        sessionID: SessionID, copyOnlyOverrides: Set<String>
+    ) {
         self.text = text
         self.preferPaste = preferPaste
         self.insertionMode = insertionMode
@@ -193,8 +203,10 @@ public struct SessionValidationResult: Sendable, Equatable {
     public let outcome: TargetValidationOutcome
     public let effectiveSensitivity: SessionSensitivity
 
-    public init(outcome: TargetValidationOutcome,
-                effectiveSensitivity: SessionSensitivity) {
+    public init(
+        outcome: TargetValidationOutcome,
+        effectiveSensitivity: SessionSensitivity
+    ) {
         self.outcome = outcome
         self.effectiveSensitivity = effectiveSensitivity
     }
@@ -214,8 +226,10 @@ public struct SessionCaptureHandle: Sendable {
     public let interim: AsyncStream<SessionPartial>
     public let levels: AsyncStream<Float>
 
-    public init(interim: AsyncStream<SessionPartial>,
-                levels: AsyncStream<Float>) {
+    public init(
+        interim: AsyncStream<SessionPartial>,
+        levels: AsyncStream<Float>
+    ) {
         self.interim = interim
         self.levels = levels
     }
@@ -229,8 +243,10 @@ public protocol DictationSessionStageProviding: Sendable {
     /// The AX target snapshot captured during prepare (nil = fail closed).
     func capturedTargetSnapshot() async -> TargetSnapshot?
     /// Begin capture + engine streaming. Returns interim/level streams.
-    func startCapture(sessionID: SessionID, localOnly: Bool,
-                      language: SupportedLanguage) async throws -> SessionCaptureHandle
+    func startCapture(
+        sessionID: SessionID, localOnly: Bool,
+        language: SupportedLanguage
+    ) async throws -> SessionCaptureHandle
     /// Stop the microphone, drain the ordered channel; returns counts only.
     func stopCapture() async -> SessionAudioSummary
     /// Finalize engine decode -> explicit engine result.
@@ -242,14 +258,14 @@ public protocol DictationSessionStageProviding: Sendable {
     func validateTarget() async -> SessionValidationResult
     /// Persist history (transcript-bearing mutation; policy decided by the
     /// actor, I/O performed by the provider).
-    func recordHistory(originalText: String, finalText: String,
-                       duration: TimeInterval, modelName: String) async
+    func recordHistory(
+        originalText: String, finalText: String,
+        duration: TimeInterval, modelName: String) async
     /// Insert the final text -> explicit insertion outcome.
     func insert(_ request: SessionInsertRequest) async -> InsertionOutcome
     /// Cancel engine + capture immediately (idempotent).
     func cancel() async
 }
-
 
 // MARK: - Shared session identity (JOE-2244)
 
@@ -266,8 +282,9 @@ public final class SessionIDFactory: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         sequence += 1
-        return SessionID(token: "zf", sequence: sequence,
-                         createdAtUptimeNanos: createdAtNanos)
+        return SessionID(
+            token: "zf", sequence: sequence,
+            createdAtUptimeNanos: createdAtNanos)
     }
 }
 
@@ -307,13 +324,15 @@ public actor DictationSession {
     private var retainedText = ""
     private var released = false
 
-    public init(provider: any DictationSessionStageProviding,
-                engineChoice: SessionEngineChoice,
-                settings: SessionSettingsSnapshot,
-                idFactory: SessionIDFactory = SessionIDFactory(),
-                nowNanos: @escaping @Sendable () -> UInt64 = {
-                    DispatchTime.now().uptimeNanoseconds
-                }) {
+    public init(
+        provider: any DictationSessionStageProviding,
+        engineChoice: SessionEngineChoice,
+        settings: SessionSettingsSnapshot,
+        idFactory: SessionIDFactory = SessionIDFactory(),
+        nowNanos: @escaping @Sendable () -> UInt64 = {
+            DispatchTime.now().uptimeNanoseconds
+        }
+    ) {
         self.provider = provider
         self.engineChoice = engineChoice
         self.settings = settings
@@ -397,7 +416,10 @@ public actor DictationSession {
         // Wait for the release edge (end/cancel) — the ONLY way out of
         // capture. The first command is consumed HERE, after capture starts.
         var command: Command?
-        for await c in commands { command = c; break }
+        for await c in commands {
+            command = c
+            break
+        }
         guard let command else { return }
 
         if command == .cancel {
@@ -449,9 +471,10 @@ public actor DictationSession {
         if !sessionAllowsAutomaticSideEffects {
             _ = control.stage(.transformationFinished)
             _ = control.stage(.targetSecure)
-            let conservative = await provider.applyFlow(FlowRequest(
-                sessionID: sessionID, text: final.text, style: .clean,
-                language: settings.language, sensitivity: .unknown))
+            let conservative = await provider.applyFlow(
+                FlowRequest(
+                    sessionID: sessionID, text: final.text, style: .clean,
+                    language: settings.language, sensitivity: .unknown))
             state.outputs.flowOutcome = conservative
             let reviewText = conservative.text.trimmingCharacters(in: .whitespacesAndNewlines)
             retainedText = reviewText
@@ -461,9 +484,10 @@ public actor DictationSession {
         }
 
         _ = control.stage(.transformationFinished)
-        let flowOutcome = await provider.applyFlow(FlowRequest(
-            sessionID: sessionID, text: final.text, style: settings.defaultFlowStyle,
-            language: settings.language, sensitivity: .unknown))
+        let flowOutcome = await provider.applyFlow(
+            FlowRequest(
+                sessionID: sessionID, text: final.text, style: settings.defaultFlowStyle,
+                language: settings.language, sensitivity: .unknown))
         state.outputs.flowOutcome = flowOutcome
         publish(phase: .processing, interim: state.interimText, level: state.audioLevel)
 
@@ -489,8 +513,10 @@ public actor DictationSession {
 
     /// Runs validation + insertion once; returns true when the session is
     /// terminal (success/error) and false when a review phase was shown.
-    private func validateAndInsert(final: EngineResult,
-                                   snapshot: TargetSnapshot) async -> Bool {
+    private func validateAndInsert(
+        final: EngineResult,
+        snapshot: TargetSnapshot
+    ) async -> Bool {
         let validation = await provider.validateTarget()
         state.outputs.validation = validation.outcome
         publish(phase: .processing, interim: state.interimText, level: state.audioLevel)
@@ -498,21 +524,24 @@ public actor DictationSession {
         switch validation.outcome {
         case .validated:
             _ = control.stage(.targetValidationSucceeded)
-            let result = await provider.insert(SessionInsertRequest(
-                text: retainedText,
-                preferPaste: true,
-                insertionMode: settings.insertionMode,
-                targetBundleID: snapshot.target.bundleID,
-                sensitivity: validation.effectiveSensitivity,
-                sessionID: sessionID,
-                copyOnlyOverrides: Set(settings.copyOnlyOverrideBundleIDs)))
+            let result = await provider.insert(
+                SessionInsertRequest(
+                    text: retainedText,
+                    preferPaste: true,
+                    insertionMode: settings.insertionMode,
+                    targetBundleID: snapshot.target.bundleID,
+                    sensitivity: validation.effectiveSensitivity,
+                    sessionID: sessionID,
+                    copyOnlyOverrides: Set(settings.copyOnlyOverrideBundleIDs)))
             state.outputs.insertion = result
             switch result {
             case .verifiedInserted, .explicitlyCopiedByUser, .eventPostedUnverified:
                 _ = control.stage(.insertionSucceeded)
                 if settings.saveHistory,
-                   HistoryStoragePolicy.allowsWrite(sensitivity: validation.effectiveSensitivity,
-                                                    outcome: result) {
+                    HistoryStoragePolicy.allowsWrite(
+                        sensitivity: validation.effectiveSensitivity,
+                        outcome: result)
+                {
                     await provider.recordHistory(
                         originalText: final.text,
                         finalText: retainedText,

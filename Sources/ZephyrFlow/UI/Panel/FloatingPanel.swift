@@ -74,8 +74,9 @@ final class FloatingPanelController {
 
         // Honor user-dragged position when locked
         if settings.panelPositionLocked,
-           let x = settings.panelOriginX,
-           let y = settings.panelOriginY {
+            let x = settings.panelOriginX,
+            let y = settings.panelOriginY
+        {
             var origin = NSPoint(x: x, y: y)
             origin = clamp(origin, size: size, margin: margin)
             panel.setFrameOrigin(origin)
@@ -83,7 +84,8 @@ final class FloatingPanelController {
         }
 
         let mouse = point ?? NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+        let screen =
+            NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
 
@@ -110,7 +112,8 @@ final class FloatingPanelController {
     @MainActor
     private func clamp(_ origin: NSPoint, size: NSSize, margin: CGFloat) -> NSPoint {
         var o = origin
-        let screen = NSScreen.screens.first { NSMouseInRect(o, $0.frame, false) }
+        let screen =
+            NSScreen.screens.first { NSMouseInRect(o, $0.frame, false) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
         guard let visible = screen?.visibleFrame else { return o }
@@ -132,7 +135,8 @@ final class FloatingPanelController {
         // Skip no-op writes when still at auto-placed first show without drag history
         // and nothing was ever locked — still save so next show can restore after move.
         if SettingsStore.shared.settings.panelPositionLocked,
-           prevX == origin.x, prevY == origin.y {
+            prevX == origin.x, prevY == origin.y
+        {
             return
         }
         SettingsStore.shared.update {
@@ -172,9 +176,13 @@ struct FloatingPanelRoot: View {
             case .hidden:
                 Color.clear.frame(width: 1, height: 1)
             case .warning:
-                PanelWarningView(text: controller.interimText,
-                                 message: controller.statusMessage ?? "",
-                                 onDiscard: { controller.clearStatusLater(); controller.panelState = .hidden })
+                PanelWarningView(
+                    text: controller.interimText,
+                    message: controller.statusMessage ?? "",
+                    onDiscard: {
+                        controller.clearStatusLater()
+                        controller.panelState = .hidden
+                    })
             default:
                 FloatingPanelView(
                     state: controller.panelState,
@@ -212,20 +220,24 @@ struct FloatingPanelRoot: View {
         removePanelKeyMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let controller = DictationController.shared
-            guard controller.panelState == .listening
+            guard
+                controller.panelState == .listening
                     || controller.panelState == .processing
                     || controller.panelState == .reviewing
                     || controller.panelState == .warning
                     || {
                         if case .error = controller.panelState { return true }
                         return false
-                    }() else {
+                    }()
+            else {
                 return event
             }
             // Esc or ⌘. clears review / cancels session
-            if event.keyCode == 53 || (event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == ".") {
+            if event.keyCode == 53
+                || (event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == ".")
+            {
                 if controller.panelState == .reviewing {
-                    controller.discardReview()   // JOE-2272: discard clears text + model
+                    controller.discardReview()  // JOE-2272: discard clears text + model
                 } else if controller.panelState == .warning {
                     controller.clearStatusLater()
                     controller.panelState = .hidden
@@ -291,13 +303,15 @@ struct FloatingPanelView: View {
     let reviewWarnsCopy: Bool
     let reviewAllowsSettings: Bool
 
-    init(state: PanelState, text: String, levels: [Float], activeStyle: FlowStyle,
-         onStyle: @escaping (FlowStyle) -> Void, onStop: @escaping () -> Void,
-         onCancel: @escaping () -> Void, onReviewCopy: @escaping () -> Void,
-         onReviewRetry: @escaping () -> Void, onReviewDiscard: @escaping () -> Void,
-         onReviewSettings: @escaping () -> Void,
-         reviewTitle: String?, reviewDetail: String?,
-         reviewAllowsRetry: Bool, reviewWarnsCopy: Bool, reviewAllowsSettings: Bool) {
+    init(
+        state: PanelState, text: String, levels: [Float], activeStyle: FlowStyle,
+        onStyle: @escaping (FlowStyle) -> Void, onStop: @escaping () -> Void,
+        onCancel: @escaping () -> Void, onReviewCopy: @escaping () -> Void,
+        onReviewRetry: @escaping () -> Void, onReviewDiscard: @escaping () -> Void,
+        onReviewSettings: @escaping () -> Void,
+        reviewTitle: String?, reviewDetail: String?,
+        reviewAllowsRetry: Bool, reviewWarnsCopy: Bool, reviewAllowsSettings: Bool
+    ) {
         self.state = state
         self.text = text
         self.levels = levels
@@ -424,11 +438,17 @@ struct FloatingPanelView: View {
     private var orbGradient: LinearGradient {
         switch state {
         case .success:
-            return LinearGradient(colors: [ZephyrTheme.mint, Color.green.opacity(0.85)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            return LinearGradient(
+                colors: [ZephyrTheme.mint, Color.green.opacity(0.85)], startPoint: .topLeading,
+                endPoint: .bottomTrailing)
         case .error:
-            return LinearGradient(colors: [ZephyrTheme.danger, Color.orange.opacity(0.85)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            return LinearGradient(
+                colors: [ZephyrTheme.danger, Color.orange.opacity(0.85)], startPoint: .topLeading,
+                endPoint: .bottomTrailing)
         case .processing:
-            return LinearGradient(colors: [ZephyrTheme.violet, ZephyrTheme.cyan.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            return LinearGradient(
+                colors: [ZephyrTheme.violet, ZephyrTheme.cyan.opacity(0.7)], startPoint: .topLeading,
+                endPoint: .bottomTrailing)
         default:
             return ZephyrTheme.brandGradient
         }
@@ -538,9 +558,11 @@ struct FloatingPanelView: View {
                         .foregroundColor(.black)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(reviewWarnsCopy
-                    ? "Copy to clipboard — this places the text on the global clipboard"
-                    : "Copy text to clipboard")
+                .accessibilityLabel(
+                    reviewWarnsCopy
+                        ? "Copy to clipboard — this places the text on the global clipboard"
+                        : "Copy text to clipboard"
+                )
                 .keyboardShortcut(.return, modifiers: [])
                 if reviewAllowsSettings {
                     Button(action: onReviewSettings) {
@@ -571,7 +593,6 @@ struct FloatingPanelView: View {
                 .foregroundColor(ZephyrTheme.textMuted)
         }
     }
-
 
     private var quickActions: some View {
         HStack(spacing: 6) {
@@ -641,7 +662,6 @@ struct FloatingPanelView: View {
         }
     }
 }
-
 
 /// JOE-2284: persistent warning presentation (amber, no green, no auto
 /// dismiss) with a VoiceOver label; discard is explicit.

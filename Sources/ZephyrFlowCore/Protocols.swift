@@ -47,23 +47,27 @@ public protocol InsertionServiceProtocol: Actor {
     func insert(_ text: String) async -> InsertionOutcome
 
     /// Full-parameter insertion (session-scoped; JOE-2260/2269/2271).
-    func insert(_ text: String,
-                preferPaste: Bool,
-                mode: InsertionMode,
-                targetBundleID: String?,
-                sensitivity: SessionSensitivity,
-                sessionID: SessionID?,
-                copyOnlyOverrides: Set<String>) async -> InsertionOutcome
+    func insert(
+        _ text: String,
+        preferPaste: Bool,
+        mode: InsertionMode,
+        targetBundleID: String?,
+        sensitivity: SessionSensitivity,
+        sessionID: SessionID?,
+        copyOnlyOverrides: Set<String>
+    ) async -> InsertionOutcome
 }
 
-public extension InsertionServiceProtocol {
-    func insert(_ text: String,
-                preferPaste: Bool,
-                mode: InsertionMode,
-                targetBundleID: String?,
-                sensitivity: SessionSensitivity,
-                sessionID: SessionID?,
-                copyOnlyOverrides: Set<String>) async -> InsertionOutcome {
+extension InsertionServiceProtocol {
+    public func insert(
+        _ text: String,
+        preferPaste: Bool,
+        mode: InsertionMode,
+        targetBundleID: String?,
+        sensitivity: SessionSensitivity,
+        sessionID: SessionID?,
+        copyOnlyOverrides: Set<String>
+    ) async -> InsertionOutcome {
         await insert(text)
     }
 }
@@ -80,19 +84,24 @@ public protocol FlowProcessorProtocol: Actor {
     func process(_ text: String, style: FlowStyle) async -> String
 }
 
-public extension FlowProcessorProtocol {
+extension FlowProcessorProtocol {
     /// Language-aware legacy entry (JOE-2277). Default forwards with `.auto`.
-    func process(_ text: String, style: FlowStyle, language: SupportedLanguage) async -> String {
+    public func process(_ text: String, style: FlowStyle, language: SupportedLanguage) async -> String {
         await process(text, style: style)
     }
 
     /// Convenience: build a request with default context (tests/utilities).
-    func process(_ text: String, style: FlowStyle, language: SupportedLanguage,
-                 sensitivity: SessionSensitivity) async -> FlowOutcome {
-        await process(FlowRequest(sessionID: SessionID(token: "flow", sequence: 0,
-                                                       createdAtUptimeNanos: 0),
-                                  text: text, style: style, language: language,
-                                  sensitivity: sensitivity))
+    public func process(
+        _ text: String, style: FlowStyle, language: SupportedLanguage,
+        sensitivity: SessionSensitivity
+    ) async -> FlowOutcome {
+        await process(
+            FlowRequest(
+                sessionID: SessionID(
+                    token: "flow", sequence: 0,
+                    createdAtUptimeNanos: 0),
+                text: text, style: style, language: language,
+                sensitivity: sensitivity))
     }
 }
 

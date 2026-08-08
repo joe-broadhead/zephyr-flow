@@ -36,15 +36,17 @@ public struct SupportBundleInputs: Sendable {
     public let healthChecks: [String: String]
     public let privacyPolicyVersion: String
 
-    public init(appVersion: String, build: String, sourceProvenance: String,
-                channel: String, osVersion: String, architecture: String,
-                hardwareClass: String, microphoneGranted: Bool,
-                accessibilityTrusted: Bool, speechGranted: Bool,
-                settingsSummary: [String: String], engineModel: String,
-                modelCacheReady: Bool, modelCacheIntegrity: Bool,
-                telemetryEvents: [TelemetryEvent], frameSummary: String,
-                fallbackCount: Int, insertionConfidenceCounts: [String: Int],
-                healthChecks: [String: String], privacyPolicyVersion: String) {
+    public init(
+        appVersion: String, build: String, sourceProvenance: String,
+        channel: String, osVersion: String, architecture: String,
+        hardwareClass: String, microphoneGranted: Bool,
+        accessibilityTrusted: Bool, speechGranted: Bool,
+        settingsSummary: [String: String], engineModel: String,
+        modelCacheReady: Bool, modelCacheIntegrity: Bool,
+        telemetryEvents: [TelemetryEvent], frameSummary: String,
+        fallbackCount: Int, insertionConfidenceCounts: [String: Int],
+        healthChecks: [String: String], privacyPolicyVersion: String
+    ) {
         self.appVersion = appVersion
         self.build = build
         self.sourceProvenance = sourceProvenance
@@ -120,13 +122,15 @@ public struct SupportBundleDocument: Codable, Sendable, Equatable {
         self.osVersion = inputs.osVersion
         self.architecture = inputs.architecture
         self.hardwareClass = inputs.hardwareClass
-        self.permissions = BundlePermissions(microphoneGranted: inputs.microphoneGranted,
-                                             accessibilityTrusted: inputs.accessibilityTrusted,
-                                             speechGranted: inputs.speechGranted)
+        self.permissions = BundlePermissions(
+            microphoneGranted: inputs.microphoneGranted,
+            accessibilityTrusted: inputs.accessibilityTrusted,
+            speechGranted: inputs.speechGranted)
         self.settingsSummary = inputs.settingsSummary
         self.engineModel = inputs.engineModel
-        self.modelCache = BundleModelCache(ready: inputs.modelCacheReady,
-                                           integrityVerified: inputs.modelCacheIntegrity)
+        self.modelCache = BundleModelCache(
+            ready: inputs.modelCacheReady,
+            integrityVerified: inputs.modelCacheIntegrity)
         self.telemetryEvents = Array(inputs.telemetryEvents.prefix(256))
         self.frameSummary = inputs.frameSummary
         self.fallbackCount = inputs.fallbackCount
@@ -183,8 +187,10 @@ public enum SupportBundleBuilder {
     public static let maxSerializedBytes = 2_000_000
 
     /// Build the bundle document (explicit user action only).
-    public static func build(inputs: SupportBundleInputs,
-                             generatedAt: String = ISO8601DateFormatter().string(from: Date())) throws -> SupportBundleDocument {
+    public static func build(
+        inputs: SupportBundleInputs,
+        generatedAt: String = ISO8601DateFormatter().string(from: Date())
+    ) throws -> SupportBundleDocument {
         let document = SupportBundleDocument(inputs: inputs, generatedAtISO8601: generatedAt)
         // Fail-closed canary scan over every controlled field.
         for field in [
@@ -210,7 +216,8 @@ public enum SupportBundleBuilder {
         }
         for event in document.telemetryEvents {
             if let offending = SupportBundleCanary.scanSerialized(
-                "\(event.kind.rawValue)\(event.terminal?.rawValue ?? "")\(event.stage?.rawValue ?? "")") {
+                "\(event.kind.rawValue)\(event.terminal?.rawValue ?? "")\(event.stage?.rawValue ?? "")")
+            {
                 throw BuildError.markerDetected(field: offending)
             }
         }

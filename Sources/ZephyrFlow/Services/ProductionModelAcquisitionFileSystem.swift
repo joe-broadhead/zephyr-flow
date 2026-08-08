@@ -1,5 +1,5 @@
-import Foundation
 import CryptoKit
+import Foundation
 import ZephyrFlowCore
 
 // JOE-2255: app-owned stable cache contract for verified models.
@@ -13,27 +13,35 @@ final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @u
     /// Lock markers: model -> acquisition start uptime nanos.
     private var lockTimestamps: [String: UInt64] = [:]
     private let staleLockNanos: UInt64 = 300_000_000_000  // 5 min
-    private let downloader: @Sendable (ModelIdentifier, URL, @escaping @Sendable (ModelDownloadProgress) -> Void) async throws -> Void
+    private let downloader:
+        @Sendable (ModelIdentifier, URL, @escaping @Sendable (ModelDownloadProgress) -> Void) async throws -> Void
 
-    init(downloader: @escaping @Sendable (ModelIdentifier, URL, @escaping @Sendable (ModelDownloadProgress) -> Void) async throws -> Void) {
+    init(
+        downloader:
+            @escaping @Sendable (ModelIdentifier, URL, @escaping @Sendable (ModelDownloadProgress) -> Void) async throws
+            -> Void
+    ) {
         self.downloader = downloader
     }
 
     func verifiedCacheRoot() -> URL {
-        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let base =
+            fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base.appendingPathComponent("ZephyrFlow/VerifiedModels", isDirectory: true)
     }
 
     func stagingRoot() -> URL {
-        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let base =
+            fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base.appendingPathComponent("ZephyrFlow/ModelStaging", isDirectory: true)
     }
 
     func createDirectory(_ url: URL, permissions: Int) throws {
-        try fm.createDirectory(at: url, withIntermediateDirectories: true,
-                               attributes: [.posixPermissions: permissions])
+        try fm.createDirectory(
+            at: url, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: permissions])
     }
 
     func fileExists(_ url: URL) -> Bool { fm.fileExists(atPath: url.path) }
@@ -49,13 +57,16 @@ final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @u
 
     func directorySize(_ url: URL) -> UInt64 {
         guard isDirectory(url) else { return 0 }
-        guard let enumerator = fm.enumerator(
-            at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]) else { return 0 }
+        guard
+            let enumerator = fm.enumerator(
+                at: url, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles])
+        else { return 0 }
         var total: UInt64 = 0
         for case let fileURL as URL in enumerator {
             guard let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
-                  values.isRegularFile == true, let size = values.fileSize else { continue }
+                values.isRegularFile == true, let size = values.fileSize
+            else { continue }
             total += UInt64(size)
         }
         return total
@@ -72,8 +83,10 @@ final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @u
 
     /// The download closure (app-provided, e.g. WhisperKit load + stage copy)
     /// populates the staging directory. Progress is relayed through.
-    func download(model: ModelIdentifier, to stagingURL: URL,
-                  onProgress: @escaping @Sendable (ModelDownloadProgress) -> Void) async throws {
+    func download(
+        model: ModelIdentifier, to stagingURL: URL,
+        onProgress: @escaping @Sendable (ModelDownloadProgress) -> Void
+    ) async throws {
         try await downloader(model, stagingURL, onProgress)
     }
 
@@ -84,8 +97,9 @@ final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @u
 
     func quarantine(_ url: URL, reason: String) throws {
         let base = stagingRoot().appendingPathComponent("Quarantine", isDirectory: true)
-        try fm.createDirectory(at: base, withIntermediateDirectories: true,
-                               attributes: [.posixPermissions: 0o700])
+        try fm.createDirectory(
+            at: base, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
         let target = base.appendingPathComponent("\(url.lastPathComponent)-\(UUID().uuidString.prefix(8))")
         try fm.moveItem(at: url, to: target)
     }
@@ -103,8 +117,9 @@ final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @u
 
     func writeManifest(_ manifest: ModelManifest, for model: ModelIdentifier) throws {
         let dir = verifiedCacheRoot().appendingPathComponent(model.rawValue, isDirectory: true)
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true,
-                               attributes: [.posixPermissions: 0o700])
+        try fm.createDirectory(
+            at: dir, withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
         let url = dir.appendingPathComponent("manifest.json")
         let data = try JSONEncoder().encode(manifest)
         try data.write(to: url, options: .atomic)
@@ -113,7 +128,8 @@ final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @u
     /// Stale-lock detection: a lock older than the threshold (interrupted
     /// acquisition) is cleaned and re-acquired.
     func acquireLock(for model: ModelIdentifier) -> Bool {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         let key = model.rawValue
         let now = DispatchTime.now().uptimeNanoseconds
         if let existing = lockTimestamps[key] {
@@ -129,7 +145,8 @@ final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @u
     }
 
     func releaseLock(for model: ModelIdentifier) {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         lockTimestamps.removeValue(forKey: model.rawValue)
     }
 }
@@ -140,29 +157,33 @@ extension ProductionModelAcquisitionFileSystem {
     /// Downloads via WhisperKit (respecting consent), then stages the located
     /// model folder into the private staging path for verification+promotion.
     /// If a verified model already exists, staging is skipped by the caller.
-    static let whisperKitDownloader: @Sendable (ModelIdentifier, URL, @escaping @Sendable (ModelDownloadProgress) -> Void) async throws -> Void = { model, stagingURL, onProgress in
-        guard model.isWhisperKit else {
-            throw ModelAcquisitionError.modelNotWhisperKit
+    static let whisperKitDownloader:
+        @Sendable (ModelIdentifier, URL, @escaping @Sendable (ModelDownloadProgress) -> Void) async throws -> Void = {
+            model, stagingURL, onProgress in
+            guard model.isWhisperKit else {
+                throw ModelAcquisitionError.modelNotWhisperKit
+            }
+            // WhisperKit downloads into its own cache; we then copy the located
+            // folder into OUR staging area so verification/promotion is app-owned.
+            onProgress(ModelDownloadProgress(fraction: 0.05, bytesDownloaded: 0, bytesExpected: nil))
+            let engine = WhisperKitEngine()
+            try await engine.load(model: model, allowDownload: true)
+            onProgress(ModelDownloadProgress(fraction: 0.5, bytesDownloaded: 0, bytesExpected: nil))
+            guard let located = WhisperModelLocator.locate(model) else {
+                throw ModelAcquisitionError.downloadFailed("model not located after download")
+            }
+            let fm = FileManager.default
+            try fm.createDirectory(
+                at: stagingURL, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            // Stage a private copy (never a symlink into a third-party cache).
+            let items = try fm.contentsOfDirectory(
+                at: located,
+                includingPropertiesForKeys: nil)
+            for item in items {
+                let dest = stagingURL.appendingPathComponent(item.lastPathComponent)
+                try fm.copyItem(at: item, to: dest)
+            }
+            onProgress(ModelDownloadProgress(fraction: 1.0, bytesDownloaded: 0, bytesExpected: nil))
         }
-        // WhisperKit downloads into its own cache; we then copy the located
-        // folder into OUR staging area so verification/promotion is app-owned.
-        onProgress(ModelDownloadProgress(fraction: 0.05, bytesDownloaded: 0, bytesExpected: nil))
-        let engine = WhisperKitEngine()
-        try await engine.load(model: model, allowDownload: true)
-        onProgress(ModelDownloadProgress(fraction: 0.5, bytesDownloaded: 0, bytesExpected: nil))
-        guard let located = WhisperModelLocator.locate(model) else {
-            throw ModelAcquisitionError.downloadFailed("model not located after download")
-        }
-        let fm = FileManager.default
-        try fm.createDirectory(at: stagingURL, withIntermediateDirectories: true,
-                               attributes: [.posixPermissions: 0o700])
-        // Stage a private copy (never a symlink into a third-party cache).
-        let items = try fm.contentsOfDirectory(at: located,
-                                               includingPropertiesForKeys: nil)
-        for item in items {
-            let dest = stagingURL.appendingPathComponent(item.lastPathComponent)
-            try fm.copyItem(at: item, to: dest)
-        }
-        onProgress(ModelDownloadProgress(fraction: 1.0, bytesDownloaded: 0, bytesExpected: nil))
-    }
 }

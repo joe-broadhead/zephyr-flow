@@ -7,20 +7,20 @@ import Foundation
 
 /// Typed protected-token kind (content-free classification).
 public enum ProtectedTokenKind: String, Codable, CaseIterable, Sendable, Equatable {
-    case number          // signed/un-signed number (sign preserved)
-    case percent         // 10%
-    case currency        // $10, €5, £7
-    case unit            // 10 ms, 5 kg (number+unit association)
-    case version         // v1.2.3 / 1.2.3
-    case dateTime        // 2026-08-08, 14:30
-    case duration        // 2h30m, 90s
+    case number  // signed/un-signed number (sign preserved)
+    case percent  // 10%
+    case currency  // $10, €5, £7
+    case unit  // 10 ms, 5 kg (number+unit association)
+    case version  // v1.2.3 / 1.2.3
+    case dateTime  // 2026-08-08, 14:30
+    case duration  // 2h30m, 90s
     case url
     case email
     case path
     case code
     case quoted
-    case identifier      // issue/commit IDs e.g. JOE-2278, abc1234
-    case negation        // do not / never / must not / without / cannot ...
+    case identifier  // issue/commit IDs e.g. JOE-2278, abc1234
+    case negation  // do not / never / must not / without / cannot ...
 }
 
 /// One canonical protected token (multiset element; multiplicity preserved).
@@ -41,15 +41,15 @@ public enum FlowGuardrailsRejection: String, Codable, CaseIterable, Sendable, Eq
     case emptyOutput
     case preamble
     case extremeExpansion
-    case novelNumber               // output number not present in input
-    case droppedNumber             // input number missing from output
-    case signFlipped               // -5 became 5 (or vice versa)
-    case droppedMultiplicity       // repeated numbers collapsed
-    case droppedNegation           // do not/never/must/without removed/inverted
-    case droppedProtectedToken     // url/email/path/code/quoted/version/identifier omitted
-    case droppedPercent            // 10% association lost
-    case droppedCurrency           // $10 association lost
-    case droppedUnit               // 10 ms association lost
+    case novelNumber  // output number not present in input
+    case droppedNumber  // input number missing from output
+    case signFlipped  // -5 became 5 (or vice versa)
+    case droppedMultiplicity  // repeated numbers collapsed
+    case droppedNegation  // do not/never/must/without removed/inverted
+    case droppedProtectedToken  // url/email/path/code/quoted/version/identifier omitted
+    case droppedPercent  // 10% association lost
+    case droppedCurrency  // $10 association lost
+    case droppedUnit  // 10 ms association lost
 }
 
 /// Result of the guardrail gate.
@@ -64,9 +64,11 @@ public enum FlowGuardrails: Sendable {
         pattern: #"-?\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|-?\b\d+(?:\.\d+)?\b"#)
     private static let percentPattern = try! NSRegularExpression(pattern: #"-?\d+(?:\.\d+)?%"#)
     private static let currencyPattern = try! NSRegularExpression(pattern: #"[$€£¥]\s?-?\d+(?:\.\d+)?"#)
-    private static let unitPattern = try! NSRegularExpression(pattern: #"-?\d+(?:\.\d+)?\s?(?:ms|sec|min|hr|kg|mg|km|mm|GB|MB|KB|px|em|rem|s|m|g|h|cm|%)\b"#)
+    private static let unitPattern = try! NSRegularExpression(
+        pattern: #"-?\d+(?:\.\d+)?\s?(?:ms|sec|min|hr|kg|mg|km|mm|GB|MB|KB|px|em|rem|s|m|g|h|cm|%)\b"#)
     private static let versionPattern = try! NSRegularExpression(pattern: #"\bv\d+\.\d+(?:\.\d+)*\b|\b\d+\.\d+\.\d+\b"#)
-    private static let datePattern = try! NSRegularExpression(pattern: #"\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b"#)
+    private static let datePattern = try! NSRegularExpression(
+        pattern: #"\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}\b"#)
     private static let timePattern = try! NSRegularExpression(pattern: #"\b\d{1,2}:\d{2}(?::\d{2})?\b"#)
     private static let urlPattern = try? NSRegularExpression(pattern: #"https?://[^\s"'<>]+"#)
     private static let emailPattern = try? NSRegularExpression(pattern: #"[\w.+-]+@[\w-]+\.[\w.-]+"#)
@@ -89,7 +91,8 @@ public enum FlowGuardrails: Sendable {
     public static func canonicalizeNumber(_ raw: String) -> String {
         var n = raw.replacingOccurrences(of: ",", with: "")
         if let dot = n.firstIndex(of: "."),
-           n.suffix(from: n.index(after: dot)).allSatisfy({ $0 == "0" }) {
+            n.suffix(from: n.index(after: dot)).allSatisfy({ $0 == "0" })
+        {
             n = String(n[..<dot])
         }
         return n
@@ -102,10 +105,12 @@ public enum FlowGuardrails: Sendable {
         let ns = text as NSString
         let full = NSRange(location: 0, length: ns.length)
         var result: [ProtectedToken] = []
-        var covered = Set<Int>()   // start offsets covered by a broader token
+        var covered = Set<Int>()  // start offsets covered by a broader token
 
-        func addMatches(_ pattern: NSRegularExpression, kind: ProtectedTokenKind,
-                        canonicalize: (String) -> String = { $0 }) {
+        func addMatches(
+            _ pattern: NSRegularExpression, kind: ProtectedTokenKind,
+            canonicalize: (String) -> String = { $0 }
+        ) {
             pattern.enumerateMatches(in: text, range: full) { m, _, _ in
                 guard let m else { return }
                 if covered.contains(m.range.location) { return }
@@ -146,8 +151,10 @@ public enum FlowGuardrails: Sendable {
         let lower = text.lowercased()
         for word in negationWords {
             if lower.range(of: word) != nil {
-                result.append(ProtectedToken(kind: .negation,
-                                             canonical: canonicalNegation(word)))
+                result.append(
+                    ProtectedToken(
+                        kind: .negation,
+                        canonical: canonicalNegation(word)))
             }
         }
         return result
@@ -178,8 +185,10 @@ public enum FlowGuardrails: Sendable {
     }
 
     /// True when every input token (with multiplicity) appears in output.
-    public static func inputCovered(input: [ProtectedToken],
-                                     output: [ProtectedToken]) -> (ok: Bool, missing: [ProtectedToken]) {
+    public static func inputCovered(
+        input: [ProtectedToken],
+        output: [ProtectedToken]
+    ) -> (ok: Bool, missing: [ProtectedToken]) {
         let outSet = multiset(output)
         var missing: [ProtectedToken] = []
         for (token, count) in multiset(input) {
@@ -193,8 +202,10 @@ public enum FlowGuardrails: Sendable {
 
     /// Guard gate. Returns approved output or a rejected result carrying the
     /// controlled reason + approved conservative fallback.
-    public static func evaluate(input: String, output: String,
-                                conservativeFallback: String) -> FlowGuardrailsResult {
+    public static func evaluate(
+        input: String, output: String,
+        conservativeFallback: String
+    ) -> FlowGuardrailsResult {
         let inTrim = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let outTrim = output.trimmingCharacters(in: .whitespacesAndNewlines)
 

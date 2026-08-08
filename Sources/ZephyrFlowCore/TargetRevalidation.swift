@@ -9,10 +9,10 @@ import Foundation
 // sleeps with a bounded, observable poll loop.
 
 /// Strictness ordinal used for "most restrictive sensitivity wins".
-public extension SessionSensitivity {
+extension SessionSensitivity {
     /// normal=0 < secure=1 < unknown=2. Unknown is the most restrictive
     /// (fail-closed) because no evidence exists to permit side effects.
-    var strictness: Int {
+    public var strictness: Int {
         switch self {
         case .normal: return 0
         case .secure: return 1
@@ -20,7 +20,7 @@ public extension SessionSensitivity {
         }
     }
 
-    static func mostRestrictive(_ a: SessionSensitivity, _ b: SessionSensitivity) -> SessionSensitivity {
+    public static func mostRestrictive(_ a: SessionSensitivity, _ b: SessionSensitivity) -> SessionSensitivity {
         a.strictness >= b.strictness ? a : b
     }
 }
@@ -68,16 +68,18 @@ public struct TargetValidationContext: Sendable, Equatable {
     /// Continuous-clock instant of this observation.
     public let nowNanos: UInt64
 
-    public init(pid: Int32,
-                bundleID: String?,
-                processStartUptimeNanos: UInt64?,
-                windowID: UInt32?,
-                element: TargetSnapshot.ElementIdentity?,
-                settable: Bool,
-                editable: Bool,
-                enabled: Bool,
-                sensitivity: SensitivityAssessment,
-                nowNanos: UInt64) {
+    public init(
+        pid: Int32,
+        bundleID: String?,
+        processStartUptimeNanos: UInt64?,
+        windowID: UInt32?,
+        element: TargetSnapshot.ElementIdentity?,
+        settable: Bool,
+        editable: Bool,
+        enabled: Bool,
+        sensitivity: SensitivityAssessment,
+        nowNanos: UInt64
+    ) {
         self.pid = pid
         self.bundleID = bundleID
         self.processStartUptimeNanos = processStartUptimeNanos
@@ -92,11 +94,12 @@ public struct TargetValidationContext: Sendable, Equatable {
 
     /// The empty (no AX evidence) context used when the re-resolution fails.
     public static func noAxEvidence(nowNanos: UInt64) -> TargetValidationContext {
-        TargetValidationContext(pid: -1, bundleID: nil, processStartUptimeNanos: nil,
-                                windowID: nil, element: nil, settable: false,
-                                editable: false, enabled: false,
-                                sensitivity: SensitivityAssessment.unknown,
-                                nowNanos: nowNanos)
+        TargetValidationContext(
+            pid: -1, bundleID: nil, processStartUptimeNanos: nil,
+            windowID: nil, element: nil, settable: false,
+            editable: false, enabled: false,
+            sensitivity: SensitivityAssessment.unknown,
+            nowNanos: nowNanos)
     }
 }
 
@@ -237,13 +240,15 @@ public struct TargetValidationSession: Sendable, Equatable {
         if context.pid != snapshot.target.pid {
             // PID reuse detection: process start identity changed.
             if let snapshotStart = snapshot.target.processStartUptimeNanos,
-               let currentStart = context.processStartUptimeNanos,
-               snapshotStart != currentStart {
+                let currentStart = context.processStartUptimeNanos,
+                snapshotStart != currentStart
+            {
                 outcome = .targetGone
                 reason = .pidReused
             } else if let snapshotBundle = snapshot.target.bundleID,
-                      let currentBundle = context.bundleID,
-                      snapshotBundle != currentBundle {
+                let currentBundle = context.bundleID,
+                snapshotBundle != currentBundle
+            {
                 outcome = .targetChanged
                 reason = .bundleChanged
             } else {
@@ -255,8 +260,9 @@ public struct TargetValidationSession: Sendable, Equatable {
 
         // PID reuse: same pid but different process start-time identity.
         if let snapshotStart = snapshot.target.processStartUptimeNanos,
-           let currentStart = context.processStartUptimeNanos,
-           snapshotStart != currentStart {
+            let currentStart = context.processStartUptimeNanos,
+            snapshotStart != currentStart
+        {
             outcome = .targetGone
             reason = .pidReused
             return outcome!
@@ -264,8 +270,9 @@ public struct TargetValidationSession: Sendable, Equatable {
 
         // Window identity.
         if let snapshotWindow = snapshot.target.windowID,
-           let currentWindow = context.windowID,
-           snapshotWindow != currentWindow {
+            let currentWindow = context.windowID,
+            snapshotWindow != currentWindow
+        {
             outcome = .targetChanged
             reason = .windowReplaced
             return outcome!
@@ -274,14 +281,16 @@ public struct TargetValidationSession: Sendable, Equatable {
         // Element identity (only when both sides expose it).
         if let snapshotElement = snapshot.element, let currentElement = context.element {
             if let snapToken = snapshotElement.resolutionToken,
-               let currentToken = currentElement.resolutionToken,
-               snapToken != currentToken {
+                let currentToken = currentElement.resolutionToken,
+                snapToken != currentToken
+            {
                 outcome = .targetChanged
                 reason = .elementReplaced
                 return outcome!
             }
             if snapshotElement.role != currentElement.role
-                || snapshotElement.subrole != currentElement.subrole {
+                || snapshotElement.subrole != currentElement.subrole
+            {
                 outcome = .targetChanged
                 reason = .focusSwitched
                 return outcome!

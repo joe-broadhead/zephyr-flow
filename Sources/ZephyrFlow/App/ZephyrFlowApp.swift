@@ -1,6 +1,6 @@
-import SwiftUI
 import AppKit
 import ApplicationServices
+import SwiftUI
 import ZephyrFlowCore
 
 @main
@@ -76,7 +76,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Poll stage file for next surface
         Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { timer in
             Task { @MainActor in
-                let stage = (try? String(contentsOf: stageURL)).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+                let stage =
+                    (try? String(contentsOf: stageURL)).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
                 switch stage {
                 case "settings":
                     WindowRouter.closeOnboarding()
@@ -91,7 +92,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     DictationController.shared.clearDemoPanelForScreenshot()
                     WindowRouter.closeOnboarding()
                     // Leave settings closed for a clean quit
-                    NSApp.windows.filter { $0.title.contains("Settings") }.forEach { $0.close() }
+                    for window in NSApp.windows where window.title.contains("Settings") {
+                        window.close()
+                    }
                 default:
                     break
                 }

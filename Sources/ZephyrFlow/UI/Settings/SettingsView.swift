@@ -1,7 +1,7 @@
-import SwiftUI
-import ServiceManagement
 import AppKit
 import CoreGraphics
+import ServiceManagement
+import SwiftUI
 import ZephyrFlowCore
 
 struct SettingsView: View {
@@ -119,9 +119,11 @@ struct SettingsView: View {
                         Text(lang.displayName).tag(lang)
                     }
                 }
-                Text("Auto-detect uses the engine's detection. Fixed languages are preflighted for on-device support before capture (Local Only never falls back to network).")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Auto-detect uses the engine's detection. Fixed languages are preflighted for on-device support before capture (Local Only never falls back to network)."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 if controller.isModelLoading {
                     ProgressView("Loading model…")
                 }
@@ -173,15 +175,19 @@ struct SettingsView: View {
                     controller.reloadHotkey()
                 }
 
-                Text("Hold the key to talk (or toggle, depending on mode). Release to insert polished text at your cursor.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Hold the key to talk (or toggle, depending on mode). Release to insert polished text at your cursor."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
 
             Section("Tips") {
-                Text("Fn works like Wispr Flow: hold to talk, release to insert. ZephyrFlow sets the Globe key action to “Do Nothing” while running so the emoji picker doesn’t steal the key. If Fn still misbehaves, use **Right Option** instead.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Fn works like Wispr Flow: hold to talk, release to insert. ZephyrFlow sets the Globe key action to “Do Nothing” while running so the emoji picker doesn’t steal the key. If Fn still misbehaves, use **Right Option** instead."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
                 Text("Requires Accessibility permission. After enabling it, quit and reopen ZephyrFlow.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -225,9 +231,11 @@ struct SettingsView: View {
 
             Section {
                 if settings.settings.allowModelDownloads {
-                    Text("Default is Whisper Tiny. Models download once and run on-device. Status reflects local cache.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    Text(
+                        "Default is Whisper Tiny. Models download once and run on-device. Status reflects local cache."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                 } else {
                     Text("Model downloads are off — Whisper needs a cached model, or pick Apple Speech.")
                         .font(.callout)
@@ -251,9 +259,11 @@ struct SettingsView: View {
                         Text(backend.displayName).tag(backend)
                     }
                 }
-                Text("Classic is instant regex (default). Enhanced adds extra on-device rule cleanup for Professional / Bullets / Summary (not a language model). Clean and Raw always stay Classic.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Classic is instant regex (default). Enhanced adds extra on-device rule cleanup for Professional / Bullets / Summary (not a language model). Clean and Raw always stay Classic."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
             Section("Default style") {
                 Picker("Style", selection: binding(\.defaultFlowStyle)) {
@@ -273,14 +283,18 @@ struct SettingsView: View {
         Form {
             Section("Local Only") {
                 Toggle("Local Only mode", isOn: binding(\.localOnlyMode))
-                Text("Default on. Your voice and transcripts stay on this Mac (no analytics). Optional Whisper model downloads are separate.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Default on. Your voice and transcripts stay on this Mac (no analytics). Optional Whisper model downloads are separate."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
 
                 Toggle("Allow Whisper model downloads", isOn: binding(\.allowModelDownloads))
-                Text("One-time model file download only (default on for Whisper Tiny). Never uploads your audio. Files stay in Application Support and run on-device.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "One-time model file download only (default on for Whisper Tiny). Never uploads your audio. Files stay in Application Support and run on-device."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
 
             Section("Permissions") {
@@ -301,9 +315,11 @@ struct SettingsView: View {
                 // JOE-2262: honest defense-in-depth wording — encrypted at
                 // rest with a per-installation Keychain key; metadata (id,
                 // timestamp, model) remains visible for the list UI.
-                Text("When on, recent dictations are stored locally in Application Support, encrypted at rest (AES-256-GCM) with a per-installation Keychain key. Metadata for the list UI stays visible; transcript bodies are sealed. This is app-level protection, not a substitute for FileVault.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "When on, recent dictations are stored locally in Application Support, encrypted at rest (AES-256-GCM) with a per-installation Keychain key. Metadata for the list UI stays visible; transcript bodies are sealed. This is app-level protection, not a substitute for FileVault."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
                 Button("Clear local history", role: .destructive) {
                     history.clear()
                 }
@@ -323,9 +339,11 @@ struct SettingsView: View {
             }
 
             Section("Audit") {
-                Text("No analytics, telemetry, or crash reporter. Diagnostic logs record lengths and events only — never transcript text.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "No analytics, telemetry, or crash reporter. Diagnostic logs record lengths and events only — never transcript text."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -430,10 +448,11 @@ struct SettingsView: View {
                                 Text("Check for Updates")
                             }
                         }
-                        .disabled({
-                            if case .checking = updates.status { return true }
-                            return false
-                        }())
+                        .disabled(
+                            {
+                                if case .checking = updates.status { return true }
+                                return false
+                            }())
 
                         if case .updateAvailable = updates.status {
                             Button("Download") {
@@ -458,10 +477,12 @@ struct SettingsView: View {
             Link("Report an Issue", destination: URL(string: "https://github.com/joe-broadhead/zephyr-flow/issues")!)
             Link("All Releases", destination: ZephyrFlowConstants.releasesURL)
 
-            Text("Built for privacy-conscious knowledge workers and developers. Whisper Tiny on-device after a one-time model download; Local Only keeps your audio here.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .padding(.top, 8)
+            Text(
+                "Built for privacy-conscious knowledge workers and developers. Whisper Tiny on-device after a one-time model download; Local Only keeps your audio here."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .padding(.top, 8)
 
             Spacer()
         }
@@ -478,7 +499,8 @@ struct SettingsView: View {
             return "You’re on the latest version (\(current))."
         case .updateAvailable(let latest, let notes, _, _):
             if let notes, !notes.isEmpty {
-                let preview = notes
+                let preview =
+                    notes
                     .components(separatedBy: .newlines)
                     .prefix(4)
                     .joined(separator: "\n")
@@ -589,7 +611,8 @@ struct SettingsView: View {
                 // Failed: settings JSON keeps the VERIFIED system state.
                 let status = LaunchAtLoginService.shared.authoritativeStatus()
                 settings.update { $0.launchAtLogin = (status == .registered) }
-                launchLoginError = LaunchAtLoginService.shared.availabilityMessage()
+                launchLoginError =
+                    LaunchAtLoginService.shared.availabilityMessage()
                     ?? "Could not change Launch at Login. Open Login Items settings to fix."
             default:
                 break
@@ -617,11 +640,13 @@ struct SettingsView: View {
                     return .fn
                 case .none:
                     if settings.settings.hotkey.keyCode == 49,
-                       settings.settings.hotkey.modifiers == CGEventFlags.maskControl.rawValue {
+                        settings.settings.hotkey.modifiers == CGEventFlags.maskControl.rawValue
+                    {
                         return .controlSpace
                     }
                     if settings.settings.hotkey.keyCode == 49,
-                       settings.settings.hotkey.modifiers == CGEventFlags.maskAlternate.rawValue {
+                        settings.settings.hotkey.modifiers == CGEventFlags.maskAlternate.rawValue
+                    {
                         return .optionSpace
                     }
                     return .fn
@@ -635,7 +660,8 @@ struct SettingsView: View {
                 case .rightOption:
                     config = .rightOption
                 case .rightCommand:
-                    config = HotkeyConfig(keyCode: nil, modifiers: 0, displayName: "Right Command (⌘)", specialKey: .rightCommand)
+                    config = HotkeyConfig(
+                        keyCode: nil, modifiers: 0, displayName: "Right Command (⌘)", specialKey: .rightCommand)
                 case .controlSpace:
                     config = HotkeyConfig(
                         keyCode: 49,

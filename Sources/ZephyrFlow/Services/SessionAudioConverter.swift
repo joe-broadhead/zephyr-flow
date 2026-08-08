@@ -1,5 +1,5 @@
-import Foundation
 import AVFoundation
+import Foundation
 import ZephyrFlowCore
 
 /// Exactly-one consumer-side PCM conversion (JOE-2247). A session owns one
@@ -16,15 +16,19 @@ final class SessionAudioConverter {
     func convert(_ chunk: AudioChunk) -> [Float]? {
         let sourceKey = "\(chunk.sampleRate)/\(chunk.channelCount)"
         if lastFormatKey != sourceKey || converter == nil {
-            guard let source = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                             sampleRate: chunk.sampleRate,
-                                             channels: AVAudioChannelCount(chunk.channelCount),
-                                             interleaved: false),
-                  let target = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                             sampleRate: Self.targetSampleRate,
-                                             channels: 1,
-                                             interleaved: false),
-                  let newConverter = AVAudioConverter(from: source, to: target) else {
+            guard
+                let source = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: chunk.sampleRate,
+                    channels: AVAudioChannelCount(chunk.channelCount),
+                    interleaved: false),
+                let target = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: Self.targetSampleRate,
+                    channels: 1,
+                    interleaved: false),
+                let newConverter = AVAudioConverter(from: source, to: target)
+            else {
                 return nil
             }
             converter = newConverter
@@ -38,11 +42,13 @@ final class SessionAudioConverter {
         let channels = Int32(chunk.channelCount)
         let frames = chunk.samples.count / Int(max(channels, 1))
         guard frames > 0,
-              let source = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                         sampleRate: chunk.sampleRate,
-                                         channels: AVAudioChannelCount(chunk.channelCount),
-                                         interleaved: false),
-              let inBuf = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: AVAudioFrameCount(frames)) else {
+            let source = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: chunk.sampleRate,
+                channels: AVAudioChannelCount(chunk.channelCount),
+                interleaved: false),
+            let inBuf = AVAudioPCMBuffer(pcmFormat: source, frameCapacity: AVAudioFrameCount(frames))
+        else {
             return nil
         }
         inBuf.frameLength = AVAudioFrameCount(frames)
@@ -56,11 +62,15 @@ final class SessionAudioConverter {
 
         let ratio = Self.targetSampleRate / chunk.sampleRate
         let capacity = AVAudioFrameCount(Double(frames) * ratio) + 32
-        guard let outBuf = AVAudioPCMBuffer(pcmFormat: AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                                                     sampleRate: Self.targetSampleRate,
-                                                                     channels: 1,
-                                                                     interleaved: false)!,
-                                            frameCapacity: capacity) else { return nil }
+        guard
+            let outBuf = AVAudioPCMBuffer(
+                pcmFormat: AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: Self.targetSampleRate,
+                    channels: 1,
+                    interleaved: false)!,
+                frameCapacity: capacity)
+        else { return nil }
 
         var error: NSError?
         var consumed = false
@@ -74,7 +84,8 @@ final class SessionAudioConverter {
             return inBuf
         }
         guard status != .error, outBuf.frameLength > 0,
-              let channel = outBuf.floatChannelData?[0] else { return nil }
+            let channel = outBuf.floatChannelData?[0]
+        else { return nil }
         return Array(UnsafeBufferPointer(start: channel, count: Int(outBuf.frameLength)))
     }
 }

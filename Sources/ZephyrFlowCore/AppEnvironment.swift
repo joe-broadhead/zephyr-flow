@@ -79,8 +79,10 @@ public protocol PermissionProviding: Sendable {
 public protocol TargetValidationProviding: Sendable {
     func captureSnapshot(sessionID: SessionID, nowNanos: UInt64) -> TargetSnapshot?
     func currentContext(nowNanos: UInt64) -> TargetValidationContext?
-    func restoreToCapturedTarget(snapshot: TargetSnapshot,
-                                 deadlineNanosAhead: UInt64) async -> TargetRestoreMonitor
+    func restoreToCapturedTarget(
+        snapshot: TargetSnapshot,
+        deadlineNanosAhead: UInt64
+    ) async -> TargetRestoreMonitor
 }
 
 // MARK: - Deterministic fakes (tests)
@@ -100,7 +102,7 @@ public final class FakeSleeper: Sleeper, @unchecked Sendable {
     public var sleeps: [UInt64] { lock.withLock { _sleeps } }
     public init() {}
     public func sleep(nanoseconds: UInt64) async {
-        lock.lock(); _sleeps.append(nanoseconds); lock.unlock()
+        lock.withLock { _sleeps.append(nanoseconds) }
     }
 }
 
@@ -109,7 +111,8 @@ public final class FakeIDGenerator: IDGenerating, @unchecked Sendable {
     private var _counter: UInt64 = 1
     public init() {}
     public func next() -> UInt64 {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         defer { _counter &+= 1 }
         return _counter
     }
@@ -161,17 +164,19 @@ public struct AppEnvironment: Sendable {
     public let insertion: any InsertionServiceProtocol
     public let targetValidation: any TargetValidationProviding
 
-    public init(clock: any ClockProviding,
-                sleeper: any Sleeper,
-                idGenerator: any IDGenerating,
-                metrics: any MetricsSinking,
-                settings: any SettingsRepository,
-                history: any HistoryRepository,
-                permissions: any PermissionProviding,
-                engines: EngineRegistry,
-                flow: any FlowProcessorProtocol,
-                insertion: any InsertionServiceProtocol,
-                targetValidation: any TargetValidationProviding) {
+    public init(
+        clock: any ClockProviding,
+        sleeper: any Sleeper,
+        idGenerator: any IDGenerating,
+        metrics: any MetricsSinking,
+        settings: any SettingsRepository,
+        history: any HistoryRepository,
+        permissions: any PermissionProviding,
+        engines: EngineRegistry,
+        flow: any FlowProcessorProtocol,
+        insertion: any InsertionServiceProtocol,
+        targetValidation: any TargetValidationProviding
+    ) {
         self.clock = clock
         self.sleeper = sleeper
         self.idGenerator = idGenerator
@@ -186,12 +191,14 @@ public struct AppEnvironment: Sendable {
     }
 
     /// Fully deterministic test environment (no real I/O or wall clock).
-    public static func test(clock: FakeClock = FakeClock(),
-                            settings: AppSettings = .default,
-                            engine: (any WhisperEngineProtocol)? = nil,
-                            flow: any FlowProcessorProtocol = FlowProcessor.shared,
-                            insertion: (any InsertionServiceProtocol)? = nil,
-                            target: (any TargetValidationProviding)? = nil) -> AppEnvironment {
+    public static func test(
+        clock: FakeClock = FakeClock(),
+        settings: AppSettings = .default,
+        engine: (any WhisperEngineProtocol)? = nil,
+        flow: any FlowProcessorProtocol = FlowProcessor.shared,
+        insertion: (any InsertionServiceProtocol)? = nil,
+        target: (any TargetValidationProviding)? = nil
+    ) -> AppEnvironment {
         AppEnvironment(
             clock: clock,
             sleeper: FakeSleeper(),
@@ -200,8 +207,9 @@ public struct AppEnvironment: Sendable {
             settings: StaticSettingsRepository(settings),
             history: InMemoryHistoryRepository(),
             permissions: FakePermissionProvider(),
-            engines: EngineRegistry(whisper: engine ?? FakeWhisperEngine(),
-                                    appleSpeech: nil),
+            engines: EngineRegistry(
+                whisper: engine ?? FakeWhisperEngine(),
+                appleSpeech: nil),
             flow: flow,
             insertion: insertion ?? FakeInsertionService(),
             targetValidation: target ?? FakeTargetValidation())
@@ -215,8 +223,10 @@ public struct EngineRegistry: Sendable {
     public let whisper: (any WhisperEngineProtocol)?
     public let appleSpeech: (any WhisperEngineProtocol)?
 
-    public init(whisper: (any WhisperEngineProtocol)?,
-                appleSpeech: (any WhisperEngineProtocol)?) {
+    public init(
+        whisper: (any WhisperEngineProtocol)?,
+        appleSpeech: (any WhisperEngineProtocol)?
+    ) {
         self.whisper = whisper
         self.appleSpeech = appleSpeech
     }
@@ -235,27 +245,32 @@ public actor FakeWhisperEngine: WhisperEngineProtocol {
     public init() {}
 
     public func load(model: ModelIdentifier) async throws {}
-    public func startStreaming(sessionID: SessionID, localOnly: Bool,
-                               language: SupportedLanguage,
-                               onPartial: @escaping @Sendable (PartialTranscription) -> Void) async throws {
+    public func startStreaming(
+        sessionID: SessionID, localOnly: Bool,
+        language: SupportedLanguage,
+        onPartial: @escaping @Sendable (PartialTranscription) -> Void
+    ) async throws {
         partial = onPartial
     }
     public func appendAudio(_ samples: [Float]) async { appended.append(contentsOf: samples) }
     public func stopAndFinalize() async throws -> EngineResult {
-        EngineResult(text: finalText,
-                     completeness: .complete,
-                     frameAccounting: EngineFrameAccounting(capturedSourceSamples: 0,
-                                                            deliveredEngineSamples: 0,
-                                                            decodedEngineSamples: 0,
-                                                            droppedSourceSamples: 0),
-                     engine: EngineIdentity(kind: .whisper, modelName: modelName,
-                                            modelVersion: nil, modelDigest: nil),
-                     languageRequested: nil, languageDetected: nil,
-                     confidence: 1.0, confidenceSource: "fake",
-                     startedAtUptimeNanos: 0, endedAtUptimeNanos: 1,
-                     inferenceDurationNanos: 1,
-                     warnings: [], fallbackReason: nil,
-                     termination: .completed)
+        EngineResult(
+            text: finalText,
+            completeness: .complete,
+            frameAccounting: EngineFrameAccounting(
+                capturedSourceSamples: 0,
+                deliveredEngineSamples: 0,
+                decodedEngineSamples: 0,
+                droppedSourceSamples: 0),
+            engine: EngineIdentity(
+                kind: .whisper, modelName: modelName,
+                modelVersion: nil, modelDigest: nil),
+            languageRequested: nil, languageDetected: nil,
+            confidence: 1.0, confidenceSource: "fake",
+            startedAtUptimeNanos: 0, endedAtUptimeNanos: 1,
+            inferenceDurationNanos: 1,
+            warnings: [], fallbackReason: nil,
+            termination: .completed)
     }
     public func cancel() async {}
 }
@@ -266,8 +281,9 @@ public actor FakeInsertionService: InsertionServiceProtocol {
     public init() {}
     public func insert(_ text: String) async -> InsertionOutcome {
         insertedText = text
-        return .verifiedInserted(strategy: .axSelectedText,
-                                 evidence: .postWriteSelectionReRead, warnings: [])
+        return .verifiedInserted(
+            strategy: .axSelectedText,
+            evidence: .postWriteSelectionReRead, warnings: [])
     }
 }
 
@@ -275,15 +291,19 @@ public actor FakeInsertionService: InsertionServiceProtocol {
 public struct FakeTargetValidation: TargetValidationProviding {
     public let snapshot: TargetSnapshot?
     public let context: TargetValidationContext?
-    public init(snapshot: TargetSnapshot? = nil,
-                context: TargetValidationContext? = nil) {
+    public init(
+        snapshot: TargetSnapshot? = nil,
+        context: TargetValidationContext? = nil
+    ) {
         self.snapshot = snapshot
         self.context = context
     }
     public func captureSnapshot(sessionID: SessionID, nowNanos: UInt64) -> TargetSnapshot? { snapshot }
     public func currentContext(nowNanos: UInt64) -> TargetValidationContext? { context }
-    public func restoreToCapturedTarget(snapshot: TargetSnapshot,
-                                        deadlineNanosAhead: UInt64) async -> TargetRestoreMonitor {
+    public func restoreToCapturedTarget(
+        snapshot: TargetSnapshot,
+        deadlineNanosAhead: UInt64
+    ) async -> TargetRestoreMonitor {
         var monitor = TargetRestoreMonitor(deadlineNanosAhead: deadlineNanosAhead)
         monitor.start(nowNanos: 0)
         return monitor

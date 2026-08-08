@@ -72,7 +72,9 @@ enum WindowRouter {
         onboardingWindow = nil
         // Drop back to menu-bar accessory when no other key windows need us
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            let hasKeyUI = NSApp.windows.contains { $0.isVisible && $0 != onboardingWindow && $0.title != "" && !($0 is NSPanel) }
+            let hasKeyUI = NSApp.windows.contains {
+                $0.isVisible && $0 != onboardingWindow && $0.title != "" && !($0 is NSPanel)
+            }
             if !hasKeyUI {
                 NSApp.setActivationPolicy(.accessory)
             }

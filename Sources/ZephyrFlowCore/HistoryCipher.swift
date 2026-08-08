@@ -1,5 +1,5 @@
-import Foundation
 import CryptoKit
+import Foundation
 
 // JOE-2262: defense-in-depth at-rest encryption for opted-in history.
 // Authenticated modern construction (AES-256-GCM via CryptoKit). Metadata
@@ -33,9 +33,11 @@ public struct HistoryEncryptedPayload: Codable, Sendable, Equatable {
     public let ciphertext: Data
     public let authTag: Data
 
-    public init(version: Int = HistoryEncryptedPayload.currentVersion,
-                cipher: String = HistoryEncryptedPayload.cipherName,
-                keyID: String, nonce: Data, ciphertext: Data, authTag: Data) {
+    public init(
+        version: Int = HistoryEncryptedPayload.currentVersion,
+        cipher: String = HistoryEncryptedPayload.cipherName,
+        keyID: String, nonce: Data, ciphertext: Data, authTag: Data
+    ) {
         self.version = version
         self.cipher = cipher
         self.keyID = keyID
@@ -62,11 +64,13 @@ public struct HistoryCipherEngine: Sendable {
 
     private let randomNonce: @Sendable () -> Data
 
-    public init(randomNonce: @escaping @Sendable () -> Data = {
-        var bytes = [UInt8](repeating: 0, count: 12)
-        for i in bytes.indices { bytes[i] = UInt8.random(in: 0...255) }
-        return Data(bytes)
-    }) {
+    public init(
+        randomNonce: @escaping @Sendable () -> Data = {
+            var bytes = [UInt8](repeating: 0, count: 12)
+            for i in bytes.indices { bytes[i] = UInt8.random(in: 0...255) }
+            return Data(bytes)
+        }
+    ) {
         self.randomNonce = randomNonce
     }
 
@@ -89,15 +93,18 @@ public struct HistoryCipherEngine: Sendable {
 
     /// Returns nil on ANY authentication failure (wrong/missing key, tamper)
     /// — never partial plaintext.
-    public func decrypt(_ payload: HistoryEncryptedPayload,
-                        key: HistoryCryptoKey) -> Data? {
+    public func decrypt(
+        _ payload: HistoryEncryptedPayload,
+        key: HistoryCryptoKey
+    ) -> Data? {
         guard payload.version == HistoryEncryptedPayload.currentVersion else { return nil }
         guard payload.keyID == key.keyID else { return nil }
         guard let symKey = try? makeKey(key) else { return nil }
         guard let nonce = try? AES.GCM.Nonce(data: payload.nonce) else { return nil }
-        let sealed = try? AES.GCM.SealedBox(nonce: nonce,
-                                            ciphertext: payload.ciphertext,
-                                            tag: payload.authTag)
+        let sealed = try? AES.GCM.SealedBox(
+            nonce: nonce,
+            ciphertext: payload.ciphertext,
+            tag: payload.authTag)
         guard let sealed else { return nil }
         return try? AES.GCM.open(sealed, using: symKey)
     }
@@ -123,9 +130,11 @@ public struct EncryptedHistoryDocument: Codable, Sendable, Equatable {
     /// Sealed payload of the full serialized entry list (single nonce/iv).
     public let payload: HistoryEncryptedPayload
 
-    public init(encryptionVersion: Int = HistoryEncryptedPayload.currentVersion,
-                cipher: String = HistoryEncryptedPayload.cipherName,
-                keyID: String, payload: HistoryEncryptedPayload) {
+    public init(
+        encryptionVersion: Int = HistoryEncryptedPayload.currentVersion,
+        cipher: String = HistoryEncryptedPayload.cipherName,
+        keyID: String, payload: HistoryEncryptedPayload
+    ) {
         self.schemaVersion = Self.schemaVersion
         self.encryptionVersion = encryptionVersion
         self.cipher = cipher
@@ -138,24 +147,29 @@ public struct EncryptedHistoryDocument: Codable, Sendable, Equatable {
 
 public enum HistoryEncryptionMigration: Sendable {
     /// Encrypt a plaintext document into an EncryptedHistoryDocument.
-    public static func encrypt(document: HistoryDocument,
-                               key: HistoryCryptoKey,
-                               engine: HistoryCipherEngine = .shared) throws -> EncryptedHistoryDocument {
+    public static func encrypt(
+        document: HistoryDocument,
+        key: HistoryCryptoKey,
+        engine: HistoryCipherEngine = .shared
+    ) throws -> EncryptedHistoryDocument {
         let entriesData = try JSONEncoder().encode(document.entries)
         let payload = try engine.encrypt(plaintext: entriesData, key: key)
         return EncryptedHistoryDocument(keyID: key.keyID, payload: payload)
     }
 
     /// Decrypt an EncryptedHistoryDocument; nil on auth failure.
-    public static func decrypt(document: EncryptedHistoryDocument,
-                               key: HistoryCryptoKey,
-                               engine: HistoryCipherEngine = .shared) -> HistoryDocument? {
+    public static func decrypt(
+        document: EncryptedHistoryDocument,
+        key: HistoryCryptoKey,
+        engine: HistoryCipherEngine = .shared
+    ) -> HistoryDocument? {
         guard let data = engine.decrypt(document.payload, key: key) else { return nil }
         guard let entries = try? JSONDecoder().decode([HistoryStorageEntry].self, from: data) else {
             return nil
         }
-        return HistoryDocument(schemaVersion: HistoryDocument.currentSchemaVersion,
-                               entries: entries)
+        return HistoryDocument(
+            schemaVersion: HistoryDocument.currentSchemaVersion,
+            entries: entries)
     }
 
     /// Visible metadata of an encrypted document (documented plaintext).

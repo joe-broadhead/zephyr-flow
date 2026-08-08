@@ -8,7 +8,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "ZephyrFlow", targets: ["ZephyrFlow"]),
-        .library(name: "ZephyrFlowCore", targets: ["ZephyrFlowCore"])
+        .library(name: "ZephyrFlowCore", targets: ["ZephyrFlowCore"]),
     ],
     dependencies: [
         // Pin to current major line used in Package.resolved (avoid silent major drift).
@@ -26,7 +26,7 @@ let package = Package(
             name: "ZephyrFlow",
             dependencies: [
                 "ZephyrFlowCore",
-                .product(name: "WhisperKit", package: "WhisperKit")
+                .product(name: "WhisperKit", package: "WhisperKit"),
             ],
             path: "Sources/ZephyrFlow"
         ),
@@ -40,6 +40,6 @@ let package = Package(
             name: "ZephyrFlowCoreTests",
             dependencies: ["ZephyrFlowCore"],
             path: "Tests/ZephyrFlowCoreTests"
-        )
+        ),
     ]
 )
