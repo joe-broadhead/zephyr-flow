@@ -589,12 +589,24 @@
     "JOE-2255"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (13 JOE-2256 checks: A->B->A current, stale superseded, no overwrite, session-start guard, cancel, monotonic ids, settings snapshot, out-of-order matrix)",
+    "swift build: pass",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/ModelSelection.swift",
+    "Sources/ZephyrFlow/Services/ModelReadinessStore.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2256/REPORT.md"
+   ],
+   "remaining_action": "Rapid model switching in the running app with a real engine load \u2014 human-gate runbook."
   },
   {
    "id": "JOE-2257",

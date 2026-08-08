@@ -3378,6 +3378,93 @@ struct CoreTests {
             check("2262 key bytes absent from file", !raw10.contains(keyHex))
         }
 
+        // ===== JOE-2256: generation-safe model selection =====
+        do {
+            func sel(_ allow: Bool = true, _ local: Bool = false) -> ModelSelectionTracker.ModelSelectionSettings {
+                .init(allowModelDownloads: allow, localOnlyMode: local)
+            }
+            var t = ModelSelectionTracker()
+
+            // 1. Rapid A->B->A: only the LAST request is current.
+            let a1 = t.submit(model: .whisperTiny, settings: sel())
+            let b1 = t.submit(model: .whisperBase, settings: sel())
+            let a2 = t.submit(model: .whisperTiny, settings: sel())
+            check("2256 A->B->A last is current", t.isCurrent(a2) && !t.isCurrent(a1) && !t.isCurrent(b1))
+            check("2256 current model is A", t.currentModel == .whisperTiny)
+
+            // 2. Stale completions are typed superseded; current state intact.
+            var outcomeA = t.acceptCompletion(requestID: a1, model: .whisperTiny,
+                                              outcome: .failed(model: .whisperTiny, message: "boom"))
+            check("2256 stale A completion superseded",
+                  outcomeA == .superseded(model: .whisperTiny, byRequestID: a2))
+            var outcomeB = t.acceptCompletion(requestID: b1, model: .whisperBase,
+                                              outcome: .ready(model: .whisperBase))
+            check("2256 stale B completion superseded",
+                  outcomeB == .superseded(model: .whisperBase, byRequestID: a2))
+            // Current completion publishes.
+            var outcomeCurrent = t.acceptCompletion(requestID: a2, model: .whisperTiny,
+                                                    outcome: .ready(model: .whisperTiny))
+            check("2256 current completion accepted",
+                  outcomeCurrent == .ready(model: .whisperTiny))
+
+            // 3. Old completion can never overwrite a current ready/failed
+            //    state: after A ready, a stale B failure is ignored.
+            var t3 = ModelSelectionTracker()
+            let r3a = t3.submit(model: .whisperTiny, settings: sel())
+            let r3b = t3.submit(model: .whisperBase, settings: sel())
+            _ = t3.acceptCompletion(requestID: r3b, model: .whisperBase,
+                                    outcome: .failed(model: .whisperBase, message: "late error"))
+            let stale = t3.acceptCompletion(requestID: r3a, model: .whisperTiny,
+                                            outcome: .ready(model: .whisperTiny))
+            check("2256 stale failure cannot publish", stale == .superseded(model: .whisperTiny, byRequestID: r3b))
+
+            // 4. Session-start guard: a session may only start against the
+            //    CURRENT selection (never a finished-obsolete engine).
+            var t4 = ModelSelectionTracker()
+            _ = t4.submit(model: .whisperBase, settings: sel())
+            check("2256 session may start on current model",
+                  t4.allowsSessionStart(model: .whisperBase))
+            check("2256 session may NOT start on obsolete model",
+                  !t4.allowsSessionStart(model: .whisperTiny))
+
+            // 5. cancelCurrent: no selection in flight; session start denied.
+            var t5 = ModelSelectionTracker()
+            _ = t5.submit(model: .whisperTiny, settings: sel())
+            t5.cancelCurrent()
+            check("2256 cancel clears current", t5.currentModel == nil)
+            check("2256 no session start after cancel",
+                  !t5.allowsSessionStart(model: .whisperTiny))
+
+            // 6. Monotonic request ids strictly increase.
+            var t6 = ModelSelectionTracker()
+            let r1 = t6.submit(model: .whisperTiny, settings: sel())
+            let r2 = t6.submit(model: .whisperTiny, settings: sel())
+            let r3 = t6.submit(model: .whisperTiny, settings: sel())
+            check("2256 request ids monotonic", r1 < r2 && r2 < r3)
+
+            // 7. Settings snapshot at request start is retained.
+            var t7 = ModelSelectionTracker()
+            _ = t7.submit(model: .whisperBase, settings: sel(false, true))
+            check("2256 settings snapshot retained",
+                  t7.currentSettings?.allowModelDownloads == false &&
+                  t7.currentSettings?.localOnlyMode == true)
+
+            // 8. Deterministic out-of-order completion matrix: every
+            //    permutation of A/B completions only lets the CURRENT one
+            //    publish (simulating injected out-of-order load results).
+            var t8 = ModelSelectionTracker()
+            let reqA = t8.submit(model: .whisperTiny, settings: sel())
+            let reqB = t8.submit(model: .whisperBase, settings: sel())
+            // B current: any completion order keeps only B publishable.
+            let p1 = t8.acceptCompletion(requestID: reqA, model: .whisperTiny,
+                                         outcome: .failed(model: .whisperTiny, message: "x"))
+            let p2 = t8.acceptCompletion(requestID: reqB, model: .whisperBase,
+                                         outcome: .ready(model: .whisperBase))
+            check("2256 out-of-order: current publishes, stale superseded",
+                  p1 == .superseded(model: .whisperTiny, byRequestID: reqB) &&
+                  p2 == .ready(model: .whisperBase))
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

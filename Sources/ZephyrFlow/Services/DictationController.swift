@@ -501,6 +501,13 @@ final class DictationController: ObservableObject {
         activeEngine = useApple ? appleEngine : whisperEngine
         currentEngineToken = EngineToken()
         engineLabel = useApple ? "Apple Speech" : settingsStore.settings.preferredModel.displayName
+        // JOE-2256: supersede any in-flight load for the previous selection.
+        if !useApple {
+            let store = ModelReadinessStore.shared
+            _ = store.select(settingsStore.settings.preferredModel,
+                             allowDownloads: settingsStore.settings.allowModelDownloads,
+                             localOnly: settingsStore.settings.localOnlyMode)
+        }
         ZFLog.info("Engine switched to \(engineLabel)")
     }
 
@@ -515,17 +522,28 @@ final class DictationController: ObservableObject {
         modelDownloadFraction = nil
 
         let store = ModelReadinessStore.shared
+        // JOE-2256: assign the monotonic request id — only this request may
+        // publish; a newer selection supersedes it.
+        let requestID = store.select(
+            model,
+            allowDownloads: settingsStore.settings.allowModelDownloads,
+            localOnly: settingsStore.settings.localOnlyMode)
+
         let verified = await store.verifiedReadiness(for: model)
         if verified.state.isReady {
             // Verified cache hit: load directly.
             do {
                 try await activeEngine.load(model: model)
                 self.isModelLoading = false
-                store.markReady(model)
+                store.publishLoadCompletion(
+                    requestID: requestID, model: model,
+                    outcome: .ready(model: model))
             } catch {
                 ZFLog.error("Model load failed: \(error.localizedDescription)")
                 self.isModelLoading = false
-                store.markFailed(model, message: error.localizedDescription)
+                store.publishLoadCompletion(
+                    requestID: requestID, model: model,
+                    outcome: .failed(model: model, message: error.localizedDescription))
             }
             return
         }
@@ -548,17 +566,23 @@ final class DictationController: ObservableObject {
         guard result.state == .ready else {
             self.isModelLoading = false
             let msg = result.error?.localizedDescription ?? "Model acquisition failed"
-            store.markFailed(model, message: msg)
+            store.publishLoadCompletion(
+                requestID: requestID, model: model,
+                outcome: .failed(model: model, message: msg))
             return
         }
         do {
             try await activeEngine.load(model: model)
             self.isModelLoading = false
-            store.markReady(model)
+            store.publishLoadCompletion(
+                requestID: requestID, model: model,
+                outcome: .ready(model: model))
         } catch {
             ZFLog.error("Model load failed: \(error.localizedDescription)")
             self.isModelLoading = false
-            store.markFailed(model, message: error.localizedDescription)
+            store.publishLoadCompletion(
+                requestID: requestID, model: model,
+                outcome: .failed(model: model, message: error.localizedDescription))
         }
     }
 

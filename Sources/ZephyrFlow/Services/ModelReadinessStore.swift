@@ -20,6 +20,12 @@ final class ModelReadinessStore: ObservableObject {
         fs: ProductionModelAcquisitionFileSystem(downloader: ProductionModelAcquisitionFileSystem.whisperKitDownloader))
     private var acquisitionTasks: [ModelIdentifier: Task<ModelAcquisitionController.ModelAcquisitionResult, Never>] =
         [:]
+    /// JOE-2256: generation-safe selection — only the current request may
+    /// publish readiness/banner/error state.
+    private var selection = ModelSelectionTracker()
+    /// In-flight engine load tasks keyed by request id (cancel/supersede).
+    private var loadTasks: [UInt64: Task<Void, Never>] = [:]
+    public private(set) var lastLoadOutcome: ModelLoadOutcome?
 
     private init() {
         refreshAll()
@@ -62,6 +68,46 @@ final class ModelReadinessStore: ObservableObject {
     /// Acquire a VERIFIED model. `consent` = explicit download consent
     /// (settings.allowModelDownloads), independent of Local Only audio policy.
     /// Concurrent requests share ONE acquisition (singleflight).
+    /// JOE-2256: submit a new model selection (supersedes in-flight loads).
+    /// Returns the request id; only the CURRENT request may publish.
+    @discardableResult
+    func select(_ model: ModelIdentifier,
+                allowDownloads: Bool, localOnly: Bool) -> UInt64 {
+        let requestID = selection.submit(
+            model: model,
+            settings: .init(allowModelDownloads: allowDownloads,
+                            localOnlyMode: localOnly))
+        // Cancel/supersede any in-flight load task for a different model.
+        for (rid, task) in loadTasks where rid != requestID {
+            task.cancel()
+            loadTasks.removeValue(forKey: rid)
+        }
+        return requestID
+    }
+
+    /// Publish a load completion ONLY when its request is current; stale
+    /// completions are typed superseded events and never overwrite state.
+    func publishLoadCompletion(requestID: UInt64,
+                               model: ModelIdentifier,
+                               outcome: ModelLoadOutcome) {
+        let accepted = selection.acceptCompletion(
+            requestID: requestID, model: model, outcome: outcome)
+        switch accepted {
+        case .ready(let m):
+            readiness[m] = ModelReadiness(state: .ready)
+            bannerMessage = "\(m.displayName) ready"
+            clearBannerLater()
+        case .failed(let m, let message):
+            readiness[m] = ModelReadiness(state: .failed(message))
+            bannerMessage = "\(m.displayName): \(message)"
+        case .cancelled(let m):
+            readiness[m] = ModelReadiness(state: .cancelled)
+        case .superseded:
+            break  // never publish stale state
+        }
+        lastLoadOutcome = accepted
+    }
+
     func acquire(_ model: ModelIdentifier, consent: Bool) async -> ModelAcquisitionController.ModelAcquisitionResult {
         if let existing = acquisitionTasks[model] {
             return await existing.value
