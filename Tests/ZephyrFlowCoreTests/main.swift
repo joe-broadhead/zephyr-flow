@@ -1541,6 +1541,48 @@ struct CoreTests {
             check("2278 preamble rejected", reject("say hi", "Sure, here is the text") == .preamble)
         }
 
+        // ===== JOE-2279: typed FlowOutcome =====
+        do {
+            // Every style/backend path returns a complete outcome.
+            let sid = SessionID(token: "fo", sequence: 1, createdAtUptimeNanos: 0)
+            let cleanReq = FlowRequest(sessionID: sid, text: "um hello there",
+                                       style: .clean, language: .enUS,
+                                       sensitivity: .normal)
+            let cleanOut = await FlowProcessor.shared.process(cleanReq)
+            check("2279 clean outcome complete",
+                  cleanOut.requestedStyle == .clean && cleanOut.resolvedLossClass == .conservative
+                    && cleanOut.backend == .regex && cleanOut.status == .accepted)
+            check("2279 outcome has language + capability",
+                  cleanOut.language == .enUS
+                    && cleanOut.capabilityID == "io.zephyr-flow.flow.rules.v1")
+            let profReq = FlowRequest(sessionID: sid, text: "I can't come, call you later",
+                                      style: .professional, language: .enUS, sensitivity: .normal)
+            let profOut = await FlowProcessor.shared.process(profReq)
+            check("2279 professional outcome semantic loss class",
+                  profOut.resolvedLossClass == .semantic && !profOut.text.isEmpty)
+            // Diagnostics redact text.
+            check("2279 diagnostics redact content",
+                  profOut.diagnostics.changedRangeCount == profOut.changedRangeCount
+                    && profOut.diagnostics.requestedStyle == .professional)
+            // Sensitivity policy: secure session with semantic style is
+            // conservatively downgraded BEFORE execution.
+            let secureReq = FlowRequest(sessionID: sid, text: "I can't come, call you later",
+                                        style: .professional, language: .enUS,
+                                        sensitivity: .secure)
+            let secureOut = await FlowRouter.shared.process(secureReq)
+            check("2279 secure semantic => conservative with warning",
+                  secureOut.resolvedLossClass == .conservative
+                    && secureOut.warnings.contains(.secureSensitivityConservative)
+                    && secureOut.status == .accepted)
+            // Guardrail rejection is an explicit outcome with fallback reason.
+            let gOut = FlowGuardrails.evaluate(input: "the value is -5",
+                                               output: "the value is 5",
+                                               conservativeFallback: "the value is -5")
+            check("2279 guardrail rejection visible",
+                  FlowGuardrailsResult.rejected(reason: .signFlipped,
+                                                conservativeFallback: "the value is -5") == gOut)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

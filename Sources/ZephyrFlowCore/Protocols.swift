@@ -50,14 +50,28 @@ public protocol InsertionServiceProtocol: Actor {
 // MARK: - Flow Processor
 
 public protocol FlowProcessorProtocol: Actor {
+    /// Typed outcome entry (JOE-2279): every style/backend path returns a
+    /// complete outcome with loss class, changes, warnings and fallback.
+    func process(_ request: FlowRequest) async -> FlowOutcome
+
+    /// Legacy string entry (kept for compat; production orchestrates via
+    /// the typed outcome API).
     func process(_ text: String, style: FlowStyle) async -> String
 }
 
 public extension FlowProcessorProtocol {
-    /// Language-aware entry (JOE-2277). Default implementation forwards with
-    /// `.auto`; conformers may override for language-sensitive rules.
+    /// Language-aware legacy entry (JOE-2277). Default forwards with `.auto`.
     func process(_ text: String, style: FlowStyle, language: SupportedLanguage) async -> String {
         await process(text, style: style)
+    }
+
+    /// Convenience: build a request with default context (tests/utilities).
+    func process(_ text: String, style: FlowStyle, language: SupportedLanguage,
+                 sensitivity: SessionSensitivity) async -> FlowOutcome {
+        await process(FlowRequest(sessionID: SessionID(token: "flow", sequence: 0,
+                                                       createdAtUptimeNanos: 0),
+                                  text: text, style: style, language: language,
+                                  sensitivity: sensitivity))
     }
 }
 

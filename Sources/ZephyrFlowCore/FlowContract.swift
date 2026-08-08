@@ -93,3 +93,150 @@ public struct FlowLanguageContext: Sendable, Equatable {
         language.lowercased().hasPrefix("en") && !forceConservative
     }
 }
+
+
+// MARK: - JOE-2279 typed Flow outcome
+
+/// Context for a Flow transformation (session, sensitivity, cancellation).
+public struct FlowRequest: Sendable, Equatable {
+    public let sessionID: SessionID
+    public let text: String
+    public let style: FlowStyle
+    public let language: SupportedLanguage
+    public let sensitivity: SessionSensitivity
+    /// Hard deadline; a non-cooperative backend must never block past it and
+    /// a late result must never overwrite the fallback.
+    public let deadlineNanosAhead: UInt64
+
+    public init(sessionID: SessionID, text: String, style: FlowStyle,
+                language: SupportedLanguage, sensitivity: SessionSensitivity,
+                deadlineNanosAhead: UInt64 = 2_000_000_000) {
+        self.sessionID = sessionID
+        self.text = text
+        self.style = style
+        self.language = language
+        self.sensitivity = sensitivity
+        self.deadlineNanosAhead = deadlineNanosAhead
+    }
+}
+
+public enum FlowOutcomeStatus: String, Codable, CaseIterable, Sendable, Equatable {
+    case accepted
+    case rejected            // guardrails rejected; fallback returned
+    case deadlineExceeded    // backend exceeded deadline; fallback returned
+    case cancelled
+    case superseded          // produced after session superseded
+}
+
+public enum FlowOutcomeTermination: String, Codable, CaseIterable, Sendable, Equatable {
+    case completed
+    case cancelled
+    case deadlineExceeded
+    case superseded
+}
+
+public enum FlowWarning: String, Codable, CaseIterable, Sendable, Equatable {
+    case guardrailRejected
+    case backendUnavailable
+    case secureSensitivityConservative
+    case structuralFallback
+    case enhancedTimeout
+    case lateResultIgnored
+}
+
+/// Typed Flow outcome: transformation risk, actual changes, fallback and
+/// timing are visible to policy, UI and evidence systems (JOE-2279).
+public struct FlowOutcome: Sendable, Equatable {
+    public let text: String
+    public let requestedStyle: FlowStyle
+    public let resolvedLossClass: FlowLossClass
+    public let backend: FlowBackend
+    public let capabilityID: String
+    public let capabilityVersion: Int
+    public let language: SupportedLanguage
+    /// Structured diff summary — counts only (never changed text).
+    public let changedRangeCount: Int
+    public let protectedSpanCount: Int
+    public let protectedSpansPreserved: Bool
+    public let status: FlowOutcomeStatus
+    public let warnings: [FlowWarning]
+    public let fallbackReason: String?
+    public let durationNanos: UInt64
+    public let termination: FlowOutcomeTermination
+
+    public init(text: String, requestedStyle: FlowStyle, resolvedLossClass: FlowLossClass,
+                backend: FlowBackend, capabilityID: String, capabilityVersion: Int,
+                language: SupportedLanguage, changedRangeCount: Int,
+                protectedSpanCount: Int, protectedSpansPreserved: Bool,
+                status: FlowOutcomeStatus, warnings: [FlowWarning],
+                fallbackReason: String?, durationNanos: UInt64,
+                termination: FlowOutcomeTermination) {
+        self.text = text
+        self.requestedStyle = requestedStyle
+        self.resolvedLossClass = resolvedLossClass
+        self.backend = backend
+        self.capabilityID = capabilityID
+        self.capabilityVersion = capabilityVersion
+        self.language = language
+        self.changedRangeCount = changedRangeCount
+        self.protectedSpanCount = protectedSpanCount
+        self.protectedSpansPreserved = protectedSpansPreserved
+        self.status = status
+        self.warnings = warnings
+        self.fallbackReason = fallbackReason
+        self.durationNanos = durationNanos
+        self.termination = termination
+    }
+
+    /// The safe fallback is an explicit outcome, not indistinguishable from
+    /// normal backend success.
+    public var usedFallback: Bool {
+        status != .accepted || !warnings.isEmpty
+    }
+
+    /// Diagnostic serialization: redacts text and content-bearing ranges.
+    public var diagnostics: FlowOutcomeDiagnostics {
+        FlowOutcomeDiagnostics(requestedStyle: requestedStyle,
+                               resolvedLossClass: resolvedLossClass,
+                               backend: backend,
+                               capabilityID: capabilityID,
+                               capabilityVersion: capabilityVersion,
+                               language: language,
+                               changedRangeCount: changedRangeCount,
+                               protectedSpanCount: protectedSpanCount,
+                               protectedSpansPreserved: protectedSpansPreserved,
+                               status: status,
+                               warnings: warnings,
+                               fallbackReason: fallbackReason,
+                               durationNanos: durationNanos,
+                               termination: termination)
+    }
+
+    public static func lossClass(for style: FlowStyle) -> FlowLossClass {
+        switch style {
+        case .raw: return .verbatim
+        case .clean: return .conservative
+        case .bullets: return .structural
+        case .professional: return .semantic
+        case .summary: return .semantic
+        }
+    }
+}
+
+/// Content-free diagnostics view of a FlowOutcome.
+public struct FlowOutcomeDiagnostics: Sendable, Equatable {
+    public let requestedStyle: FlowStyle
+    public let resolvedLossClass: FlowLossClass
+    public let backend: FlowBackend
+    public let capabilityID: String
+    public let capabilityVersion: Int
+    public let language: SupportedLanguage
+    public let changedRangeCount: Int
+    public let protectedSpanCount: Int
+    public let protectedSpansPreserved: Bool
+    public let status: FlowOutcomeStatus
+    public let warnings: [FlowWarning]
+    public let fallbackReason: String?
+    public let durationNanos: UInt64
+    public let termination: FlowOutcomeTermination
+}

@@ -28,6 +28,60 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
         await process(text, style: style, language: .auto)
     }
 
+    /// JOE-2279: typed outcome — guardrail rejection/fallback is visible to
+    /// UI/metrics without payload text.
+    func process(_ request: FlowRequest) async -> FlowOutcome {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        let started = Date()
+        let output = await process(request.text, style: request.style,
+                                   language: request.language)
+        let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
+        let loss = FlowOutcome.lossClass(for: request.style)
+        let protectedSpanCount = FlowGuardrails.tokens(in: request.text).count
+        // Evaluate guardrails on the enhanced output; fallback is explicit.
+        let fallback = await regex.process(request.text, style: request.style,
+                                           language: request.language)
+        switch FlowGuardrails.evaluate(input: request.text, output: output,
+                                       conservativeFallback: fallback) {
+        case .approved(let out):
+            return FlowOutcome(
+                text: out,
+                requestedStyle: request.style,
+                resolvedLossClass: loss,
+                backend: .enhanced,
+                capabilityID: "io.zephyr-flow.flow.rules.v1",
+                capabilityVersion: 1,
+                language: request.language,
+                changedRangeCount: request.text != out ? 1 : 0,
+                protectedSpanCount: protectedSpanCount,
+                protectedSpansPreserved: FlowGuardrails.inputCovered(
+                    input: FlowGuardrails.tokens(in: request.text),
+                    output: FlowGuardrails.tokens(in: out)).ok,
+                status: .accepted,
+                warnings: [],
+                fallbackReason: nil,
+                durationNanos: duration,
+                termination: .completed)
+        case .rejected(let reason, let conservative):
+            return FlowOutcome(
+                text: conservative,
+                requestedStyle: request.style,
+                resolvedLossClass: loss,
+                backend: .regex,
+                capabilityID: "io.zephyr-flow.flow.rules.v1",
+                capabilityVersion: 1,
+                language: request.language,
+                changedRangeCount: 1,
+                protectedSpanCount: protectedSpanCount,
+                protectedSpansPreserved: true,
+                status: .rejected,
+                warnings: [.guardrailRejected],
+                fallbackReason: "guardrail rejection: \(reason.rawValue)",
+                durationNanos: duration,
+                termination: .completed)
+        }
+    }
+
     /// JOE-2277/2278: language-aware enhanced rules with guardrail gate.
     func process(_ text: String, style: FlowStyle, language: SupportedLanguage) async -> String {
         refreshAvailability()

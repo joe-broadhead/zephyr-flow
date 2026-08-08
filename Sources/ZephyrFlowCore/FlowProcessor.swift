@@ -30,6 +30,40 @@ public actor FlowProcessor: FlowProcessorProtocol {
         await process(text, style: style, language: .auto)
     }
 
+    /// JOE-2279: typed outcome for the deterministic rules backend.
+    public func process(_ request: FlowRequest) async -> FlowOutcome {
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        let started = Date()
+        let output = await process(request.text, style: request.style,
+                                   language: request.language)
+        let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
+        let loss = FlowOutcome.lossClass(for: request.style)
+        // Deterministic backend: guardrails already applied inside rules.
+        let protectedSpanCount = FlowGuardrails.tokens(in: request.text).count
+        let outTokens = FlowGuardrails.tokens(in: output)
+        let protectedSpansPreserved = FlowGuardrails.inputCovered(
+            input: FlowGuardrails.tokens(in: request.text),
+            output: outTokens).ok
+        let changed = request.text != output ? 1 : 0
+        return FlowOutcome(
+            text: output,
+            requestedStyle: request.style,
+            resolvedLossClass: loss,
+            backend: .regex,
+            capabilityID: "io.zephyr-flow.flow.rules.v1",
+            capabilityVersion: 1,
+            language: request.language,
+            changedRangeCount: changed,
+            protectedSpanCount: protectedSpanCount,
+            protectedSpansPreserved: protectedSpansPreserved,
+            status: .accepted,
+            warnings: [],
+            fallbackReason: nil,
+            durationNanos: duration,
+            termination: .completed)
+    }
+
+
     public func process(_ text: String,
                         style: FlowStyle,
                         language: SupportedLanguage = .auto) async -> String {

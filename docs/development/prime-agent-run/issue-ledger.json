@@ -1116,12 +1116,27 @@
     "JOE-2278"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (typed outcome complete per style, secure+semantic downgrade, diagnostics redaction, guardrail rejection visible)",
+    "swift build: pass (FlowRequest/FlowOutcome through protocol + actors; controller migrated)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/FlowContract.swift",
+    "Sources/ZephyrFlowCore/Protocols.swift",
+    "Sources/ZephyrFlowCore/FlowProcessor.swift",
+    "Sources/ZephyrFlowCore/FlowRouter.swift",
+    "Sources/ZephyrFlow/Services/EnhancedFlowProcessor.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2279/REPORT.md"
+   ],
+   "remaining_action": "Real-device Flow UI/metrics review across styles (human-gate runbook)."
   },
   {
    "id": "JOE-2280",

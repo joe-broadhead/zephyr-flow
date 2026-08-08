@@ -797,7 +797,11 @@ final class DictationController: ObservableObject {
             if !sessionAllowsAutomaticSideEffects {
                 _ = control.stage(.transformationFinished) // transforming -> resolvingTarget
                 _ = control.stage(.targetSecure)           // resolvingTarget -> secureTarget (terminal)
-                let conservative = await flow.process(final.text, style: .clean, language: settings.settings.language)
+                let conservativeOutcome = await flow.process(FlowRequest(
+                    sessionID: sid, text: final.text, style: .clean,
+                    language: settings.settings.language,
+                    sensitivity: sessionSensitivity))
+                let conservative = conservativeOutcome.text
                 let reviewText = conservative.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !reviewText.isEmpty else {
                     showError("No speech detected — try again")
@@ -813,11 +817,15 @@ final class DictationController: ObservableObject {
 
             let style = activeFlowStyle
             let flowT0 = Date()
-            let processed = await flow.process(final.text, style: style, language: settings.settings.language)
+            let flowOutcome = await flow.process(FlowRequest(
+                sessionID: sid, text: final.text, style: style,
+                language: settings.settings.language,
+                sensitivity: sessionSensitivity))
+            let processed = flowOutcome.text
             let flowMs = Int(Date().timeIntervalSince(flowT0) * 1000)
             // Lengths only — never log transcript body
             ZFLog.info(
-                "Processed len=\(processed.count) raw len=\(final.text.count) flowMs=\(flowMs) style=\(style.rawValue) backend=\(settings.settings.flowBackend.rawValue) completeness=\(final.completeness.rawValue)"
+                "Processed len=\(processed.count) raw len=\(final.text.count) flowMs=\(flowMs) style=\(style.rawValue) backend=\(settings.settings.flowBackend.rawValue) completeness=\(final.completeness.rawValue) flowStatus=\(flowOutcome.status.rawValue) lossClass=\(flowOutcome.resolvedLossClass.rawValue) guardProtected=\(flowOutcome.protectedSpansPreserved) fallback=\(flowOutcome.fallbackReason ?? "nil")"
             )
 
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
