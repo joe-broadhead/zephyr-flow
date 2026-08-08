@@ -66,7 +66,7 @@ AX write, pasteboard mutation or synthetic key event.
 ## Acceptance criteria status
 
 - **Cmd-Tab/field switch during dictation prevents automatic insertion** —
-  deterministic fakes: windowReplaced/elementReplaced/focusSwitched → 
+  deterministic fakes: windowReplaced/elementReplaced/focusSwitched →
   targetChanged; validated only on identical context. ✔ (deterministic)
 - **App termination/relaunch with reused bundle/PID cannot receive stale
   text** — deterministic fakes: processGone/pidReuse → targetGone;

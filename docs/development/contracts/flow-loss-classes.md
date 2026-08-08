@@ -1,6 +1,6 @@
 # Flow loss classes and protected-span preservation grammar (JOE-2275)
 
-**Source:** JOE-2275 · milestone M0  
+**Source:** JOE-2275 · milestone M0
 **Status:** Accepted contract; implementation JOE-2276/2277/2278, corpus JOE-2280.
 
 ## 1. Loss classes

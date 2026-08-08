@@ -1,6 +1,6 @@
 # Supported platform/app matrix, release channels and evidence registry
 
-**Source:** JOE-2245 · milestone M0  
+**Source:** JOE-2245 · milestone M0
 **Status:** SPEC PREPARED — initial production boundary requires **human approval**.
 
 ## 1. Supported platform (proposed production boundary)

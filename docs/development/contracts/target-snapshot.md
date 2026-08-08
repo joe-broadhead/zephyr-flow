@@ -1,6 +1,6 @@
 # TargetSnapshot contract (JOE-2267)
 
-**Source:** JOE-2267 · milestone M0  
+**Source:** JOE-2267 · milestone M0
 **Status:** Accepted contract; validation implementation JOE-2268.
 
 ## 1. Purpose

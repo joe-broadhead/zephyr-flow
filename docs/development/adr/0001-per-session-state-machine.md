@@ -1,7 +1,7 @@
 # ADR 0001 — Per-session state machine, cancellation and generation
 
-**Date:** 2026-08-08 (run 20260808T103416Z)  
-**Source:** JOE-2242 · milestone M0  
+**Date:** 2026-08-08 (run 20260808T103416Z)
+**Source:** JOE-2242 · milestone M0
 **Status:** Accepted; implementation JOE-2246+
 
 ## Context
