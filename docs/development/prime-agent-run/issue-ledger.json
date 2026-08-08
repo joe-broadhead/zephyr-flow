@@ -559,7 +559,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "ac7c35a"
    ],
    "aurum_commits": [],
    "tests": [
