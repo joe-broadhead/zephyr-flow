@@ -376,6 +376,69 @@ struct CoreTests {
         }
 
 
+        // ===== JOE-2258: authoritative sensitivity policy =====
+        do {
+            // session-start evidence present, pre-insertion evidence missing => unknown (fail closed)
+            let start = SensitivityAssessment(sensitivity: .normal, source: .accessibilityRole, capturedAtNanos: 1)
+            let d = SessionSensitivityDecision.resolve(sessionStart: start, preInsertion: nil)
+            check("no pre-insertion evidence fails closed to unknown", d.sensitivity == .unknown)
+            check("fail-closed decision forbids auto insertion", !SensitivityPolicy.allowance(sensitivity: d.sensitivity, surface: .automaticInsertion))
+        }
+        do {
+            // most-restrictive wins: normal at start, secure at insertion
+            let start = SensitivityAssessment(sensitivity: .normal, source: .accessibilityRole, capturedAtNanos: 1)
+            let sec = SensitivityAssessment(sensitivity: .secure, source: .accessibilityRole, capturedAtNanos: 2)
+            let inside = SessionSensitivityDecision.resolve(sessionStart: start, preInsertion: sec)
+            check("upgrade to secure before insertion", inside.sensitivity == .secure && inside.upgradedBeforeInsertion)
+            check("secure forbids auto insert/clipboard/history",
+                  !SensitivityPolicy.allowance(sensitivity: .secure, surface: .automaticInsertion)
+                    && !SensitivityPolicy.allowance(sensitivity: .secure, surface: .clipboardFallback)
+                    && !SensitivityPolicy.allowance(sensitivity: .secure, surface: .history))
+            check("secure allows anonymous metrics", SensitivityPolicy.allowance(sensitivity: .secure, surface: .metrics))
+        }
+        do {
+            check("unknown blocks automatic insertion", !SensitivityPolicy.allowance(sensitivity: .unknown, surface: .automaticInsertion))
+            check("unknown blocks clipboard fallback", !SensitivityPolicy.allowance(sensitivity: .unknown, surface: .clipboardFallback))
+            check("unknown blocks history", !SensitivityPolicy.allowance(sensitivity: .unknown, surface: .history))
+            check("unknown blocks support bundle", !SensitivityPolicy.allowance(sensitivity: .unknown, surface: .supportBundle))
+            check("normal allows insertion", SensitivityPolicy.allowance(sensitivity: .normal, surface: .automaticInsertion))
+            let restricted = SessionSensitivityDecision(sensitivity: .unknown, source: .noEvidence, upgradedBeforeInsertion: false)
+            let surfaces = SensitivityPolicy.restrictedSurfaces(for: restricted)
+            check("restricted surfaces exhaustive & metrics preserved",
+                  !surfaces.contains(where: { $0 == .metrics })
+                    && surfaces.contains(.automaticInsertion)
+                    && surfaces.contains(.history)
+                    && surfaces.contains(.logs)
+                    && surfaces.count == 7)
+        }
+
+        do {
+            // exhaustive 3 sensitivity x 9 surface policy matrix
+            var matrixOK = true
+            for sens in SessionSensitivity.allCases {
+                for surface in SessionPolicySurface.allCases {
+                    let decision = SessionSensitivityDecision(sensitivity: sens, source: .noEvidence, upgradedBeforeInsertion: false)
+                    let allowed = TranscriptStageGate.gate(decision: decision, surface: surface) == .allowed
+                    switch sens {
+                    case .normal:
+                        if !allowed { matrixOK = false }
+                    case .secure, .unknown:
+                        let hardProhibited = surface == .automaticInsertion || surface == .clipboardFallback
+                            || surface == .history || surface == .supportBundle || surface == .logs
+                            || surface == .flowModes || surface == .uiPreview
+                        if hardProhibited && allowed { matrixOK = false }
+                        if (surface == .metrics || surface == .audioRetention) && !allowed { matrixOK = false }
+                    }
+                }
+            }
+            check("3x9 policy matrix exhaustive", matrixOK)
+            // explicit copy is separate from automatic clipboard; audit is content-free
+            let secure = SessionSensitivityDecision(sensitivity: .secure, source: .accessibilityRole, upgradedBeforeInsertion: true)
+            check("explicit copy still allowed on secure", TranscriptStageGate.explicitCopyAllowed(decision: secure))
+            let audit = TranscriptStageGate.recordExplicitCopy(decision: secure, now: Date(timeIntervalSince1970: 0))
+            check("audit record content-free", audit.sensitivity == .secure && audit.timestampMillis == 0)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
