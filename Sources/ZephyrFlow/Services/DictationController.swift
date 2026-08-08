@@ -69,6 +69,15 @@ final class DictationController: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
+        // JOE-2262: at-rest history encryption — non-synchronizing Keychain
+        // key, AfterFirstUnlock (launch-at-login compatible). Key material
+        // never enters logs/metrics/backups/support bundles.
+        Task {
+            let key = HistoryKeychainStore.shared.loadOrCreate()
+            await ActorHistoryRepository.shared.configureEncryption(
+                keyProvider: { key })
+            try? await ActorHistoryRepository.shared.load()
+        }
         privacy.refresh()
         hotkey.configure(
             hotkey: settingsStore.settings.hotkey,

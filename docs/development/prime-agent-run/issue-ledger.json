@@ -740,12 +740,26 @@
     "JOE-2261"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (18 JOE-2262 checks: AES-GCM round-trip, tamper/wrong-key/missing-key auth failure, metadata documented, raw-file no transcript, repo round-trip, recovery state, migration fault injection, secure/unknown excluded, key bytes absent)",
+    "swift build: pass",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/HistoryCipher.swift",
+    "Sources/ZephyrFlowCore/ActorHistoryRepository.swift",
+    "Sources/ZephyrFlow/Services/HistoryKeychainStore.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Sources/ZephyrFlow/UI/Settings/SettingsView.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2262/REPORT.md"
+   ],
+   "remaining_action": "Keychain accessibility across reboot/login/launch-at-login on real machine; uninstall/reinstall key-rotation semantics \u2014 human-gate runbook."
   },
   {
    "id": "JOE-2263",

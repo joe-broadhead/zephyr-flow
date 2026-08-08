@@ -298,7 +298,10 @@ struct SettingsView: View {
 
             Section("History") {
                 Toggle("Save transcription history", isOn: binding(\.saveHistory))
-                Text("When on, recent dictations are stored locally in Application Support (plaintext on disk). Logs never store transcript text.")
+                // JOE-2262: honest defense-in-depth wording — encrypted at
+                // rest with a per-installation Keychain key; metadata (id,
+                // timestamp, model) remains visible for the list UI.
+                Text("When on, recent dictations are stored locally in Application Support, encrypted at rest (AES-256-GCM) with a per-installation Keychain key. Metadata for the list UI stays visible; transcript bodies are sealed. This is app-level protection, not a substitute for FileVault.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Button("Clear local history", role: .destructive) {

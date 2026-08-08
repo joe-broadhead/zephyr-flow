@@ -24,16 +24,27 @@ public actor ActorHistoryRepository: HistoryRepository {
     private var document: HistoryDocument
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+    // JOE-2262: at-rest encryption (defense-in-depth, opt-in history).
+    private let cipher: HistoryCipherEngine
+    private var keyProvider: @Sendable () -> HistoryCryptoKey?
+    /// Set when the key is missing/inaccessible: no plaintext is exposed and
+    /// recovery behavior is explicit (content stays sealed on disk).
+    public private(set) var recoveryState: String?
+    private var usingEncryption = false
 
     public init(fileURL: URL? = nil,
                 fileSystem: any HistoryFileSystem = RealHistoryFileSystem(),
-                retention: HistoryRetentionPolicy = HistoryRetentionPolicy()) {
+                retention: HistoryRetentionPolicy = HistoryRetentionPolicy(),
+                cipher: HistoryCipherEngine = .shared,
+                keyProvider: @escaping @Sendable () -> HistoryCryptoKey? = { nil }) {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory,
                                                  in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("ZephyrFlow", isDirectory: true)
         self.fileURL = fileURL ?? dir.appendingPathComponent("history.json")
         self.fileSystem = fileSystem
         self.retention = retention
+        self.cipher = cipher
+        self.keyProvider = keyProvider
         self.document = HistoryDocument(entries: [])
         self.encoder = {
             let e = JSONEncoder()
@@ -48,6 +59,12 @@ public actor ActorHistoryRepository: HistoryRepository {
         }()
     }
 
+    /// JOE-2262: configure the at-rest encryption key provider (production
+    /// uses the non-synchronizing Keychain item; tests inject fakes).
+    public func configureEncryption(keyProvider: @escaping @Sendable () -> HistoryCryptoKey?) {
+        self.keyProvider = keyProvider
+    }
+
     /// Load + migrate on first use (recoverable from corruption).
     public func load() async throws {
         try fileSystem.createDirectory(fileURL.deletingLastPathComponent())
@@ -58,7 +75,22 @@ public actor ActorHistoryRepository: HistoryRepository {
         }
         do {
             let data = try fileSystem.readData(fileURL)
-            document = try decode(data)
+            // Encrypted document: decrypt with the current key; a missing or
+            // wrong key NEVER yields partial plaintext — explicit recovery.
+            if let encrypted = try? decoder.decode(EncryptedHistoryDocument.self, from: data) {
+                usingEncryption = true
+                if let key = keyProvider(),
+                   let decrypted = HistoryEncryptionMigration.decrypt(
+                       document: encrypted, key: key, engine: cipher) {
+                    document = decrypted
+                    recoveryState = nil
+                } else {
+                    document = HistoryDocument(entries: [])
+                    recoveryState = "history key missing or invalid — sealed content retained on disk, no plaintext exposed"
+                }
+            } else {
+                document = try decode(data)
+            }
             document.entries = HistoryStoragePolicy.trimmed(document.entries,
                                                             policy: retention,
                                                             now: Date())
@@ -131,7 +163,15 @@ public actor ActorHistoryRepository: HistoryRepository {
 
     private func persistOrThrow() async throws {
         do {
-            let data = try encoder.encode(document)
+            let data: Data
+            if let key = keyProvider() {
+                usingEncryption = true
+                let encrypted = try HistoryEncryptionMigration.encrypt(
+                    document: document, key: key, engine: cipher)
+                data = try encoder.encode(encrypted)
+            } else {
+                data = try encoder.encode(document)
+            }
             try fileSystem.writeAtomic(data: data, to: fileURL)
         } catch let error as NSError {
             if error.domain == NSCocoaErrorDomain,

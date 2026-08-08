@@ -266,6 +266,48 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     func lastCreatePermission(_ url: URL) -> Int? { lock.withLock { perms[key(url)] } }
 }
 
+
+// ===== JOE-2262: in-memory history filesystem (fault-injecting) =====
+final class InMemoryHistoryFS: HistoryFileSystem, @unchecked Sendable {
+    private let lock = NSLock()
+    private var data: Data?
+    private var exists = false
+    var failWrites = false
+    var lastWrittenData: Data? {
+        lock.lock(); defer { lock.unlock() }
+        return data
+    }
+
+    init(preload: Data? = nil) {
+        if let preload { data = preload; exists = true }
+    }
+
+    func fileExists(_ url: URL) -> Bool { lock.withLock { exists } }
+    func createDirectory(_ url: URL) throws {}
+    func readData(_ url: URL) throws -> Data {
+        lock.lock(); defer { lock.unlock() }
+        guard let data else { throw CocoaError(.fileReadNoSuchFile) }
+        return data
+    }
+    func writeAtomic(data newData: Data, to url: URL) throws {
+        if failWrites { throw CocoaError(.fileWriteOutOfSpace) }
+        lock.lock(); defer { lock.unlock() }
+        data = newData
+        exists = true
+    }
+    func move(_ from: URL, to: URL) throws {
+        lock.lock(); defer { lock.unlock() }
+        data = nil
+        exists = false
+    }
+    func remove(_ url: URL) throws {
+        lock.lock(); defer { lock.unlock() }
+        data = nil
+        exists = false
+    }
+    func setPermissions(_ url: URL, mode: Int) throws {}
+}
+
 @main
 struct CoreTests {
     static func main() async {
@@ -2675,6 +2717,121 @@ struct CoreTests {
             try? fs11.createDirectory(URL(fileURLWithPath: "/fake/verified/\(ModelIdentifier.whisperTiny.rawValue)"), permissions: 0o700)
             check("2255 empty/manifest-less dir not ready",
                   await acq11.verifiedReadiness(for: .whisperTiny).state != .ready)
+        }
+
+        // ===== JOE-2262: at-rest history encryption =====
+        do {
+            nonisolated func key(_ id: String = "k1") -> HistoryCryptoKey {
+                HistoryCryptoKey(keyID: id, material: Data(repeating: 0x42, count: 32))
+            }
+            func entry(_ text: String) -> HistoryStorageEntry {
+                HistoryStorageEntry(id: UUID(), timestamp: Date(timeIntervalSince1970: 1_700_000_000),
+                                    text: text, duration: 1.0, modelUsed: "Tiny",
+                                    sensitivityClass: "normal")
+            }
+
+            // 1. Round-trip: encrypt -> decrypt preserves content.
+            let engine = HistoryCipherEngine()
+            let plain = (try? engine.encrypt(plaintext: Data("hello secret".utf8), key: key())) ?? HistoryEncryptedPayload(keyID: "k1", nonce: Data(), ciphertext: Data(), authTag: Data())
+            let back = engine.decrypt(plain, key: key())
+            check("2262 round-trip", back == Data("hello secret".utf8))
+
+            // 2. Tamper (flip one ciphertext byte) -> auth failure, nil.
+            let tamperedCipher = plain.ciphertext.isEmpty
+                ? Data()
+                : Data([plain.ciphertext.first! ^ 0xFF]) + plain.ciphertext.dropFirst()
+            let tampered = HistoryEncryptedPayload(keyID: plain.keyID, nonce: plain.nonce,
+                                                   ciphertext: tamperedCipher, authTag: plain.authTag)
+            check("2262 tamper fails authentication",
+                  engine.decrypt(tampered, key: key()) == nil)
+
+            // 3. Wrong key -> nil; wrong keyID -> nil; never partial.
+            let wrong = HistoryCryptoKey(keyID: "k2", material: Data(repeating: 0x01, count: 32))
+            check("2262 wrong key fails", engine.decrypt(plain, key: wrong) == nil)
+
+            // 4. Migration encrypt: full document sealed; file alone yields
+            //    no transcript; metadata documented.
+            let doc = HistoryDocument(entries: [entry("transcript A"), entry("transcript B")])
+            let enc = (try? HistoryEncryptionMigration.encrypt(document: doc, key: key())) ?? EncryptedHistoryDocument(keyID: "k1", payload: HistoryEncryptedPayload(keyID: "k1", nonce: Data(), ciphertext: Data(), authTag: Data()))
+            let meta = HistoryEncryptionMigration.visibleMetadata(of: enc)
+            check("2262 cipher AES-256-GCM", enc.payload.cipher == "AES-256-GCM")
+            check("2262 version stored", enc.payload.version == 1 && enc.schemaVersion == 1)
+            check("2262 keyID stored", enc.payload.keyID == "k1")
+            check("2262 metadata documented",
+                  meta["entryCount"] == "sealed" && meta["cipher"] == "AES-256-GCM")
+            let decDoc = HistoryEncryptionMigration.decrypt(document: enc, key: key())
+            check("2262 migration decrypt", decDoc?.entries.count == 2)
+
+            // 5. Repository: encrypted persistence — reading the raw file
+            //    yields no transcript substring.
+            let fs = InMemoryHistoryFS()
+            let repo = ActorHistoryRepository(fileSystem: fs, keyProvider: { key() })
+            try? await repo.load()
+            await repo.add(HistoryEntry(originalText: "a", finalText: "top secret words",
+                                        duration: 1, modelUsed: "Tiny"))
+            let raw = fs.lastWrittenData
+            let rawString = String(data: raw ?? Data(), encoding: .utf8) ?? ""
+            check("2262 raw file has no transcript",
+                  !rawString.contains("top secret words"))
+            check("2262 raw file is encrypted doc",
+                  rawString.contains("AES-256-GCM") && rawString.contains("keyID"))
+
+            // 6. Repository round-trip with key: entries decrypt.
+            let fs2 = InMemoryHistoryFS()
+            let repo2 = ActorHistoryRepository(fileSystem: fs2, keyProvider: { key() })
+            try? await repo2.load()
+            await repo2.add(HistoryEntry(originalText: "a", finalText: "hello world",
+                                         duration: 1, modelUsed: "Tiny"))
+            let fs2b = InMemoryHistoryFS(preload: fs2.lastWrittenData)
+            let repo2b = ActorHistoryRepository(fileSystem: fs2b, keyProvider: { key() })
+            try? await repo2b.load()
+            let r2bEntries = await repo2b.entries()
+            check("2262 repo decrypt round-trip",
+                  r2bEntries.count == 1 && r2bEntries.first?.text == "hello world")
+
+            // 7. Missing key: recovery state, no plaintext, content stays
+            //    sealed on disk.
+            let fs3 = InMemoryHistoryFS(preload: fs2.lastWrittenData)
+            let repo3 = ActorHistoryRepository(fileSystem: fs3, keyProvider: { nil })
+            try? await repo3.load()
+            let r3Entries = await repo3.entries()
+            check("2262 missing key -> no entries", r3Entries.isEmpty)
+            let r3Recovery = await repo3.recoveryState
+            check("2262 missing key -> recovery state", r3Recovery != nil)
+            let raw3 = String(data: fs3.lastWrittenData ?? Data(), encoding: .utf8) ?? ""
+            check("2262 sealed content retained", raw3.contains("AES-256-GCM"))
+
+            // 8. Migration interruption (write failure) -> old store intact
+            //    (atomic), never mixed.
+            let fs4 = InMemoryHistoryFS()
+            let repo4 = ActorHistoryRepository(fileSystem: fs4, keyProvider: { key() })
+            try? await repo4.load()
+            await repo4.add(HistoryEntry(originalText: "a", finalText: "one",
+                                         duration: 1, modelUsed: "Tiny"))
+            let plainBefore = fs4.lastWrittenData
+            // Force write failure; persist must not corrupt the store.
+            fs4.failWrites = true
+            await repo4.add(HistoryEntry(originalText: "b", finalText: "two",
+                                         duration: 1, modelUsed: "Tiny"))
+            fs4.failWrites = false
+            // Old data remains readable (either old or new, never mixed).
+            let fs4b = InMemoryHistoryFS(preload: plainBefore)
+            let repo4b = ActorHistoryRepository(fileSystem: fs4b, keyProvider: { key() })
+            try? await repo4b.load()
+            let r4bEntries = await repo4b.entries()
+            check("2262 migration failure keeps old store", r4bEntries.count == 1)
+
+            // 9. Secure/unknown sessions remain excluded regardless of
+            //    encryption: policy gate unchanged.
+            check("2262 secure denied with encryption",
+                  !HistoryStoragePolicy.allowsWrite(sensitivity: .secure, outcome: nil))
+            check("2262 unknown denied with encryption",
+                  !HistoryStoragePolicy.allowsWrite(sensitivity: .unknown, outcome: nil))
+
+            // 10. Key material never enters the on-disk document.
+            let raw10 = String(data: fs2.lastWrittenData ?? Data(), encoding: .utf8) ?? ""
+            let keyHex = key().material.map { String(format: "%02x", $0) }.joined()
+            check("2262 key bytes absent from file", !raw10.contains(keyHex))
         }
 
         print("")
