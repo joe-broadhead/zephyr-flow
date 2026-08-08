@@ -841,7 +841,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "ee358be"
    ],
    "aurum_commits": [],
    "tests": [
