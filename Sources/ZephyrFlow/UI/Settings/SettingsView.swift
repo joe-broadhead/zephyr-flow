@@ -554,16 +554,38 @@ struct SettingsView: View {
         }
     }
 
+    @State private var launchLoginPending = false
+    @State private var launchLoginError: String?
+
+    /// JOE-2290: transactional toggle — pending -> external change -> verify ->
+    /// commit settings only on convergence; roll back + persistent error on
+    /// failure; approval/not-found states explain availability.
     private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
+        guard !launchLoginPending else { return }
+        launchLoginPending = true
+        launchLoginError = nil
+        Task { @MainActor in
+            let state = await LaunchAtLoginService.shared.apply(enabled: enabled)
+            launchLoginPending = false
+            switch state {
+            case .applied:
+                // Converged with verified system status — commit settings.
+                settings.update { $0.launchAtLogin = enabled }
+                launchLoginError = nil
+            case .rolledBack:
+                // Failed: settings JSON keeps the VERIFIED system state.
+                let status = LaunchAtLoginService.shared.authoritativeStatus()
+                settings.update { $0.launchAtLogin = (status == .registered) }
+                launchLoginError = LaunchAtLoginService.shared.availabilityMessage()
+                    ?? "Could not change Launch at Login. Open Login Items settings to fix."
+            default:
+                break
             }
-        } catch {
-            // Non-fatal when running unpackaged from build/
         }
+    }
+
+    private func openLoginItemsSettings() {
+        LaunchAtLoginService.shared.openLoginItemsSettings()
     }
 
     // Hotkey picker bridge

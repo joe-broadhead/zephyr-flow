@@ -1448,12 +1448,24 @@
     "JOE-2263"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (pending/commit/rollback, convergence rules, failed unregister rollback, commit-without-begin refused)",
+    "swift build: pass (SMAppService transaction service + SettingsView toggle wiring + recovery)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/LaunchAtLoginPolicy.swift",
+    "Sources/ZephyrFlow/Services/LaunchAtLoginService.swift",
+    "Sources/ZephyrFlow/UI/Settings/SettingsView.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2290/REPORT.md"
+   ],
+   "remaining_action": "Real signed-app install/enable/reboot/disable/uninstall qualification + screenshots + status-transition report (human-gate runbook)."
   },
   {
    "id": "JOE-2291",

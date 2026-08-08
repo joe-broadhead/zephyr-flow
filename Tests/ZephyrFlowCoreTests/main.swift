@@ -2112,6 +2112,40 @@ struct CoreTests {
                     && b.insertionConfidenceCounts["verified"] == 5)
         }
 
+        // ===== JOE-2290: transactional launch-at-login =====
+        do {
+            // Success: register -> status registered -> converge -> commit.
+            var tx = LaunchAtLoginTransaction()
+            tx.begin(desiredEnabled: true)
+            check("2290 pending entered", tx.isPending && tx.desiredEnabled == true)
+            tx.commit(verifiedStatus: .registered)
+            check("2290 committed after verified", tx.state == .applied)
+            // Failure: rollback leaves no false desired value.
+            var tx2 = LaunchAtLoginTransaction()
+            tx2.begin(desiredEnabled: true)
+            tx2.rollback(reason: "status did not converge")
+            check("2290 rollback clears desired",
+                  tx2.state == .rolledBack && tx2.desiredEnabled == nil
+                    && tx2.rollbackReason != nil)
+            // Convergence rule.
+            check("2290 convergence registered<=>true",
+                  LaunchAtLoginTransaction.statusConverges(status: .registered, desiredEnabled: true)
+                    && LaunchAtLoginTransaction.statusConverges(status: .notRegistered, desiredEnabled: false))
+            check("2290 requiresApproval never converges",
+                  !LaunchAtLoginTransaction.statusConverges(status: .requiresApproval, desiredEnabled: true)
+                    && !LaunchAtLoginTransaction.statusConverges(status: .notFound, desiredEnabled: true)
+                    && !LaunchAtLoginTransaction.statusConverges(status: .stale, desiredEnabled: false))
+            // Unregister failure rollback: no false "disabled" persisted.
+            var tx3 = LaunchAtLoginTransaction()
+            tx3.begin(desiredEnabled: false)
+            tx3.rollback(reason: "unregister failed")
+            check("2290 failed unregister rolls back", tx3.state == .rolledBack)
+            // Pending cannot commit before external change (idempotence).
+            var tx4 = LaunchAtLoginTransaction()
+            tx4.commit(verifiedStatus: .registered)
+            check("2290 commit without begin refused", tx4.state == .idle)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
