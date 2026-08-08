@@ -1080,6 +1080,119 @@ struct CoreTests {
                   InsertionStrategyResolver.strategies(bundleID: "com.google.Chrome", role: "AXTextField", mode: .alwaysCopy) == [.copyOnly])
         }
 
+        // ===== JOE-2248: audio stop/drain barrier + frame accounting =====
+        do {
+            // Property: randomized chunk sizes + converter ratios reconcile.
+            var seed = UInt64(42)
+            func rnd(_ n: UInt64) -> UInt64 {
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                return (seed >> 33) % n
+            }
+            var propertyOK = true
+            for _ in 0..<300 {
+                var acct = AudioFrameAccounting()
+                let ratio = [0.5, 1.0, 2.0, 0.75][Int(rnd(4))]
+                var captured: UInt64 = 0
+                var converted: UInt64 = 0
+                var dropped: UInt64 = 0
+                let chunkCount = Int(rnd(40)) + 1
+                for _ in 0..<chunkCount {
+                    let samples = UInt64(rnd(4000)) + 16
+                    captured &+= samples
+                    acct.noteCaptured(sourceSamples: samples)
+                    let out = UInt64((Double(samples) * ratio).rounded())
+                    converted &+= out
+                    acct.noteConverted(engineSamples: out)
+                    acct.noteDelivered(engineSamples: out)
+                }
+                let tol: UInt64 = 32
+                if !acct.reconciles(converterRatio: ratio, roundingToleranceSamples: tol) {
+                    propertyOK = false
+                }
+            }
+            check("2248 property: random chunk sizes/ratios reconcile", propertyOK)
+        }
+        do {
+            // Gap/overflow => degraded, never completes.
+            var acct = AudioFrameAccounting()
+            acct.noteCaptured(sourceSamples: 16000)
+            acct.noteDropped(sourceSamples: 8000, reason: .overflow)
+            acct.noteConverted(engineSamples: 8000)
+            acct.noteDelivered(engineSamples: 8000)
+            check("2248 dropped samples degrade the session",
+                  acct.isDegraded && !acct.reconciles(converterRatio: 1.0, roundingToleranceSamples: 0))
+            // Delivered < converted => mismatch.
+            var m = AudioFrameAccounting()
+            m.noteCaptured(sourceSamples: 16000)
+            m.noteConverted(engineSamples: 16000)
+            m.noteDelivered(engineSamples: 15000)
+            check("2248 delivered<converted fails reconciliation",
+                  !m.reconciles(converterRatio: 1.0, roundingToleranceSamples: 0))
+            // Exact success.
+            var ok = AudioFrameAccounting()
+            ok.noteCaptured(sourceSamples: 16000)
+            ok.noteConverted(engineSamples: 16000)
+            ok.noteDelivered(engineSamples: 16000)
+            check("2248 exact reconciliation succeeds",
+                  ok.reconciles(converterRatio: 1.0, roundingToleranceSamples: 0))
+            // Converter rounding within explicit tolerance.
+            var r = AudioFrameAccounting()
+            r.noteCaptured(sourceSamples: 16000)
+            r.noteConverted(engineSamples: 8000)
+            r.noteDelivered(engineSamples: 8000)
+            check("2248 ratio rounding within tolerance",
+                  r.reconciles(converterRatio: 0.5, roundingToleranceSamples: 1))
+        }
+        do {
+            // Drain barrier: finalization waits for a delayed final chunk.
+            var b = AudioDrainBarrier(deadlineNanosAhead: 1000)
+            b.begin(finalSequence: 4, nowNanos: 0)
+            check("2248 draining until final sequence",
+                  b.noteDelivered(sequence: 1, nowNanos: 100) == .draining
+                    && b.noteDelivered(sequence: 2, nowNanos: 200) == .draining
+                    && b.noteDelivered(sequence: 3, nowNanos: 300) == .draining
+                    && b.noteDelivered(sequence: 4, nowNanos: 400) == .drained)
+            check("2248 barrier complete after final sequence", b.isComplete)
+            // Drain timeout => degraded, not complete.
+            var t = AudioDrainBarrier(deadlineNanosAhead: 1000)
+            t.begin(finalSequence: 9, nowNanos: 0)
+            _ = t.noteDelivered(sequence: 1, nowNanos: 100)
+            check("2248 drain timeout degrades",
+                  t.noteDelivered(sequence: 2, nowNanos: 1100) == .timedOut && !t.isComplete)
+            // Late append after final acknowledgment is counted.
+            var late = AudioDrainBarrier(deadlineNanosAhead: 10_000)
+            late.begin(finalSequence: 2, nowNanos: 0)
+            _ = late.noteDelivered(sequence: 2, nowNanos: 100)
+            _ = late.noteDelivered(sequence: 3, nowNanos: 200)
+            check("2248 late append counted after ack", late.lateAppends == 1)
+            // Cancellation releases without deadlock / double finalization.
+            var c = AudioDrainBarrier(deadlineNanosAhead: 1000)
+            c.begin(finalSequence: 5, nowNanos: 0)
+            c.cancel()
+            check("2248 cancellation terminal", c.state == .cancelled)
+            check("2248 cancelled cannot double-finalize",
+                  c.noteDelivered(sequence: 5, nowNanos: 100) == .cancelled)
+        }
+        do {
+            // Channel sample accounting (content-free counts) via BoundedAudioChannel.
+            let sid = SessionID(token: "drain", sequence: 1, createdAtUptimeNanos: 0)
+            let ch = BoundedAudioChannel(sessionID: sid, capacity: 4)
+            let other = SessionID(token: "other", sequence: 2, createdAtUptimeNanos: 0)
+            _ = ch.enqueue(AudioChunk(sessionID: other, sequence: 0, startSample: 0, sampleRate: 16000, channelCount: 1, samples: [Float](repeating: 0, count: 100)))
+            _ = ch.enqueue(AudioChunk(sessionID: sid, sequence: 0, startSample: 0, sampleRate: 16000, channelCount: 1, samples: [Float](repeating: 0, count: 200)))
+            _ = ch.enqueue(AudioChunk(sessionID: sid, sequence: 1, startSample: 200, sampleRate: 16000, channelCount: 1, samples: [Float](repeating: 0, count: 300)))
+            let stats = ch.stats()
+            check("2248 channel sample accounting",
+                  stats.acceptedSamples == 500
+                    && stats.wrongSessionDroppedSamples == 100
+                    && stats.lastAcceptedSequence == 1)
+            ch.close()
+            _ = ch.enqueue(AudioChunk(sessionID: sid, sequence: 2, startSample: 500, sampleRate: 16000, channelCount: 1, samples: [Float](repeating: 0, count: 50)))
+            let closed = ch.stats()
+            check("2248 closed-drop samples counted",
+                  closed.closedDroppedSamples == 50 && closed.closedDropped == 1)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

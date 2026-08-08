@@ -56,6 +56,12 @@ public final class BoundedAudioChannel: @unchecked Sendable {
     private(set) public var wrongSessionRejected: UInt64 = 0
     private(set) public var closedDropped: UInt64 = 0
     private(set) public var enqueued: UInt64 = 0
+    // JOE-2248: sample-level accounting (never payloads) + EOS marker.
+    private(set) public var overflowDroppedSamples: UInt64 = 0
+    private(set) public var wrongSessionDroppedSamples: UInt64 = 0
+    private(set) public var closedDroppedSamples: UInt64 = 0
+    private(set) public var acceptedSamples: UInt64 = 0
+    private(set) public var lastAcceptedSequence: UInt64?
 
     public init(sessionID: SessionID, capacity: Int) {
         precondition(capacity > 0)
@@ -74,19 +80,24 @@ public final class BoundedAudioChannel: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard chunk.sessionID == sessionID else {
             wrongSessionRejected += 1
+            wrongSessionDroppedSamples += UInt64(chunk.samples.count)
             return .wrongSessionRejected
         }
         guard !closed_ else {
             closedDropped += 1
+            closedDroppedSamples += UInt64(chunk.samples.count)
             return .closed
         }
         guard count_ < capacity else {
             overflowDropped += 1
+            overflowDroppedSamples += UInt64(chunk.samples.count)
             return .overflowDropped
         }
         ring[(head_ + count_) % capacity] = chunk
         count_ += 1
         enqueued += 1
+        acceptedSamples += UInt64(chunk.samples.count)
+        lastAcceptedSequence = chunk.sequence
         continuation?.yield(chunk)
         return .accepted
     }
@@ -116,7 +127,12 @@ public final class BoundedAudioChannel: @unchecked Sendable {
                               enqueued: enqueued,
                               overflowDropped: overflowDropped,
                               wrongSessionRejected: wrongSessionRejected,
-                              closedDropped: closedDropped)
+                              closedDropped: closedDropped,
+                              acceptedSamples: acceptedSamples,
+                              overflowDroppedSamples: overflowDroppedSamples,
+                              wrongSessionDroppedSamples: wrongSessionDroppedSamples,
+                              closedDroppedSamples: closedDroppedSamples,
+                              lastAcceptedSequence: lastAcceptedSequence)
         }
     }
 }
@@ -134,8 +150,34 @@ public struct AudioChannelStats: Sendable, Equatable {
     public let overflowDropped: UInt64
     public let wrongSessionRejected: UInt64
     public let closedDropped: UInt64
+    // JOE-2248 sample-level counters (content-free).
+    public let acceptedSamples: UInt64
+    public let overflowDroppedSamples: UInt64
+    public let wrongSessionDroppedSamples: UInt64
+    public let closedDroppedSamples: UInt64
+    public let lastAcceptedSequence: UInt64?
+
+    public init(capacity: Int, enqueued: UInt64, overflowDropped: UInt64,
+                wrongSessionRejected: UInt64, closedDropped: UInt64,
+                acceptedSamples: UInt64, overflowDroppedSamples: UInt64,
+                wrongSessionDroppedSamples: UInt64, closedDroppedSamples: UInt64,
+                lastAcceptedSequence: UInt64?) {
+        self.capacity = capacity
+        self.enqueued = enqueued
+        self.overflowDropped = overflowDropped
+        self.wrongSessionRejected = wrongSessionRejected
+        self.closedDropped = closedDropped
+        self.acceptedSamples = acceptedSamples
+        self.overflowDroppedSamples = overflowDroppedSamples
+        self.wrongSessionDroppedSamples = wrongSessionDroppedSamples
+        self.closedDroppedSamples = closedDroppedSamples
+        self.lastAcceptedSequence = lastAcceptedSequence
+    }
 
     public var totalDropped: UInt64 { overflowDropped + wrongSessionRejected + closedDropped }
+    public var totalDroppedSamples: UInt64 {
+        overflowDroppedSamples + wrongSessionDroppedSamples + closedDroppedSamples
+    }
 }
 
 /// One-shot sequential gate: keeps the consumer honest even if upstream ever

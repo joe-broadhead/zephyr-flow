@@ -319,12 +319,25 @@
     "JOE-2247"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (300-run property reconciliation over random chunk sizes/ratios, drain barrier through final sequence, timeout/late-append/cancel, channel sample accounting)",
+    "swift build: pass (delivery-task drain barrier + frame accounting, counts-only logging)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/AudioDrain.swift",
+    "Sources/ZephyrFlowCore/AudioChannel.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2248/REPORT.md",
+    "docs/development/contracts/audio-channel.md"
+   ],
+   "remaining_action": "Soak/real-device frame-accounting evidence with long sessions + injected latency (human-gate runbook in report)."
   },
   {
    "id": "JOE-2249",

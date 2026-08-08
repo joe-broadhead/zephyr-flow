@@ -12,6 +12,12 @@ final class DictationController: ObservableObject {
     @Published var panelState: PanelState = .hidden
     @Published var interimText: String = ""
     @Published var audioLevels: [Float] = Array(repeating: 0.05, count: 24)
+    // JOE-2272: content-free review-panel presentation state.
+    @Published var reviewTitle: String?
+    @Published var reviewDetail: String?
+    @Published var reviewAllowsRetry = false
+    @Published var reviewWarnsCopy = false
+    @Published var reviewAllowsSettings = false
     @Published var statusMessage: String?
     @Published var isModelLoading = false
     @Published var modelDownloadFraction: Double?
@@ -50,6 +56,9 @@ final class DictationController: ObservableObject {
     private var audioSequencer = AudioChunkSequencer()
     private var audioDegraded = false
     private var pcmConverter: SessionAudioConverter?
+    // JOE-2248: frame accounting + drain barrier (counts only, never payloads).
+    private var audioAccounting = AudioFrameAccounting()
+    private var drainBarrier = AudioDrainBarrier(deadlineNanosAhead: 3_000_000_000)
     // JOE-2259: session sensitivity (fail-closed unknown until JOE-2268/2290
     // wire AX target evidence) + in-process review surface.
     private var sessionSensitivity: SessionSensitivity = .unknown
@@ -204,7 +213,7 @@ final class DictationController: ObservableObject {
     /// Retry with FRESH evidence: new session id + fresh snapshot + fresh
     /// validation against the original target (never a stale validation).
     func retryReview() {
-        guard let model = reviewModel, model.allowsRetry,
+        guard var model = reviewModel, model.allowsRetry,
               let text = reviewText else { return }
         _ = model.consume(.retryValidation, nowNanos: DispatchTime.now().uptimeNanoseconds)
         reviewModel = model
@@ -254,7 +263,9 @@ final class DictationController: ObservableObject {
                 text, preferPaste: restored,
                 mode: settings.settings.insertionMode,
                 targetBundleID: snapshot.target.bundleID,
-                sensitivity: validation.effectiveSensitivity)
+                sensitivity: validation.effectiveSensitivity,
+                sessionID: sid,
+                copyOnlyOverrides: Set(settings.settings.copyOnlyOverrideBundleIDs))
             switch result {
             case .verifiedInserted:
                 _ = control.stage(.insertionSucceeded)
@@ -619,15 +630,26 @@ final class DictationController: ObservableObject {
                 audioDeliveryTask = Task { [weak self] in
                     for await chunk in channel.chunks {
                         guard let self else { return }
+                        self.audioAccounting.noteCaptured(sourceSamples: UInt64(chunk.samples.count))
                         // Reordered/late chunks can never be appended: counted,
                         // skipped, and the session is marked degraded.
                         if chunk.sequence < self.audioSequencer.nextExpected {
                             self.audioDegraded = true
+                            self.audioAccounting.noteDropped(sourceSamples: UInt64(chunk.samples.count),
+                                                              reason: .lateAppend)
                             continue
                         }
                         self.audioSequencer.accept(chunk)
-                        guard let mono = converter.convert(chunk) else { continue }
+                        guard let mono = converter.convert(chunk) else {
+                            self.audioAccounting.noteDropped(sourceSamples: UInt64(chunk.samples.count),
+                                                              reason: .converterFailure)
+                            continue
+                        }
+                        self.audioAccounting.noteConverted(engineSamples: UInt64(mono.count))
                         await engine.appendAudio(mono)
+                        self.audioAccounting.noteDelivered(engineSamples: UInt64(mono.count))
+                        _ = self.drainBarrier.noteDelivered(sequence: chunk.sequence,
+                                                            nowNanos: DispatchTime.now().uptimeNanoseconds)
                     }
                 }
                 try await audio.start(sessionID: sid, channel: channel)
@@ -675,24 +697,49 @@ final class DictationController: ObservableObject {
 
         await audio.stop()
         if !usingAppleEngine {
-            // Drain the bounded ordered channel into the engine BEFORE
-            // finalize so delivery order is exact, then surface degradation.
-            await audioDeliveryTask?.value
+            // JOE-2248: end-of-stream drain barrier. Begin at the final
+            // accepted producer sequence; the delivery task drains through it.
             let channel = audioChannel
+            if let finalSeq = channel?.stats().lastAcceptedSequence {
+                drainBarrier.begin(finalSequence: finalSeq,
+                                   nowNanos: DispatchTime.now().uptimeNanoseconds)
+            }
+            await audioDeliveryTask?.value
             let stats = await audio.captureStats()
             let seqDegraded = audioSequencer.isDegraded
             let channelDegraded = channel?.isDegraded ?? false
-            ZFLog.info("Capture stats enqueued=\(stats.enqueued) overflowDropped=\(stats.overflowDropped) wrongSession=\(stats.wrongSessionRejected) peakRMS=\(String(format: "%.5f", stats.peakRMS))")
-            if seqDegraded || channelDegraded {
-                // Overflow/desync/cross-session means the capture is not a
-                // complete session: fail closed instead of ordinary success.
-                ZFLog.info("Audio capture degraded — discard (overflow=\(stats.overflowDropped) reject=\(stats.wrongSessionRejected))")
+            let barrierTimedOut = drainBarrier.state == .timedOut
+            let lateAppends = drainBarrier.lateAppends
+            // Fold channel-level drops into the accounting (counts only);
+            // only non-zero drops degrade.
+            if stats.overflowDropped > 0 {
+                audioAccounting.noteDropped(sourceSamples: stats.overflowDroppedSamples, reason: .overflow)
+            }
+            if stats.wrongSessionRejected > 0 {
+                audioAccounting.noteDropped(sourceSamples: stats.wrongSessionDroppedSamples, reason: .wrongSession)
+            }
+            if stats.closedDropped > 0 {
+                audioAccounting.noteDropped(sourceSamples: stats.closedDroppedSamples, reason: .closedDrop)
+            }
+            // Reconcile captured/converted/delivered within converter rounding.
+            let ratio = SessionAudioConverter.targetSampleRate / 16000.0
+            let reconciled = audioAccounting.reconciles(converterRatio: ratio,
+                                                        roundingToleranceSamples: 64)
+            // Persist ONLY counts and controlled reasons — never audio payloads.
+            ZFLog.info("Capture stats enqueued=\(stats.enqueued) acceptedSamples=\(stats.acceptedSamples) captured=\(audioAccounting.capturedSourceSamples) converted=\(audioAccounting.convertedEngineSamples) delivered=\(audioAccounting.deliveredEngineSamples) droppedSamples=\(stats.totalDroppedSamples) overflow=\(stats.overflowDropped) reject=\(stats.wrongSessionRejected) peakRMS=\(String(format: "%.5f", stats.peakRMS))")
+            ZFLog.info("Drain state=\(drainBarrier.state.rawValue) lateAppends=\(lateAppends) seqDegraded=\(seqDegraded) channelDegraded=\(channelDegraded) reconciled=\(reconciled)")
+            if seqDegraded || channelDegraded || barrierTimedOut || lateAppends > 0 || !reconciled {
+                // Gap/overflow/drain-timeout/reconciliation-mismatch means the
+                // capture is not complete: fail closed, never ordinary success.
+                ZFLog.info("Audio capture degraded — discard (state=\(drainBarrier.state.rawValue) late=\(lateAppends) reconciled=\(reconciled))")
                 _ = control.stage(.captureFailed)
                 showError("Audio capture degraded — partial session discarded")
                 await activeEngine.cancel()
                 audioDeliveryTask = nil
                 audioChannel = nil
                 pcmConverter = nil
+                audioAccounting = AudioFrameAccounting()
+                drainBarrier = AudioDrainBarrier(deadlineNanosAhead: 3_000_000_000)
                 return
             }
         }
@@ -797,7 +844,9 @@ final class DictationController: ObservableObject {
                     preferPaste: restored,
                     mode: settings.settings.insertionMode,
                     targetBundleID: snapshot.target.bundleID,
-                    sensitivity: validation.effectiveSensitivity
+                    sensitivity: validation.effectiveSensitivity,
+                    sessionID: sid,
+                    copyOnlyOverrides: Set(settings.settings.copyOnlyOverrideBundleIDs)
                 )
                 ZFLog.info("Insertion result: \(String(describing: result))")
                 switch result {
