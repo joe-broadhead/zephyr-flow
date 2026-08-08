@@ -40,15 +40,28 @@ public struct SessionControlModel: Sendable, Equatable {
     @discardableResult
     public mutating func begin(nowNanos: UInt64 = 0) -> SessionID? {
         guard admissionOpen else { return nil }
-        // Duplicate press while a session is active: idempotent no-op.
         if state != .idle && !state.isTerminal { return nil }
-        // After a terminal outcome a NEW session may begin (each Fn press
-        // starts a fresh session); identity monotonicity keeps callbacks apart.
         sessionID = nil
         terminal = nil
         state = .idle
         generation &+= 1
         let sid = makeSessionID(createdAtNanos: nowNanos)
+        sessionID = sid
+        _ = apply(.begin, sid: sid)
+        return sid
+    }
+
+    /// Admit a pre-allocated (factory-unique) SessionID — JOE-2244: the
+    /// per-session actor admits identity from a SHARED monotonic source so
+    /// two successive sessions can never collide.
+    @discardableResult
+    public mutating func begin(sessionID sid: SessionID) -> SessionID? {
+        guard admissionOpen else { return nil }
+        if state != .idle && !state.isTerminal { return nil }
+        sessionID = nil
+        terminal = nil
+        state = .idle
+        generation &+= 1
         sessionID = sid
         _ = apply(.begin, sid: sid)
         return sid

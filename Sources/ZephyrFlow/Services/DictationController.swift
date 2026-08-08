@@ -4,7 +4,11 @@ import Combine
 import AppKit
 import ZephyrFlowCore
 
-/// Orchestrates hotkey → capture → transcribe → flow → insert.
+/// JOE-2244: thin MainActor UI projection. Session truth, resource ownership
+/// and stage orchestration live in the isolated per-session `DictationSession`
+/// actor; this coordinator only creates sessions, maps typed UI states and
+/// owns app-level responsibilities (permissions, settings/onboarding,
+/// hotkey, review actions).
 @MainActor
 final class DictationController: ObservableObject {
     static let shared = DictationController(environment: AppEnvironment.production())
@@ -23,93 +27,43 @@ final class DictationController: ObservableObject {
     @Published var modelDownloadFraction: Double?
     @Published var activeFlowStyle: FlowStyle = .clean
     @Published var engineLabel: String = "—"
-    /// Bundle id captured at session start for insertion strategies.
-    private(set) var sessionTargetBundleID: String?
 
-    // JOE-2243: dependency-injected environment (production assembled at
-    // launch; tests inject fakes). UI/infrastructure singletons below remain
-    // production providers only.
+    // JOE-2243: dependency-injected environment.
     private let environment: AppEnvironment
-    private let insertion: any InsertionServiceProtocol
-    private let flow: any FlowProcessorProtocol
     private let audio = AudioCapture.shared
     private let settingsStore = SettingsStore.shared
-    private let historyStore = HistoryStore.shared
     private let privacy = PrivacyService.shared
     private let hotkey = HotkeyService.shared
     private let modelReadiness = ModelReadinessStore.shared
+    private let focus = FocusStore.shared
 
     private var appleEngine = AppleSpeechEngine()
     private var whisperEngine = WhisperKitEngine()
     private var activeEngine: any WhisperEngineProtocol
-    private var levelsTask: Task<Void, Never>?
-    private var isSessionActive = false
+    private var usingAppleEngine = false
+    /// Bumped on engine switch; each session captures its own token.
+    private var currentEngineToken = EngineToken()
     /// Serializes begin/end/cancel so concurrent hotkey Tasks cannot race.
     private var sessionChain: Task<Void, Never>?
-    /// Bumps on each begin; end ignores stale generations.
-    private var sessionGeneration: UInt64 = 0
-    private var usingAppleEngine = false
-    /// Deterministic session control plane (JOE-2246): SessionID, admission,
-    /// idempotent edges and exactly-one terminal outcome.
-    private var control = SessionControlModel()
-    private var currentSessionID: SessionID?
-    // JOE-2247 bounded ordered audio: one producer (tap -> channel), one
-    // ordered consumer task feeding the selected engine.
-    private var audioChannel: BoundedAudioChannel?
-    private var audioDeliveryTask: Task<Void, Never>?
-    private var audioSequencer = AudioChunkSequencer()
-    private var audioDegraded = false
-    private var pcmConverter: SessionAudioConverter?
-    // JOE-2248: frame accounting + drain barrier (counts only, never payloads).
-    private var audioAccounting = AudioFrameAccounting()
-    private var drainBarrier = AudioDrainBarrier(deadlineNanosAhead: 3_000_000_000)
-    // JOE-2259: session sensitivity (fail-closed unknown until JOE-2268/2290
-    // wire AX target evidence) + in-process review surface.
-    private var sessionSensitivity: SessionSensitivity = .unknown
-    private var reviewSession: SecureSessionReview?
-    private var reviewClearTask: Task<Void, Never>?
-    // JOE-2272: content-free review model for the current uncertain outcome
-    // (reason + safe actions + retention), shown with the review session.
+    private var admissionOpen = true
+    /// The active per-session actor (nil between sessions). Successive
+    /// sessions are distinct actors + providers — no shared mutable state.
+    private var session: DictationSession?
+    /// Shared monotonic identity source: successive sessions never collide.
+    private let sessionIDFactory = SessionIDFactory()
+    private var sessionTask: Task<Void, Never>?
+    private var stateTask: Task<Void, Never>?
     private var reviewModel: InsertionReviewModel?
     private var reviewText: String?
-    // JOE-2268: immutable per-session AX target evidence + validator service.
-    private var targetSnapshot: TargetSnapshot?
-    // JOE-2249: session-bound engine snapshot + callback gate.
-    private var currentEngineToken = EngineToken()
-    private var activeSessionBinding: SessionEngineBinding?
-    private var callbackGate = CallbackGate()
-    private var sessionEngine: (any WhisperEngineProtocol)?
-    // JOE-2264: exactly-one terminal telemetry event per session.
-    private var terminalGuard: TerminalGuard?
+    private var reviewSession: SecureSessionReview?
+    private var reviewClearTask: Task<Void, Never>?
+    /// Retained for review presentation (session identity is immutable).
+    private var lastSessionID: SessionID?
 
     init(environment: AppEnvironment) {
         self.environment = environment
-        self.insertion = environment.insertion
-        self.flow = environment.flow
-        activeEngine = environment.engines.whisper ?? WhisperKitEngine()
-        usingAppleEngine = false
-        activeFlowStyle = settingsStore.settings.defaultFlowStyle
+        self.activeEngine = whisperEngine
         configureFlowRouter()
-    }
-
-    private func configureFlowRouter() {
-        // The environment owns the Flow pipeline; only the production
-        // FlowRouter needs backend configuration (fakes are pre-configured).
-        guard let router = flow as? FlowRouter else { return }
-        Task {
-            await router.configure(
-                backend: { await MainActor.run { SettingsStore.shared.settings.flowBackend } },
-                enhancedReady: {
-                    await MainActor.run {
-                        let s = SettingsStore.shared.settings
-                        // Enhanced path is lightweight deterministic rules — ready whenever selected.
-                        return s.flowBackend == .enhanced || s.flowBackend == .auto || s.flowBackend.rawValue == "neural"
-                    }
-                },
-                enhanced: EnhancedFlowProcessor.shared
-            )
-            await EnhancedFlowProcessor.shared.refreshAvailability()
-        }
     }
 
     // MARK: - Lifecycle
@@ -136,7 +90,6 @@ final class DictationController: ObservableObject {
         Task.detached { [weak self] in
             await self?.preloadEngine()
         }
-        // Pre-flight permissions so the first Fn press is never blocked on a dialog
         Task { await self.ensurePermissionsUpFront() }
         ZFLog.info("DictationController started hotkey=\(settingsStore.settings.hotkey.displayName)")
     }
@@ -146,242 +99,18 @@ final class DictationController: ObservableObject {
         let needUI = !privacy.status.microphone
             || !privacy.status.speechRecognition
             || !privacy.status.accessibility
-
-        guard needUI else {
-            ZFLog.info("Permissions already granted")
-            return
-        }
-
-        // Prefer the stepped Setup window over stacking raw system sheets at launch.
-        // System prompts fire one-at-a-time from OnboardingView for clean UX.
+        guard needUI else { return }
         if !settingsStore.settings.hasCompletedOnboarding {
             ZFLog.info("Permission preflight deferred to onboarding")
             return
         }
-
         ZFLog.info("Missing permissions after onboarding — reopening Setup")
         await MainActor.run {
             WindowRouter.openOnboarding()
         }
     }
 
-
-    // MARK: Sensitivity + review (JOE-2259)
-
-    /// Session decision: fail-closed unknown until target evidence wiring
-    /// (JOE-2268/2290). Until then every session is review-only by policy.
-    private func sensitivityDecision() -> SessionSensitivityDecision {
-        SessionSensitivityDecision(sensitivity: sessionSensitivity,
-                                   source: .noEvidence,
-                                   upgradedBeforeInsertion: false)
-    }
-
-    /// Review-only surface for secure/unknown sessions. The text lives ONLY
-    /// in the SecureSessionReview object (in-process memory); it is never
-    /// logged, persisted, or exposed to history/clipboard automatically.
-    private func presentSecureReview(_ text: String) {
-        guard let sid = currentSessionID else { return }
-        let review = SecureSessionReview(sessionID: sid, text: text,
-                                         nowNanos: environment.clock.nowNanos(),
-                                         deadlineNanosAhead: 30_000_000_000)
-        reviewSession = review
-        interimText = text
-        panelState = .reviewing
-        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
-        reviewClearTask?.cancel()
-        reviewClearTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
-            guard let self else { return }
-            await MainActor.run { self.clearReview(reason: .deadlineExpired) }
-        }
-    }
-
-    /// Persistent review panel for uncertain outcomes (JOE-2272): controlled
-    /// reason, no green success, safe actions only, in-process text.
-    private func presentReview(outcome: InsertionOutcome, text: String) {
-        let now = environment.clock.nowNanos()
-        var model = InsertionReviewModel(outcome: outcome, createdAtNanos: now)
-        reviewModel = model
-        reviewText = text
-        guard let sid = currentSessionID else { return }
-        let review = SecureSessionReview(sessionID: sid, text: text,
-                                         nowNanos: now,
-                                         deadlineNanosAhead: 30_000_000_000)
-        reviewSession = review
-        interimText = text
-        panelState = .reviewing
-        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
-        reviewClearTask?.cancel()
-        reviewClearTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
-            guard let self else { return }
-            await MainActor.run {
-                var m = self.reviewModel
-                if m?.expired(nowNanos: environment.clock.nowNanos()) == true {
-                    self.reviewModel?.clear(.expired)
-                    self.clearReview(reason: .deadlineExpired)
-                }
-            }
-        }
-        ZFLog.info("review presented outcome=\(outcome) len=\(text.count)")
-    }
-
-    /// Retry with FRESH evidence: new session id + fresh snapshot + fresh
-    /// validation against the original target (never a stale validation).
-    func retryReview() {
-        guard var model = reviewModel, model.allowsRetry,
-              let text = reviewText else { return }
-        _ = model.consume(.retryValidation, nowNanos: environment.clock.nowNanos())
-        reviewModel = model
-        let attemptText = text
-        clearReview(reason: .retriedWithFreshIntent)
-        Task { [weak self] in
-            guard let self else { return }
-            await self.retryInsertion(text: attemptText)
-        }
-    }
-
-    private func retryInsertion(text: String) async {
-        // Fresh session (begin() after terminal is allowed by JOE-2246),
-        // fresh snapshot, fresh validation — explicit user intent.
-        guard let sid = control.begin() else {
-            ZFLog.info("retry rejected by control plane")
-            return
-        }
-        currentSessionID = sid
-        targetSnapshot = environment.targetValidation.captureSnapshot(
-            sessionID: sid,
-            nowNanos: environment.clock.nowNanos())
-        sessionSensitivity = targetSnapshot?.sensitivity.sensitivity ?? .unknown
-        sessionTargetBundleID = targetSnapshot?.target.bundleID
-
-        // Sensitive/unknown on retry => review again, never auto insert.
-        if !sessionAllowsAutomaticSideEffects {
-            presentReview(outcome: .secureTarget, text: text)
-            return
-        }
-        guard let snapshot = targetSnapshot else {
-            presentReview(outcome: .targetUnknown, text: text)
-            return
-        }
-        var validation = TargetValidationSession(sessionID: sid, snapshot: snapshot,
-                                                 deadlineNanosAhead: 2_000_000_000)
-        validation.start(nowNanos: environment.clock.nowNanos())
-        let monitor = await environment.targetValidation.restoreToCapturedTarget(snapshot: snapshot, deadlineNanosAhead: 2_000_000_000)
-        let restored = monitor.status == .restored
-        let context = environment.targetValidation.currentContext(nowNanos: environment.clock.nowNanos())
-        let outcome = validation.validate(context: context,
-                                          nowNanos: environment.clock.nowNanos())
-        switch outcome {
-        case .validated:
-            _ = control.stage(.targetValidationSucceeded)
-            let result = await environment.insertion.insert(
-                text, preferPaste: restored,
-                mode: settingsStore.settings.insertionMode,
-                targetBundleID: snapshot.target.bundleID,
-                sensitivity: validation.effectiveSensitivity,
-                sessionID: sid,
-                copyOnlyOverrides: Set(settingsStore.settings.copyOnlyOverrideBundleIDs))
-            switch result {
-            case .verifiedInserted:
-                _ = control.stage(.insertionSucceeded)
-                interimText = text
-                panelState = .success
-                statusMessage = nil
-                dismissPanelSoon()
-            case .explicitlyCopiedByUser:
-                _ = control.stage(.insertionSucceeded)
-                interimText = text
-                panelState = .success
-                statusMessage = result.userFacingMessage
-                clearStatusLater()
-                dismissPanelSoon()
-            case .eventPostedUnverified:
-                _ = control.stage(.insertionSucceeded)
-                interimText = text
-                panelState = .success
-                statusMessage = result.userFacingMessage
-                clearStatusLater()
-                dismissPanelSoon()
-            default:
-                _ = control.stage(.insertionFailed)
-                presentReview(outcome: .targetUnknown, text: text)
-            }
-        case .targetGone:
-            _ = control.stage(.targetChanged)
-            presentReview(outcome: .targetGone, text: text)
-        case .targetChanged:
-            _ = control.stage(.targetChanged)
-            presentReview(outcome: .targetChanged, text: text)
-        case .notEditable:
-            _ = control.stage(.targetChanged)
-            presentReview(outcome: .notEditable, text: text)
-        case .targetUnknown:
-            _ = control.stage(.targetUnknown)
-            presentReview(outcome: .targetUnknown, text: text)
-        case .secureTarget:
-            _ = control.stage(.targetSecure)
-            presentReview(outcome: .secureTarget, text: text)
-        case .deadlineExceeded:
-            _ = control.stage(.deadlineViolated)
-            presentReview(outcome: .deadlineExceeded, text: text)
-        }
-    }
-
-    func discardReview() {
-        reviewModel?.clear(.userDiscarded)
-        clearReview(reason: .userDismissed)
-    }
-
-    func openAccessibilitySettings() {
-        reviewModel?.clear(.userDiscarded)
-        clearReview(reason: .userDismissed)
-        Task { await MainActor.run { WindowRouter.openOnboarding() } }
-    }
-
-    /// Explicit, informed user copy for secure/unknown sessions. Consumes the
-    /// review content and writes ONLY then; audit stays content-free.
-    func copyReviewContent() {
-        guard let review = reviewSession else { return }
-        let decision = sensitivityDecision()
-        guard let taken = review.consumeForExplicitCopy(decision: decision,
-                                                        nowNanos: environment.clock.nowNanos()) else {
-            return
-        }
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(taken.text, forType: .string)
-        ZFLog.info("Secure explicit copy sensitivity=\(taken.audit.sensitivity.rawValue) upgraded=\(taken.audit.upgradedBeforeInsertion)")
-        reviewSession = nil
-        reviewClearTask?.cancel()
-        reviewClearTask = nil
-        panelState = .success
-    }
-
-    func clearReview(reason: SecureSessionReview.ClearReason) {
-        reviewSession?.clear(reason: reason)
-        reviewSession = nil
-        reviewClearTask?.cancel()
-        reviewClearTask = nil
-        reviewModel = nil
-        reviewText = nil
-        reviewTitle = nil
-        reviewDetail = nil
-        reviewAllowsRetry = false
-        reviewWarnsCopy = false
-        reviewAllowsSettings = false
-        panelState = .hidden
-        interimText = ""
-    }
-
-    private var sessionAllowsAutomaticSideEffects: Bool {
-        sessionSensitivity.allowsAutomaticSideEffects
-    }
-
-    /// JOE-2266: async termination handshake. Closes admission first,
-    /// finishes the active session, stops audio, quiesces the engine, resolves
-    /// pasteboard, flushes storage and restores the Fn preference exactly.
-    /// Returns the handshake state (completed/abandoned) for the delegate.
+    /// JOE-2266: 7-step termination handshake (deadline-bounded).
     func terminate(deadlineNanosAhead: UInt64 = 3_000_000_000) async -> TerminationState {
         var handshake = TerminationHandshake(deadlineNanosAhead: deadlineNanosAhead)
         let t0 = environment.clock.nowNanos()
@@ -390,36 +119,34 @@ final class DictationController: ObservableObject {
 
         // 1. Close new-session/hotkey admission first.
         hotkey.stop()
-        control.shutdown()
+        admissionOpen = false
         _ = handshake.completeStep(.admissionClosed, nowNanos: now())
 
-        // 2. Finish/cancel the active session (single terminal outcome).
-        if isSessionActive, let sid = currentSessionID {
-            callbackGate.close(reason: .cancelled)
-            activeSessionBinding = nil
-            _ = control.cancel()
-            await audio.stop()
-            currentSessionID = nil
+        // 2. Finish/cancel the active session (single terminal outcome in the
+        // per-session actor; exactly-once release happens there).
+        if let session {
+            sessionTask?.cancel()
+            await session.cancel()
+            sessionTask = nil
+            stateTask?.cancel()
+            stateTask = nil
+            self.session = nil
         }
         _ = handshake.completeStep(.sessionFinished, nowNanos: now())
 
-        // 3. Stop + drain audio safely.
-        audioDeliveryTask?.cancel()
-        audioDeliveryTask = nil
-        audioChannel = nil
-        pcmConverter = nil
+        // 3. Audio already owned/released by the session's provider; ensure the
+        // shared capture is stopped.
+        await audio.stop()
         _ = handshake.completeStep(.audioStopped, nowNanos: now())
 
-        // 4. Quiesce engine operations with a bounded deadline.
-        await (sessionEngine ?? activeEngine).cancel()
-        sessionEngine = nil
+        // 4. Quiesce engines with a bounded deadline.
+        await activeEngine.cancel()
         _ = handshake.completeStep(.enginesQuiesced, nowNanos: now())
 
-        // 5. Pasteboard restoration already resolved inside the insert
-        // transaction (typed outcome); nothing outstanding to complete.
+        // 5. Pasteboard restoration resolved inside the insert transaction.
         _ = handshake.completeStep(.pasteboardResolved, nowNanos: now())
 
-        // 6. Flush settings/history/metrics (repositories persist on write).
+        // 6. Flush settings/history/metrics.
         settingsStore.save()
         await environment.metrics.record(
             MetricsEvent(kind: .sessionCompleted, value: 0, atNanos: now()))
@@ -436,34 +163,299 @@ final class DictationController: ObservableObject {
 
     func stop() {
         hotkey.stop()
-        levelsTask?.cancel()
-        // Close admission and abandon any active session honestly (JOE-2246).
-        control.shutdown()
-        // JOE-2249: stop closes the callback gate and releases the
-        // session-bound engine reference.
-        callbackGate.close(reason: .cancelled)
-        activeSessionBinding = nil
-        sessionEngine = nil
-        // JOE-2259: never leave review content resident at termination.
+        admissionOpen = false
+        sessionTask?.cancel()
+        stateTask?.cancel()
+        sessionTask = nil
+        stateTask = nil
+        if let session {
+            Task { await session.cancel() }
+        }
+        session = nil
         reviewSession?.clear(reason: .appTerminating)
         reviewSession = nil
         reviewClearTask?.cancel()
         reviewClearTask = nil
-        currentSessionID = nil
-        Task {
-            await audio.stop()
-            await audioDeliveryTask?.value
-            audioDeliveryTask = nil
-            audioChannel = nil
-            pcmConverter = nil
-            await activeEngine.cancel()
-        }
         panelState = .hidden
-        isSessionActive = false
+        interimText = ""
+        FloatingPanelController.shared.hide()
+        ZFLog.info("DictationController stopped")
     }
 
+    // MARK: - Session (thin projection)
+
+    private func beginSession() async {
+        guard admissionOpen, session == nil else {
+            ZFLog.info("beginSession ignored — admission closed or session active")
+            return
+        }
+        // App-level fail-fast permission checks (never await dialogs here).
+        privacy.refresh()
+        guard privacy.status.microphone else {
+            showError("Microphone permission required")
+            Task { await ensurePermissionsUpFront() }
+            return
+        }
+        if usingAppleEngine && !privacy.status.speechRecognition {
+            showError("Speech Recognition permission required")
+            Task { await ensurePermissionsUpFront() }
+            return
+        }
+
+        // Surface model download state if Whisper isn't ready yet.
+        if !usingAppleEngine {
+            let model = settingsStore.settings.preferredModel
+            let ready = ModelReadinessStore.shared.readiness(for: model)
+            if case .downloading = ready.state {
+                interimText = ModelReadinessStore.shared.bannerMessage ?? "Downloading model…"
+            } else if case .failed(let msg) = ready.state {
+                showError(msg)
+                return
+            }
+        }
+
+        let ready = await activeEngine.isReady
+        if !ready {
+            await preloadEngine()
+        }
+        guard admissionOpen, session == nil else { return }
+
+        // Remember where the user was typing BEFORE any of our UI steals focus.
+        focus.captureNow()
+
+        activeFlowStyle = settingsStore.settings.defaultFlowStyle
+        panelState = .listening
+        interimText = ""
+        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
+
+        // Build a FRESH provider + FRESH actor per session: no shared mutable
+        // tasks, buffers, target identity or callbacks across sessions.
+        let settings = SessionSettingsSnapshot(
+            localOnly: settingsStore.settings.localOnlyMode,
+            language: settingsStore.settings.language,
+            defaultFlowStyle: settingsStore.settings.defaultFlowStyle,
+            insertionMode: settingsStore.settings.insertionMode.rawValue,
+            saveHistory: settingsStore.settings.saveHistory,
+            copyOnlyOverrideBundleIDs: Array(settingsStore.settings.copyOnlyOverrideBundleIDs))
+        let provider = ProductionSessionStages(
+            environment: environment,
+            engine: activeEngine,
+            engineKind: usingAppleEngine ? .appleSpeech : .whisper,
+            engineToken: currentEngineToken)
+        let s = DictationSession(
+            provider: provider,
+            engineChoice: usingAppleEngine ? .appleSpeech : .whisper,
+            settings: settings,
+            idFactory: sessionIDFactory)
+        session = s
+        sessionTask = Task { await s.run() }
+        // SessionID is immutable; read it for review presentation.
+        Task { [weak self] in
+            guard let self else { return }
+            self.lastSessionID = await s.sessionID
+        }
+        stateTask = Task { [weak self] in
+            guard let self else { return }
+            for await state in await s.subscribe() {
+                self.apply(state)
+            }
+        }
+        ZFLog.info("Session begun (session allocated)")
+    }
+
+    private func endSession() async {
+        guard let session else {
+            ZFLog.info("endSession ignored — no active session")
+            return
+        }
+        panelState = .processing
+        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
+        await session.end()
+    }
+
+    func cancelSession() {
+        enqueueSession {
+            await self.session?.cancel()
+        }
+    }
+
+    /// Panel "stop & insert" button.
+    func stopAndInsert() {
+        enqueueSession {
+            await self.session?.end()
+        }
+    }
+
+    func toggleManualSession() {
+        enqueueSession {
+            if self.session == nil {
+                await self.beginSession()
+            } else {
+                await self.endSession()
+            }
+        }
+    }
+
+    func applyQuickAction(_ style: FlowStyle) {
+        activeFlowStyle = style
+    }
+
+    // MARK: - Review actions (app-level; decisions forward to the actor)
+
+    func retryReview() {
+        guard reviewModel?.allowsRetry == true, reviewText != nil else { return }
+        guard var model = reviewModel else { return }
+        _ = model.consume(.retryValidation, nowNanos: environment.clock.nowNanos())
+        reviewModel = model
+        clearReview(reason: .retriedWithFreshIntent)
+        Task { await self.session?.retryInsertion() }
+    }
+
+    func discardReview() {
+        clearReview(reason: .userDismissed)
+        Task { await self.session?.discard() }
+    }
+
+    func copyReviewContent() {
+        guard let text = reviewText else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        statusMessage = "Copied to clipboard — paste where you need it"
+        clearReview(reason: .consumedByExplicitCopy)
+        Task { await self.session?.discard() }
+    }
+
+    func openAccessibilitySettings() {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func clearReview(reason: SecureSessionReview.ClearReason) {
+        reviewSession?.clear(reason: reason)
+        reviewSession = nil
+        reviewModel = nil
+        reviewText = nil
+        reviewClearTask?.cancel()
+        reviewClearTask = nil
+        panelState = .hidden
+        interimText = ""
+        FloatingPanelController.shared.hide()
+        hotkey.resetToggle()
+    }
+
+    // MARK: - UI state mapping (actor -> projection)
+
+    private func apply(_ state: SessionUIState) {
+        switch state.phase {
+        case .listening:
+            panelState = .listening
+            interimText = state.interimText
+        case .processing:
+            panelState = .processing
+        case .success:
+            interimText = state.interimText
+            let presentation = UIStatePolicy.presentation(
+                engineCompleteness: state.outputs.engineResult?.completeness ?? .complete,
+                flowStatus: state.outputs.flowOutcome?.status ?? .accepted,
+                insertion: state.outputs.insertion ?? .failed("Insertion outcome unavailable"))
+            statusMessage = presentation.message
+            switch presentation.semantic {
+            case .verifiedSuccess, .neutral:
+                panelState = .success
+                dismissPanelSoon()
+            case .unverifiedPosted:
+                panelState = .warning
+            case .review:
+                presentReview(outcome: state.outputs.insertion ?? .failed("Insertion outcome unavailable"), text: state.interimText)
+            case .warning:
+                panelState = .warning
+            case .error:
+                panelState = .error(presentation.title ?? "Insertion issue")
+            case .processing:
+                panelState = .processing
+            }
+        case .warning:
+            panelState = .warning
+            statusMessage = "Transcript incomplete — discarded"
+        case .review:
+            if let insertion = state.outputs.insertion {
+                presentReview(outcome: insertion, text: state.interimText)
+            } else if let validation = state.outputs.validation {
+                presentReview(outcome: Self.reviewOutcome(for: validation),
+                              text: state.interimText)
+            } else {
+                // Secure/unknown session review (JOE-2259).
+                presentSecureReview(state.interimText)
+            }
+        case .error:
+            showError("Session failed")
+        case .hidden:
+            panelState = .hidden
+            interimText = ""
+            FloatingPanelController.shared.hide()
+        case .idle:
+            break
+        }
+    }
+
+    /// Persistent review panel for uncertain outcomes (JOE-2272).
+    private func presentReview(outcome: InsertionOutcome, text: String) {
+        let now = environment.clock.nowNanos()
+        var model = InsertionReviewModel(outcome: outcome, createdAtNanos: now)
+        reviewModel = model
+        reviewText = text
+        guard let sid = lastSessionID else { return }
+        let review = SecureSessionReview(sessionID: sid, text: text,
+                                         nowNanos: now,
+                                         deadlineNanosAhead: 30_000_000_000)
+        reviewSession = review
+        interimText = text
+        reviewTitle = model.title
+        reviewDetail = model.detail
+        reviewAllowsRetry = model.allowsRetry
+        reviewWarnsCopy = model.shouldWarnBeforeCopy
+        reviewAllowsSettings = model.allowsOpenAccessibilitySettings
+        panelState = .reviewing
+        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
+        reviewClearTask?.cancel()
+        reviewClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self else { return }
+            await MainActor.run { self.clearReview(reason: .deadlineExpired) }
+        }
+        ZFLog.info("review presented outcome=\(outcome) len=\(text.count)")
+    }
+
+    /// Review-only surface for secure/unknown sessions (JOE-2259).
+    private func presentSecureReview(_ text: String) {
+        guard let sid = lastSessionID else { return }
+        let review = SecureSessionReview(sessionID: sid, text: text,
+                                         nowNanos: environment.clock.nowNanos(),
+                                         deadlineNanosAhead: 30_000_000_000)
+        reviewSession = review
+        reviewText = text
+        interimText = text
+        reviewTitle = "Sensitive session — review only"
+        reviewDetail = "This session was not automatically inserted. Copy the text below and paste it where you need it."
+        reviewAllowsRetry = false
+        reviewWarnsCopy = true
+        reviewAllowsSettings = false
+        panelState = .reviewing
+        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
+        reviewClearTask?.cancel()
+        reviewClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self else { return }
+            await MainActor.run { self.clearReview(reason: .deadlineExpired) }
+        }
+        ZFLog.info("Sensitive session review-only len=\(text.count)")
+    }
+
+    // MARK: - Engine
+
     func reloadHotkey() {
-        // Full restart so Fn system override + tap config apply cleanly
+        // Full restart so Fn system override + tap config apply cleanly.
         hotkey.stop()
         hotkey.configure(
             hotkey: settingsStore.settings.hotkey,
@@ -483,656 +475,60 @@ final class DictationController: ObservableObject {
         ZFLog.info("Hotkey reloaded \(settingsStore.settings.hotkey.displayName)")
     }
 
-    /// FIFO session mutations — prevents press/release Task races.
-    private func enqueueSession(_ work: @escaping @MainActor () async -> Void) {
-        let previous = sessionChain
-        sessionChain = Task { @MainActor in
-            _ = await previous?.value
-            await work()
-        }
-    }
-
+    /// Reload the current engine (menu/settings action).
     func reloadEngine() {
         Task { await preloadEngine() }
     }
 
-    /// Manual test trigger from menu (toggle semantics).
-    /// Stop always finalizes + inserts — never cancels.
-    func toggleManualSession() {
-        if isSessionActive {
-            ZFLog.info("Manual Stop & Insert")
-            enqueueSession { await self.endSession() }
-        } else {
-            ZFLog.info("Manual Start Dictation")
-            enqueueSession { await self.beginSession() }
-        }
+    func reloadEngine(useApple: Bool) {
+        usingAppleEngine = useApple
+        activeEngine = useApple ? appleEngine : whisperEngine
+        currentEngineToken = EngineToken()
+        engineLabel = useApple ? "Apple Speech" : settingsStore.settings.preferredModel.displayName
+        ZFLog.info("Engine switched to \(engineLabel)")
     }
-
-    /// Explicit finalize from panel UI.
-    func stopAndInsert() {
-        guard isSessionActive else { return }
-        ZFLog.info("Panel Stop & Insert")
-        enqueueSession { await self.endSession() }
-    }
-
-    // MARK: - Engine
 
     private func preloadEngine() async {
-        let snapshot = await MainActor.run { self.settingsStore.settings }
-        let model = snapshot.preferredModel
-        let mayDownload = snapshot.mayDownloadModels
-
-        await MainActor.run {
-            isModelLoading = true
-            modelDownloadFraction = nil
-            ZFLog.debugEnabled = snapshot.debugLogging
-            ModelReadinessStore.shared.refreshAll()
-        }
-        defer {
-            Task { @MainActor in
-                self.isModelLoading = false
-                self.modelDownloadFraction = nil
-            }
-        }
-
+        guard !usingAppleEngine else { return }
+        let model = settingsStore.settings.preferredModel
+        isModelLoading = true
+        modelDownloadFraction = nil
+        ModelReadinessStore.shared.markDownloading(model, progress: nil)
         do {
-            if model.isWhisperKit {
-                let cached = WhisperModelLocator.readiness(for: model).state.isReady
-                if !cached, mayDownload {
-                    await MainActor.run {
-                        ModelReadinessStore.shared.markDownloading(model, progress: nil)
-                        self.modelDownloadFraction = nil
-                        self.statusMessage = "Downloading \(model.displayName)…"
-                    }
-                    ZFLog.info("model_download_start model=\(model.rawValue)")
-                }
-                let t0 = Date()
-                try await whisperEngine.load(model: model, allowDownload: mayDownload)
-                let name = await whisperEngine.modelName
-                await MainActor.run {
-                    self.activeEngine = self.whisperEngine
-                    self.usingAppleEngine = false
-                    self.engineLabel = name
-                    self.currentEngineToken = EngineToken()
-                    self.callbackGate.close(reason: .engineReplaced)
-                    ModelReadinessStore.shared.markReady(model)
-                    if !cached, mayDownload {
-                        let ms = Int(Date().timeIntervalSince(t0) * 1000)
-                        ZFLog.info("model_download_finish model=\(model.rawValue) ms=\(ms)")
-                    }
-                    self.statusMessage = nil
-                }
-            } else {
-                try await appleEngine.load(model: model)
-                let name = await appleEngine.modelName
-                await MainActor.run {
-                    self.activeEngine = self.appleEngine
-                    self.usingAppleEngine = true
-                    self.engineLabel = name
-                }
-            }
-            let label = await MainActor.run { self.engineLabel }
-            ZFLog.info("Engine loaded: \(label) mayDownload=\(mayDownload)")
+            try await activeEngine.load(model: model)
+            self.isModelLoading = false
+            ModelReadinessStore.shared.markReady(model)
         } catch {
-            ZFLog.error("Engine load failed: \(error.localizedDescription)")
-            if model.isWhisperKit {
-                await MainActor.run {
-                    ModelReadinessStore.shared.markFailed(model, message: error.localizedDescription)
-                }
-                ZFLog.info("model_download_fail model=\(model.rawValue)")
-            }
-            do {
-                try await appleEngine.load(model: .appleSpeech)
-                let name = await appleEngine.modelName
-                await MainActor.run {
-                    self.activeEngine = self.appleEngine
-                    self.usingAppleEngine = true
-                    self.engineLabel = name
-                    self.currentEngineToken = EngineToken()
-                    self.callbackGate.close(reason: .engineReplaced)
-                    self.statusMessage = "Using Apple Speech"
-                    self.clearStatusLater()
-                }
-            } catch {
-                await MainActor.run {
-                    self.engineLabel = "Unavailable"
-                    self.statusMessage = error.localizedDescription
-                }
-                ZFLog.error("Apple Speech fallback failed: \(error.localizedDescription)")
-            }
+            ZFLog.error("Model load failed: \(error.localizedDescription)")
+            self.isModelLoading = false
+            ModelReadinessStore.shared.markFailed(model, message: error.localizedDescription)
         }
     }
 
-    // MARK: - Session
-
-    private func beginSession() async {
-        guard !isSessionActive else {
-            ZFLog.info("beginSession ignored — already active")
-            return
-        }
-        // Allocate immutable SessionID before ANY asynchronous preparation.
-        guard let sid = control.begin() else {
-            ZFLog.info("beginSession rejected by control plane")
-            return
-        }
-        currentSessionID = sid
-        ZFLog.info("SessionID allocated \(sid) gen=\(control.generation)")
-        terminalGuard = TerminalGuard(sessionID: SessionTelemetryID("\(sid.token)-\(sid.sequence)"))
-        // JOE-2249: immutable session-owned engine snapshot + fresh gate.
-        let sessionEngineHandle = activeEngine
-        sessionEngine = sessionEngineHandle
-        activeSessionBinding = SessionEngineBinding(
-            sessionID: sid,
-            engineToken: currentEngineToken,
-            engineKind: usingAppleEngine ? .appleSpeech : .whisper)
-        callbackGate = CallbackGate()
-
-        privacy.refresh()
-        // Fail fast — never await permission dialogs on the hotkey path
-        // (that made short Fn holds appear to "do nothing").
-        guard privacy.status.microphone else {
-            showError("Microphone permission required")
-            Task { await ensurePermissionsUpFront() }
-            return
-        }
-        if usingAppleEngine && !privacy.status.speechRecognition {
-            showError("Speech Recognition permission required")
-            Task { await ensurePermissionsUpFront() }
-            return
-        }
-
-        // Remember where the user was typing BEFORE any of our UI steals focus
-        FocusStore.shared.captureNow()
-        // JOE-2268: capture the immutable target snapshot (AX evidence).
-        // Missing AX permission => nil => session stays .unknown (fail closed).
-        targetSnapshot = environment.targetValidation.captureSnapshot(
-            sessionID: sid,
-            nowNanos: environment.clock.nowNanos())
-        sessionSensitivity = targetSnapshot?.sensitivity.sensitivity ?? .unknown
-        // No stale lastBundleID fallback (JOE-2268): the snapshot is the only
-        // authority for the insert target; nil means fail-closed review-only.
-        sessionTargetBundleID = targetSnapshot?.target.bundleID
-
-        // Surface model download state if Whisper isn't ready yet
-        if !usingAppleEngine {
-            let model = settingsStore.settings.preferredModel
-            let ready = ModelReadinessStore.shared.readiness(for: model)
-            if case .downloading = ready.state {
-                interimText = ModelReadinessStore.shared.bannerMessage ?? "Downloading model…"
-            } else if case .failed(let msg) = ready.state {
-                showError(msg)
-                return
-            }
-        }
-
-        sessionGeneration &+= 1
-        let generation = sessionGeneration
-        isSessionActive = true
-        interimText = ""
-        activeFlowStyle = settingsStore.settings.defaultFlowStyle
-        panelState = .listening
-        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
-        ZFLog.info("Session begin gen=\(generation) usingApple=\(usingAppleEngine)")
-
-        let ready = await activeEngine.isReady
-        if !ready {
-            await preloadEngine()
-        }
-
-        // If release/cancel already ended this session, abort quietly
-        // (release during a blocked model load prevents capture — JOE-2246).
-        guard isSessionActive, control.isCurrent(sid) else {
-            ZFLog.info("Session begin aborted — session superseded")
-            await sessionEngineHandle.cancel()
-            return
-        }
-        _ = control.stage(.readyToCapture)
-
-        do {
-            let localOnly = settingsStore.settings.localOnlyMode
-            try await sessionEngineHandle.startStreaming(
-                sessionID: sid,
-                localOnly: localOnly,
-                language: settingsStore.settings.language) { [weak self] partial in
-                Task { @MainActor in
-                    // JOE-2249: reject callbacks after cancellation, drain
-                    // completion, terminal outcome or engine replacement.
-                    guard let self, self.sessionGeneration == generation,
-                          let binding = self.activeSessionBinding,
-                          self.callbackGate.accepts(binding: binding,
-                                                    currentSessionID: self.currentSessionID,
-                                                    currentEngineToken: self.currentEngineToken),
-                          self.control.isCurrent(binding.sessionID) else { return }
-                    self.interimText = partial.text
-                }
-            }
-
-            guard isSessionActive, control.isCurrent(sid) else {
-                await sessionEngineHandle.cancel()
-                return
-            }
-
-            if usingAppleEngine {
-                startAppleLevelsPolling()
-            } else {
-                // Bounded, ordered audio channel (JOE-2247): capacity 256
-                // chunks covers a ~21 s tail at a 48 kHz / 4096-frame tap
-                // with no consumer stall; bounded memory regardless of
-                // recording length.
-                let channel = BoundedAudioChannel(sessionID: sid, capacity: 256)
-                audioChannel = channel
-                audioSequencer = AudioChunkSequencer()
-                audioDegraded = false
-                let converter = SessionAudioConverter()
-                pcmConverter = converter
-                let engine = activeEngine
-                audioDeliveryTask = Task { [weak self] in
-                    for await chunk in channel.chunks {
-                        guard let self else { return }
-                        self.audioAccounting.noteCaptured(sourceSamples: UInt64(chunk.samples.count))
-                        // Reordered/late chunks can never be appended: counted,
-                        // skipped, and the session is marked degraded.
-                        if chunk.sequence < self.audioSequencer.nextExpected {
-                            self.audioDegraded = true
-                            self.audioAccounting.noteDropped(sourceSamples: UInt64(chunk.samples.count),
-                                                              reason: .lateAppend)
-                            continue
-                        }
-                        self.audioSequencer.accept(chunk)
-                        guard let mono = converter.convert(chunk) else {
-                            self.audioAccounting.noteDropped(sourceSamples: UInt64(chunk.samples.count),
-                                                              reason: .converterFailure)
-                            continue
-                        }
-                        self.audioAccounting.noteConverted(engineSamples: UInt64(mono.count))
-                        await engine.appendAudio(mono)
-                        self.audioAccounting.noteDelivered(engineSamples: UInt64(mono.count))
-                        _ = self.drainBarrier.noteDelivered(sequence: chunk.sequence,
-                                                            nowNanos: environment.clock.nowNanos())
-                    }
-                }
-                try await audio.start(sessionID: sid, channel: channel)
-                startAudioLevelsPolling()
-            }
-
-            // Keep focus in the user's app while they speak
-            await FocusStore.shared.restore()
-        } catch {
-            ZFLog.error("Session start failed: \(error.localizedDescription)")
-            _ = control.stage(.captureFailed)
-            if sessionGeneration == generation {
-                isSessionActive = false
-                let msg = error.localizedDescription
-                showError(msg)
-                if msg.localizedCaseInsensitiveContains("Dictation is turned off") {
-                    PrivacyService.shared.openDictationSettings()
-                }
-            }
-            await audio.stop()
-            await activeEngine.cancel()
+    private func configureFlowRouter() {
+        let store = settingsStore
+        Task {
+            let enhanced = EnhancedFlowProcessor.shared
+            await enhanced.refreshAvailability()
+            await FlowRouter.shared.configure(
+                backend: { await MainActor.run { store.settings.flowBackend } },
+                enhancedReady: { true },
+                enhanced: enhanced)
         }
     }
 
-    private func endSession() async {
-        guard isSessionActive else {
-            ZFLog.info("endSession ignored — not active")
-            return
-        }
-        guard let sid = currentSessionID, control.isCurrent(sid) else {
-            ZFLog.info("endSession ignored — stale/terminal session")
-            return
-        }
-        let generation = sessionGeneration
-        isSessionActive = false
-        levelsTask?.cancel()
-        panelState = .processing
-        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
-        // Immediate control effect: stop is not queued behind stage work.
-        let effect = control.stop()
-        if effect == .idempotentNoop || effect == .illegal {
-            ZFLog.info("endSession control no-op state=\(control.state.rawValue)")
-        }
-        ZFLog.info("Session end gen=\(generation) — finalizing")
+    // MARK: - Hotkey serialization
 
-        await audio.stop()
-        if !usingAppleEngine {
-            // JOE-2248: end-of-stream drain barrier. Begin at the final
-            // accepted producer sequence; the delivery task drains through it.
-            let channel = audioChannel
-            if let finalSeq = channel?.stats().lastAcceptedSequence {
-                drainBarrier.begin(finalSequence: finalSeq,
-                                   nowNanos: environment.clock.nowNanos())
-            }
-            await audioDeliveryTask?.value
-            let stats = await audio.captureStats()
-            let channelStats = channel?.stats()
-            let seqDegraded = audioSequencer.isDegraded
-            let channelDegraded = channel?.isDegraded ?? false
-            let barrierTimedOut = drainBarrier.state == .timedOut
-            let lateAppends = drainBarrier.lateAppends
-            // Fold channel-level drops into the accounting (counts only);
-            // only non-zero drops degrade.
-            if let channelStats {
-                if channelStats.overflowDropped > 0 {
-                    audioAccounting.noteDropped(sourceSamples: channelStats.overflowDroppedSamples, reason: .overflow)
-                }
-                if channelStats.wrongSessionRejected > 0 {
-                    audioAccounting.noteDropped(sourceSamples: channelStats.wrongSessionDroppedSamples, reason: .wrongSession)
-                }
-                if channelStats.closedDropped > 0 {
-                    audioAccounting.noteDropped(sourceSamples: channelStats.closedDroppedSamples, reason: .closedDrop)
-                }
-            }
-            // Reconcile captured/converted/delivered within converter rounding.
-            let ratio = SessionAudioConverter.targetSampleRate / 16000.0
-            let reconciled = audioAccounting.reconciles(converterRatio: ratio,
-                                                        roundingToleranceSamples: 64)
-            // Persist ONLY counts and controlled reasons — never audio payloads.
-            ZFLog.info("Capture stats enqueued=\(stats.enqueued) acceptedSamples=\(channelStats?.acceptedSamples ?? 0) captured=\(audioAccounting.capturedSourceSamples) converted=\(audioAccounting.convertedEngineSamples) delivered=\(audioAccounting.deliveredEngineSamples) droppedSamples=\(channelStats?.totalDroppedSamples ?? 0) overflow=\(stats.overflowDropped) reject=\(stats.wrongSessionRejected) peakRMS=\(String(format: "%.5f", stats.peakRMS))")
-            ZFLog.info("Drain state=\(drainBarrier.state.rawValue) lateAppends=\(lateAppends) seqDegraded=\(seqDegraded) channelDegraded=\(channelDegraded) reconciled=\(reconciled)")
-            if seqDegraded || channelDegraded || barrierTimedOut || lateAppends > 0 || !reconciled {
-                // Gap/overflow/drain-timeout/reconciliation-mismatch means the
-                // capture is not complete: fail closed, never ordinary success.
-                ZFLog.info("Audio capture degraded — discard (state=\(drainBarrier.state.rawValue) late=\(lateAppends) reconciled=\(reconciled))")
-                _ = control.stage(.captureFailed)
-                showError("Audio capture degraded — partial session discarded")
-                await (sessionEngine ?? activeEngine).cancel()
-                audioDeliveryTask = nil
-                audioChannel = nil
-                pcmConverter = nil
-                audioAccounting = AudioFrameAccounting()
-                drainBarrier = AudioDrainBarrier(deadlineNanosAhead: 3_000_000_000)
-                return
-            }
-        }
-
-        do {
-            // JOE-2249: finalize on the SESSION-captured engine, never a
-            // mutable global selection (engine reload affects future sessions).
-            let final = try await (sessionEngine ?? activeEngine).stopAndFinalize()
-            // JOE-2284: partial/degraded/truncated transcripts must not proceed
-            // to the normal success path — show persistent review/warning.
-            if final.completeness != .complete {
-                let pres = UIStatePolicy.presentation(engineCompleteness: final.completeness,
-                                                      flowStatus: .accepted,
-                                                      insertion: .cancelled)
-                _ = control.stage(.targetUnknown)
-                showError(pres.title ?? pres.message ?? "Transcript incomplete")
-                ZFLog.info("engine result not complete completeness=\(final.completeness.rawValue)")
-                await (sessionEngine ?? activeEngine).cancel()
-                return
-            }
-            // Discard if a newer session already started
-            guard sessionGeneration == generation, control.isCurrent(sid) else {
-                ZFLog.info("endSession discarded — stale generation")
-                return
-            }
-            _ = control.stage(.drainFinished)   // draining -> transcribing
-            _ = control.stage(.transcriptionFinished) // transcribing -> transforming
-
-            // JOE-2259: secure/unknown sessions never run structural/semantic
-            // Flow and never auto-insert/clipboard/history. Fail-closed: they
-            // are review-only with an explicit user copy. (JOE-2268 validates
-            // normal sessions transactionally right before insertion.)
-            if !sessionAllowsAutomaticSideEffects {
-                _ = control.stage(.transformationFinished) // transforming -> resolvingTarget
-                _ = control.stage(.targetSecure)           // resolvingTarget -> secureTarget (terminal)
-                let conservativeOutcome = await flow.process(FlowRequest(
-                    sessionID: sid, text: final.text, style: .clean,
-                    language: settingsStore.settings.language,
-                    sensitivity: sessionSensitivity))
-                let conservative = conservativeOutcome.text
-                let reviewText = conservative.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !reviewText.isEmpty else {
-                    showError("No speech detected — try again")
-                    ZFLog.info("Empty transcription")
-                    return
-                }
-                panelState = .processing
-                FloatingPanelController.shared.hide()
-                presentSecureReview(reviewText)
-                ZFLog.info("Sensitive session review-only len=\(reviewText.count) outcome=secureTarget")
-                return
-            }
-
-            let style = activeFlowStyle
-            let flowT0 = Date()
-            let flowOutcome = await flow.process(FlowRequest(
-                sessionID: sid, text: final.text, style: style,
-                language: settingsStore.settings.language,
-                sensitivity: sessionSensitivity))
-            let processed = flowOutcome.text
-            let flowMs = Int(Date().timeIntervalSince(flowT0) * 1000)
-            // Lengths only — never log transcript body
-            ZFLog.info(
-                "Processed len=\(processed.count) raw len=\(final.text.count) flowMs=\(flowMs) style=\(style.rawValue) backend=\(settingsStore.settings.flowBackend.rawValue) completeness=\(final.completeness.rawValue) flowStatus=\(flowOutcome.status.rawValue) lossClass=\(flowOutcome.resolvedLossClass.rawValue) guardProtected=\(flowOutcome.protectedSpansPreserved) fallback=\(flowOutcome.fallbackReason ?? "nil")"
-            )
-
-            let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                showError("No speech detected — try again")
-                ZFLog.info("Empty transcription")
-                return
-            }
-
-            // Stale session check after flow (may have taken up to the enhanced timeout)
-            guard sessionGeneration == generation, control.isCurrent(sid) else {
-                ZFLog.info("endSession discarded after flow — stale generation")
-                return
-            }
-            _ = control.stage(.transformationFinished) // transforming -> resolvingTarget
-
-            panelState = .processing
-            FloatingPanelController.shared.hide()
-            NSApp.deactivate()
-
-            // JOE-2268: transactional target validation — prove the current
-            // destination is the captured intended target before any write.
-            guard let snapshot = targetSnapshot, snapshot.sessionID == sid else {
-                // No captured snapshot (AX unavailable at session start, or
-                // capture raced): fail closed to unknown — review-only, no
-                // automatic side effects, explicit copy only.
-                ZFLog.info("target validation skipped — no snapshot, review-only")
-                _ = control.stage(.targetUnknown)
-                presentSecureReview(trimmed)
-                return
-            }
-
-            var validation = TargetValidationSession(
-                sessionID: sid,
-                snapshot: snapshot,
-                deadlineNanosAhead: 2_000_000_000)
-            validation.start(nowNanos: environment.clock.nowNanos())
-
-            // Bounded, observable restore (TargetRestoreMonitor): activates the
-            // captured app and polls frontmost state — never a blind sleep.
-            let monitor = await environment.targetValidation.restoreToCapturedTarget(snapshot: snapshot, deadlineNanosAhead: 2_000_000_000)
-            let restored = monitor.status == .restored
-            ZFLog.info("target restore status=\(monitor.status.rawValue) attempts=\(monitor.attempts) restored=\(restored)")
-
-            // Re-resolve the current focused AX context immediately before any
-            // side effect and decide the controlled outcome (content-free).
-            let context = environment.targetValidation.currentContext(
-                nowNanos: environment.clock.nowNanos())
-            let outcome = validation.validate(
-                context: context,
-                nowNanos: environment.clock.nowNanos())
-            ZFLog.info("target validation outcome=\(outcome.rawValue) reason=\(validation.reason?.rawValue ?? "nil")")
-
-            switch outcome {
-            case .validated:
-                // Zero transcript-bearing side effects happened before this.
-                _ = control.stage(.targetValidationSucceeded) // resolvingTarget -> inserting
-                let result = await environment.insertion.insert(
-                    trimmed,
-                    preferPaste: restored,
-                    mode: settingsStore.settings.insertionMode,
-                    targetBundleID: snapshot.target.bundleID,
-                    sensitivity: validation.effectiveSensitivity,
-                    sessionID: sid,
-                    copyOnlyOverrides: Set(settingsStore.settings.copyOnlyOverrideBundleIDs)
-                )
-                ZFLog.info("Insertion result: \(String(describing: result))")
-                switch result {
-                case .verifiedInserted:
-                    _ = control.stage(.insertionSucceeded)    // inserting -> completed
-                case .explicitlyCopiedByUser:
-                    // Explicit user-facing copy is a completed action, not an
-                    // unverified insertion (JOE-2269).
-                    _ = control.stage(.insertionSucceeded)
-                case .eventPostedUnverified:
-                    // Paste was posted but the target never confirmed: this is
-                    // NOT a verified insertion — honest terminal outcome.
-                    _ = control.stage(.insertionSucceeded)
-                case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
-                     .notEditable, .clipboardNotRestoredBecauseChanged,
-                     .clipboardRestoreFailed, .deadlineExceeded, .cancelled,
-                     .failed:
-                    _ = control.stage(.insertionFailed)
-                }
-
-                // JOE-2259/2269: history is a transcript-bearing mutation; the
-                // central outcome policy decides retention (never for
-                // unverified/uncertain outcomes), combined with sensitivity.
-                if settingsStore.settings.saveHistory,
-                   HistoryStoragePolicy.allowsWrite(sensitivity: validation.effectiveSensitivity,
-                                                    outcome: result) {
-                    await environment.history.add(
-                        HistoryEntry(
-                            originalText: final.text,
-                            finalText: trimmed,
-                            duration: TimeInterval(final.inferenceDurationNanos ?? 0) / 1_000_000_000,
-                            modelUsed: final.engine.modelName
-                        )
-                    )
-                } else if settingsStore.settings.saveHistory {
-                    ZFLog.info("History skipped — outcome=\(String(describing: result)) sens=\(validation.effectiveSensitivity.rawValue)")
-                }
-
-                // JOE-2284: truthful rendering — panel state, message, dismiss
-                // behavior and VoiceOver label all derive from one tested
-                // policy over (completeness × flowStatus × insertion outcome).
-                let presentation = UIStatePolicy.presentation(
-                    engineCompleteness: final.completeness,
-                    flowStatus: flowOutcome.status,
-                    insertion: result)
-                interimText = trimmed
-                statusMessage = presentation.message
-                switch presentation.semantic {
-                case .verifiedSuccess:
-                    panelState = .success
-                    dismissPanelSoon()
-                case .unverifiedPosted:
-                    // Distinct language ("Paste sent — verify destination");
-                    // never green, never "Inserted".
-                    panelState = .warning
-                case .review:
-                    // Persistent review UX (JOE-2272) — already routed earlier
-                    // for target states; here it is the same presentation.
-                    presentReview(outcome: result, text: trimmed)
-                case .warning:
-                    panelState = .warning
-                case .error:
-                    panelState = .error(presentation.title ?? result.userFacingMessage)
-                case .neutral:
-                    panelState = .success
-                    dismissPanelSoon()
-                case .processing:
-                    panelState = .processing
-                }
-            case .targetChanged, .targetGone, .notEditable:
-                // Controlled abort: no write, honest terminal outcome; the
-                // review panel shows the exact controlled reason (JOE-2272).
-                _ = control.stage(.targetChanged)
-                let reviewOutcome: InsertionOutcome
-                switch outcome {
-                case .targetGone: reviewOutcome = .targetGone
-                case .notEditable: reviewOutcome = .notEditable
-                default: reviewOutcome = .targetChanged
-                }
-                presentReview(outcome: reviewOutcome, text: trimmed)
-                ZFLog.info("insertion cancelled outcome=\(outcome.rawValue)")
-            case .targetUnknown:
-                _ = control.stage(.targetUnknown)
-                // Fail closed: unknown target — persistent review panel with
-                // reason + settings link + explicit copy only.
-                presentReview(outcome: .targetUnknown, text: trimmed)
-            case .secureTarget:
-                _ = control.stage(.targetSecure)
-                // Fail closed: secure reclassification — persistent review
-                // panel, no paste/AX/history, explicit copy only.
-                presentReview(outcome: .secureTarget, text: trimmed)
-            case .deadlineExceeded:
-                _ = control.stage(.deadlineViolated)
-                presentReview(outcome: .deadlineExceeded, text: trimmed)
-            }
-
-        } catch {
-            ZFLog.error("Session finalize failed: \(error.localizedDescription)")
-            if sessionGeneration == generation {
-                let msg = error.localizedDescription
-                showError(msg)
-                if msg.localizedCaseInsensitiveContains("Dictation is turned off") {
-                    PrivacyService.shared.openDictationSettings()
-                }
-            }
-            await (sessionEngine ?? activeEngine).cancel()
-        }
-        // JOE-2264: exactly-one terminal event (content-free) emitted here.
-        if terminalGuard != nil {
-            let category: TerminalCategory = control.state.isTerminal
-                ? (control.state == .completed ? .completed
-                   : control.state == .cancelled ? .cancelled
-                   : control.state == .deadlineExceeded ? .deadlineExceeded
-                   : control.state == .targetChanged ? .targetChanged
-                   : control.state == .secureTarget ? .secureTarget
-                   : control.state == .degraded ? .degraded
-                   : control.state == .partial ? .partial
-                   : control.state == .truncated ? .truncated
-                   : .failed)
-                : .abandonedDuringShutdown
-            _ = terminalGuard?.finalize(terminal: category,
-                                        durationNanos: 0,
-                                        atNanos: environment.clock.nowNanos())
-        }
-        terminalGuard = nil
-        // JOE-2249: terminal outcome closes the callback gate; session-bound
-        // engine reference is released.
-        callbackGate.close(reason: .terminalOutcome)
-        activeSessionBinding = nil
-        sessionEngine = nil
-    }
-
-    func cancelSession() {
-        enqueueSession {
-            self.sessionGeneration &+= 1
-            _ = self.control.cancel()
-            self.currentSessionID = nil
-            self.isSessionActive = false
-            self.levelsTask?.cancel()
-            await self.audio.stop()
-            await self.audioDeliveryTask?.value
-            self.audioDeliveryTask = nil
-            self.audioChannel = nil
-            self.pcmConverter = nil
-            self.reviewSession?.clear(reason: .sessionCancelled)
-            self.reviewSession = nil
-            self.reviewClearTask?.cancel()
-            self.reviewClearTask = nil
-            await self.activeEngine.cancel()
-            self.panelState = .hidden
-            self.interimText = ""
-            FloatingPanelController.shared.hide()
-            self.hotkey.resetToggle()
-            ZFLog.info("Session cancelled")
+    private func enqueueSession(_ op: @escaping @MainActor () async -> Void) {
+        let previous = sessionChain
+        sessionChain = Task { @MainActor in
+            await previous?.value
+            await op()
         }
     }
 
-    func applyQuickAction(_ style: FlowStyle) {
-        activeFlowStyle = style
-    }
+    // MARK: - Demo / screenshots (no audio)
 
-    /// Marketing / docs screenshots only — does not start audio.
     func prepareDemoPanelForScreenshot() {
         interimText = "Private voice-to-text at your cursor…"
         audioLevels = (0..<24).map { i in
@@ -1150,101 +546,52 @@ final class DictationController: ObservableObject {
         FloatingPanelController.shared.hide()
     }
 
-    // MARK: - Levels
-
-    /// Update orb waveform from mono PCM (already on MainActor).
-    private func applyMicLevels(_ samples: [Float]) {
-        guard !samples.isEmpty else { return }
-        var sum: Float = 0
-        let step = max(1, samples.count / 128)
-        var n = 0
-        var i = 0
-        while i < samples.count {
-            let s = samples[i]
-            sum += s * s
-            n += 1
-            i += step
-        }
-        let rms = n > 0 ? (sum / Float(n)).squareRoot() : 0
-        let level = min(1, max(0.05, rms * 18))
-        var next = audioLevels
-        if next.count != 24 { next = Array(repeating: 0.08, count: 24) }
-        next.removeFirst()
-        next.append(level)
-        let j = next.count - 1
-        if j >= 1 {
-            next[j] = next[j] * 0.5 + next[j - 1] * 0.5
-        }
-        audioLevels = next
-    }
-
-    private func startAudioLevelsPolling() {
-        levelsTask?.cancel()
-        levelsTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { break }
-                let levels = await self.audio.levels()
-                await MainActor.run {
-                    // Backup path if callback levels are quiet/stuck
-                    if levels.contains(where: { $0 > 0.08 }) {
-                        self.audioLevels = levels
-                    }
-                }
-                try? await Task.sleep(nanoseconds: 80_000_000)
-            }
-        }
-    }
-
-    private func startAppleLevelsPolling() {
-        levelsTask?.cancel()
-        levelsTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { break }
-                let levels = await self.appleEngine.levels()
-                await MainActor.run { self.audioLevels = levels }
-                try? await Task.sleep(nanoseconds: 50_000_000)
-            }
-        }
-    }
-
     // MARK: - UI helpers
 
+    /// Content-free mapping: validation outcome -> review-panel outcome.
+    private static func reviewOutcome(for validation: TargetValidationOutcome) -> InsertionOutcome {
+        switch validation {
+        case .validated: return .failed("Validation did not converge")
+        case .targetChanged: return .targetChanged
+        case .targetGone: return .targetGone
+        case .targetUnknown: return .targetUnknown
+        case .secureTarget: return .secureTarget
+        case .notEditable: return .notEditable
+        case .deadlineExceeded: return .deadlineExceeded
+        }
+    }
+
     private func showError(_ message: String) {
-        let generation = sessionGeneration
         panelState = .error(message)
         statusMessage = message
         FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
-        Task {
+        Task { [weak self] in
             try? await Task.sleep(nanoseconds: 2_800_000_000)
-            guard sessionGeneration == generation else { return }
-            if case .error = panelState {
-                panelState = .hidden
+            guard let self, self.session == nil else { return }
+            if case .error = self.panelState {
+                self.panelState = .hidden
                 FloatingPanelController.shared.hide()
             }
         }
     }
 
     private func dismissPanelSoon() {
-        let generation = sessionGeneration
-        Task {
+        Task { [weak self] in
             try? await Task.sleep(nanoseconds: 450_000_000)
-            guard sessionGeneration == generation else { return }
+            guard let self, self.session == nil else { return }
             withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
-                panelState = .hidden
-                interimText = ""
+                self.panelState = .hidden
+                self.interimText = ""
             }
             FloatingPanelController.shared.hide()
         }
     }
 
     func clearStatusLater() {
-        let generation = sessionGeneration
-        Task {
+        Task { [weak self] in
             try? await Task.sleep(nanoseconds: 3_500_000_000)
-            guard sessionGeneration == generation else { return }
-            statusMessage = nil
+            guard let self else { return }
+            self.statusMessage = nil
         }
     }
 }
-
-import ApplicationServices

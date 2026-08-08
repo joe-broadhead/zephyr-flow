@@ -27,6 +27,113 @@ final class FailingHistoryFileSystem: HistoryFileSystem, @unchecked Sendable {
     func setPermissions(_ url: URL, mode: Int) throws { try real.setPermissions(url, mode: mode) }
 }
 
+
+// ===== JOE-2244: deterministic fake stage provider =====
+actor FakeSessionStages: DictationSessionStageProviding {
+    var snapshot: TargetSnapshot?
+    var partials: [String] = []
+    var finalText = "hello world"
+    var completeness: EngineResultCompleteness = .complete
+    var validationOutcomes: [TargetValidationOutcome] = [.validated]
+    var insertionOutcome: InsertionOutcome = .verifiedInserted(
+        strategy: .axSelectedText, evidence: .postWriteSelectionReRead, warnings: [])
+    var degraded = false
+    var reconciled = true
+    var historyCount = 0
+    var cancelCount = 0
+    var prepareCount = 0
+    var capturedSessionIDs: [SessionID] = []
+
+    static func makeSnapshot(sessionID: SessionID,
+                             sensitivity: SessionSensitivity = .normal) -> TargetSnapshot {
+        TargetSnapshot(
+            sessionID: sessionID,
+            capturedAtUptimeNanos: 100,
+            target: TargetSnapshot.Identity(pid: 42, bundleID: "com.example.Editor",
+                                           processStartUptimeNanos: 900,
+                                           windowID: 7, appVersion: "1.0"),
+            element: TargetSnapshot.ElementIdentity(role: "AXTextField",
+                                                   subrole: nil, resolutionToken: "tok"),
+            settable: true, editable: true, enabled: true,
+            selectionRange: 0..<0,
+            sensitivity: SensitivityAssessment(sensitivity: sensitivity,
+                                               source: .accessibilityRole, capturedAtNanos: 100))
+    }
+
+    func setPartials(_ p: [String]) { partials = p }
+    func setValidationOutcomes(_ o: [TargetValidationOutcome]) { validationOutcomes = o }
+    func setCompleteness(_ c: EngineResultCompleteness) { completeness = c }
+
+    func prepare(sessionID: SessionID) async {
+        prepareCount += 1
+        capturedSessionIDs.append(sessionID)
+        snapshot = Self.makeSnapshot(sessionID: sessionID)
+    }
+
+    func capturedTargetSnapshot() async -> TargetSnapshot? { snapshot }
+
+    func startCapture(sessionID: SessionID, localOnly: Bool,
+                      language: SupportedLanguage) async throws -> SessionCaptureHandle {
+        let (interim, cont) = AsyncStream.makeStream(of: SessionPartial.self)
+        for p in partials { cont.yield(SessionPartial(text: p)) }
+        cont.finish()
+        let (levels, lcont) = AsyncStream.makeStream(of: Float.self)
+        lcont.yield(0.4)
+        lcont.finish()
+        return SessionCaptureHandle(interim: interim, levels: levels)
+    }
+
+    func stopCapture() async -> SessionAudioSummary {
+        SessionAudioSummary(capturedSourceSamples: 16000,
+                            deliveredEngineSamples: 16000,
+                            droppedSamples: 0,
+                            degraded: degraded,
+                            reconciled: reconciled,
+                            drainState: "drained")
+    }
+
+    func finalize() async throws -> EngineResult {
+        EngineResult(text: finalText, completeness: completeness,
+                     frameAccounting: nil,
+                     engine: EngineIdentity(kind: .whisper, modelName: "Fake",
+                                            modelVersion: "1.0", modelDigest: "x"),
+                     languageRequested: "en", languageDetected: "en",
+                     confidence: 0.9, confidenceSource: "engine",
+                     startedAtUptimeNanos: 1000, endedAtUptimeNanos: 2000,
+                     inferenceDurationNanos: 1_000_000_000,
+                     warnings: [], fallbackReason: nil,
+                     termination: .completed)
+    }
+
+    func applyFlow(_ request: FlowRequest) async -> FlowOutcome {
+        FlowOutcome(text: request.text, requestedStyle: request.style,
+                    resolvedLossClass: .verbatim, backend: .regex,
+                    capabilityID: "test", capabilityVersion: 1,
+                    language: request.language, changedRangeCount: 0,
+                    protectedSpanCount: 0, protectedSpansPreserved: true,
+                    status: .accepted, warnings: [],
+                    fallbackReason: nil, durationNanos: 5,
+                    termination: .completed)
+    }
+
+    func validateTarget() async -> SessionValidationResult {
+        let next = validationOutcomes.isEmpty ? .validated : validationOutcomes.removeFirst()
+        return SessionValidationResult(outcome: next,
+                                       effectiveSensitivity: .normal)
+    }
+
+    func insert(_ request: SessionInsertRequest) async -> InsertionOutcome {
+        insertionOutcome
+    }
+
+    func recordHistory(originalText: String, finalText: String,
+                       duration: TimeInterval, modelName: String) async {
+        historyCount += 1
+    }
+
+    func cancel() async { cancelCount += 1 }
+}
+
 @main
 struct CoreTests {
     static func main() async {
@@ -2144,6 +2251,165 @@ struct CoreTests {
             var tx4 = LaunchAtLoginTransaction()
             tx4.commit(verifiedStatus: .registered)
             check("2290 commit without begin refused", tx4.state == .idle)
+        }
+
+        // ===== JOE-2244: session truth in one isolated per-session actor =====
+        do {
+            func settings(_ saveHistory: Bool = true) -> SessionSettingsSnapshot {
+                SessionSettingsSnapshot(localOnly: true,
+                                        language: .enUS,
+                                        defaultFlowStyle: .clean,
+                                        insertionMode: "automatic",
+                                        saveHistory: saveHistory,
+                                        copyOnlyOverrideBundleIDs: [])
+            }
+            func engineResult(_ text: String = "hello world") -> EngineResult {
+                EngineResult(text: text, completeness: .complete,
+                             frameAccounting: nil,
+                             engine: EngineIdentity(kind: .whisper, modelName: "Fake",
+                                                    modelVersion: "1.0", modelDigest: "x"),
+                             languageRequested: "en", languageDetected: "en",
+                             confidence: 0.9, confidenceSource: "engine",
+                             startedAtUptimeNanos: 1000, endedAtUptimeNanos: 2000,
+                             inferenceDurationNanos: 1_000_000_000,
+                             warnings: [], fallbackReason: nil,
+                             termination: .completed)
+            }
+            func collect(_ stream: AsyncStream<SessionUIState>) async -> [SessionUIState] {
+                var out: [SessionUIState] = []
+                for await s in stream { out.append(s) }
+                return out
+            }
+
+            // 1. End-to-end success: capture -> finalize -> flow -> validate
+            //    -> insert -> history (single terminal, exactly once).
+            let provider1 = FakeSessionStages()
+            await provider1.setPartials(["hel", "hello "])
+            let s1 = DictationSession(provider: provider1, engineChoice: .whisper,
+                                      settings: settings(true))
+            let stream1 = await s1.subscribe()
+            let runTask1 = Task { await s1.run() }
+            // Let run() reach the capture wait, then end.
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            await s1.end()
+            let states1 = await collect(stream1)
+            await runTask1.value
+            check("2244 success emits listening", states1.contains { $0.phase == .listening })
+            check("2244 success emits success terminal", states1.contains { $0.phase == .success })
+            check("2244 interim length updated",
+                  states1.contains { $0.interimText == "hello " })
+            check("2244 audio summary output set",
+                  states1.last?.outputs.audioSummary?.deliveredEngineSamples == 16000)
+            check("2244 engine result output set",
+                  states1.last?.outputs.engineResult?.text == "hello world")
+            check("2244 flow outcome output set",
+                  states1.last?.outputs.flowOutcome?.text == "hello world")
+            check("2244 validation output set",
+                  states1.last?.outputs.validation == .validated)
+            check("2244 insertion output set verified",
+                  states1.last?.outputs.insertion?.isVerifiedSuccess == true)
+            check("2244 history recorded once (saveHistory on)",
+                  await provider1.historyCount == 1)
+            check("2244 prepare ran exactly once", await provider1.prepareCount == 1)
+
+            // 2. Exactly-one terminal + success does not re-run.
+            let before = await provider1.historyCount
+            await s1.end()   // no-op after terminal
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            check("2244 no second terminal side effects", await provider1.historyCount == before)
+
+            // 3. Cancel mid-capture: no insertion, provider cancelled.
+            let provider2 = FakeSessionStages()
+            let s2 = DictationSession(provider: provider2, engineChoice: .whisper,
+                                      settings: settings(false))
+            let runTask2 = Task { await s2.run() }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            await s2.cancel()
+            await runTask2.value
+            check("2244 cancel provider called", await provider2.cancelCount == 1)
+            check("2244 cancel no history", await provider2.historyCount == 0)
+
+            // 4. Target change -> review -> retry -> success (fresh validation).
+            let provider3 = FakeSessionStages()
+            await provider3.setValidationOutcomes([.targetChanged, .validated])
+            let s3 = DictationSession(provider: provider3, engineChoice: .whisper,
+                                      settings: settings(false))
+            let stream3 = await s3.subscribe()
+            let runTask3 = Task { await s3.run() }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            await s3.end()
+            // Wait for the review phase, then retry.
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            await s3.retryInsertion()
+            let states3 = await collect(stream3)
+            await runTask3.value
+            check("2244 target change shows review",
+                  states3.contains { $0.phase == .review && $0.outputs.validation == .targetChanged })
+            check("2244 retry reaches success",
+                  states3.contains { $0.phase == .success })
+
+            // 5. Partial transcript: warning terminal, no insertion.
+            let provider4 = FakeSessionStages()
+            await provider4.setCompleteness(.partial)
+            let s4 = DictationSession(provider: provider4, engineChoice: .whisper,
+                                      settings: settings(true))
+            let stream4 = await s4.subscribe()
+            let runTask4 = Task { await s4.run() }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            await s4.end()
+            let states4 = await collect(stream4)
+            await runTask4.value
+            check("2244 partial transcript -> warning", states4.contains { $0.phase == .warning })
+            check("2244 partial no history", await provider4.historyCount == 0)
+
+            // 6. UI subscribers reconnect without changing session state.
+            let provider5 = FakeSessionStages()
+            let s5 = DictationSession(provider: provider5, engineChoice: .whisper,
+                                      settings: settings(false))
+            let runTask5 = Task { await s5.run() }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            _ = await s5.subscribe()          // first subscriber
+            let replay = await s5.subscribe() // second subscriber: replay current
+            var replayStates: [SessionUIState] = []
+            for await st in replay { replayStates.append(st); break }
+            await s5.cancel()
+            await runTask5.value
+            check("2244 reconnect gets current state", replayStates.first?.phase == .listening)
+
+            // 7. Two successive sessions cannot share mutable state: distinct
+            //    providers, distinct actors, distinct session ids.
+            let provider6 = FakeSessionStages()
+            let factory6 = SessionIDFactory()
+            let s6a = DictationSession(provider: provider6, engineChoice: .whisper,
+                                       settings: settings(false), idFactory: factory6)
+            let s6b = DictationSession(provider: provider6, engineChoice: .whisper,
+                                       settings: settings(false), idFactory: factory6)
+            let idA = await s6a.sessionID
+            let idB = await s6b.sessionID
+            check("2244 successive sessions distinct ids", idA != idB)
+            let p6a = await provider6.prepareCount
+            _ = p6a
+            // (prepare runs inside run(); distinct actors guarantee isolation.)
+
+            // 8. Leak/deinit: after terminal + dropped refs the actor is
+            //    released (all owned tasks/callbacks released).
+            let provider7 = FakeSessionStages()
+            var s7: DictationSession? = DictationSession(provider: provider7,
+                                                         engineChoice: .whisper,
+                                                         settings: settings(false))
+            weak var weak7 = s7
+            let runTask7 = Task { await s7!.run() }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            await s7!.end()
+            await runTask7.value
+            s7 = nil
+            // Give the executor a beat to run deinit.
+            var released = false
+            for _ in 0..<5 {
+                try? await Task.sleep(nanoseconds: 40_000_000)
+                if weak7 == nil { released = true; break }
+            }
+            check("2244 session released after terminal (leak test)", released)
         }
 
         print("")

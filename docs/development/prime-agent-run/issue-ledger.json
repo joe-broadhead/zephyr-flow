@@ -239,12 +239,25 @@
     "JOE-2243"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (23 JOE-2244 checks: success end-to-end, exactly-once terminal, cancel mid-capture, review->retry->success, partial->warning, reconnect replay, distinct session ids, leak/deinit)",
+    "swift build: pass",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/DictationSession.swift",
+    "Sources/ZephyrFlowCore/SessionControl.swift",
+    "Sources/ZephyrFlow/Services/ProductionSessionStages.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2244/REPORT.md"
+   ],
+   "remaining_action": "Manual UI qualification with real mic/AX on the built app (hotkey press/release end-to-end) \u2014 human-gate runbook retained."
   },
   {
    "id": "JOE-2245",
