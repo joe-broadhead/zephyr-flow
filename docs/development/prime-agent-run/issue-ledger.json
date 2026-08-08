@@ -350,12 +350,23 @@
     "JOE-2247"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (gate open/closed semantics, wrong-session rejection, engine-replacement token rejection, single-shot close)",
+    "swift build: pass (session-captured engine handle + callback gate in all async paths)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/SessionEngineBinding.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2249/REPORT.md"
+   ],
+   "remaining_action": "Thread/concurrency stress under rapid settings changes + stale-callback rejection counter evidence (human-gate runbook)."
   },
   {
    "id": "JOE-2250",

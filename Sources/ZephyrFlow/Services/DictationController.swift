@@ -71,6 +71,11 @@ final class DictationController: ObservableObject {
     // JOE-2268: immutable per-session AX target evidence + validator service.
     private var targetSnapshot: TargetSnapshot?
     private let targetService = TargetValidationService.shared
+    // JOE-2249: session-bound engine snapshot + callback gate.
+    private var currentEngineToken = EngineToken()
+    private var activeSessionBinding: SessionEngineBinding?
+    private var callbackGate = CallbackGate()
+    private var sessionEngine: (any WhisperEngineProtocol)?
 
     private init() {
         activeEngine = whisperEngine
@@ -367,6 +372,11 @@ final class DictationController: ObservableObject {
         levelsTask?.cancel()
         // Close admission and abandon any active session honestly (JOE-2246).
         control.shutdown()
+        // JOE-2249: stop closes the callback gate and releases the
+        // session-bound engine reference.
+        callbackGate.close(reason: .cancelled)
+        activeSessionBinding = nil
+        sessionEngine = nil
         // JOE-2259: never leave review content resident at termination.
         reviewSession?.clear(reason: .appTerminating)
         reviewSession = nil
@@ -476,6 +486,8 @@ final class DictationController: ObservableObject {
                     self.activeEngine = self.whisperEngine
                     self.usingAppleEngine = false
                     self.engineLabel = name
+                    self.currentEngineToken = EngineToken()
+                    self.callbackGate.close(reason: .engineReplaced)
                     ModelReadinessStore.shared.markReady(model)
                     if !cached, mayDownload {
                         let ms = Int(Date().timeIntervalSince(t0) * 1000)
@@ -509,6 +521,8 @@ final class DictationController: ObservableObject {
                     self.activeEngine = self.appleEngine
                     self.usingAppleEngine = true
                     self.engineLabel = name
+                    self.currentEngineToken = EngineToken()
+                    self.callbackGate.close(reason: .engineReplaced)
                     self.statusMessage = "Using Apple Speech"
                     self.clearStatusLater()
                 }
@@ -536,6 +550,14 @@ final class DictationController: ObservableObject {
         }
         currentSessionID = sid
         ZFLog.info("SessionID allocated \(sid) gen=\(control.generation)")
+        // JOE-2249: immutable session-owned engine snapshot + fresh gate.
+        let sessionEngineHandle = activeEngine
+        sessionEngine = sessionEngineHandle
+        activeSessionBinding = SessionEngineBinding(
+            sessionID: sid,
+            engineToken: currentEngineToken,
+            engineKind: usingAppleEngine ? .appleSpeech : .whisper)
+        callbackGate = CallbackGate()
 
         privacy.refresh()
         // Fail fast — never await permission dialogs on the hotkey path
@@ -593,23 +615,29 @@ final class DictationController: ObservableObject {
         // (release during a blocked model load prevents capture — JOE-2246).
         guard isSessionActive, control.isCurrent(sid) else {
             ZFLog.info("Session begin aborted — session superseded")
-            await activeEngine.cancel()
+            await sessionEngineHandle.cancel()
             return
         }
         _ = control.stage(.readyToCapture)
 
         do {
             let localOnly = settings.settings.localOnlyMode
-            try await activeEngine.startStreaming(localOnly: localOnly) { [weak self] partial in
+            try await sessionEngineHandle.startStreaming(localOnly: localOnly) { [weak self] partial in
                 Task { @MainActor in
+                    // JOE-2249: reject callbacks after cancellation, drain
+                    // completion, terminal outcome or engine replacement.
                     guard let self, self.sessionGeneration == generation,
-                          let sid = self.currentSessionID, self.control.isCurrent(sid) else { return }
+                          let binding = self.activeSessionBinding,
+                          self.callbackGate.accepts(binding: binding,
+                                                    currentSessionID: self.currentSessionID,
+                                                    currentEngineToken: self.currentEngineToken),
+                          self.control.isCurrent(binding.sessionID) else { return }
                     self.interimText = partial.text
                 }
             }
 
             guard isSessionActive, control.isCurrent(sid) else {
-                await activeEngine.cancel()
+                await sessionEngineHandle.cancel()
                 return
             }
 
@@ -706,27 +734,30 @@ final class DictationController: ObservableObject {
             }
             await audioDeliveryTask?.value
             let stats = await audio.captureStats()
+            let channelStats = channel?.stats()
             let seqDegraded = audioSequencer.isDegraded
             let channelDegraded = channel?.isDegraded ?? false
             let barrierTimedOut = drainBarrier.state == .timedOut
             let lateAppends = drainBarrier.lateAppends
             // Fold channel-level drops into the accounting (counts only);
             // only non-zero drops degrade.
-            if stats.overflowDropped > 0 {
-                audioAccounting.noteDropped(sourceSamples: stats.overflowDroppedSamples, reason: .overflow)
-            }
-            if stats.wrongSessionRejected > 0 {
-                audioAccounting.noteDropped(sourceSamples: stats.wrongSessionDroppedSamples, reason: .wrongSession)
-            }
-            if stats.closedDropped > 0 {
-                audioAccounting.noteDropped(sourceSamples: stats.closedDroppedSamples, reason: .closedDrop)
+            if let channelStats {
+                if channelStats.overflowDropped > 0 {
+                    audioAccounting.noteDropped(sourceSamples: channelStats.overflowDroppedSamples, reason: .overflow)
+                }
+                if channelStats.wrongSessionRejected > 0 {
+                    audioAccounting.noteDropped(sourceSamples: channelStats.wrongSessionDroppedSamples, reason: .wrongSession)
+                }
+                if channelStats.closedDropped > 0 {
+                    audioAccounting.noteDropped(sourceSamples: channelStats.closedDroppedSamples, reason: .closedDrop)
+                }
             }
             // Reconcile captured/converted/delivered within converter rounding.
             let ratio = SessionAudioConverter.targetSampleRate / 16000.0
             let reconciled = audioAccounting.reconciles(converterRatio: ratio,
                                                         roundingToleranceSamples: 64)
             // Persist ONLY counts and controlled reasons — never audio payloads.
-            ZFLog.info("Capture stats enqueued=\(stats.enqueued) acceptedSamples=\(stats.acceptedSamples) captured=\(audioAccounting.capturedSourceSamples) converted=\(audioAccounting.convertedEngineSamples) delivered=\(audioAccounting.deliveredEngineSamples) droppedSamples=\(stats.totalDroppedSamples) overflow=\(stats.overflowDropped) reject=\(stats.wrongSessionRejected) peakRMS=\(String(format: "%.5f", stats.peakRMS))")
+            ZFLog.info("Capture stats enqueued=\(stats.enqueued) acceptedSamples=\(channelStats?.acceptedSamples ?? 0) captured=\(audioAccounting.capturedSourceSamples) converted=\(audioAccounting.convertedEngineSamples) delivered=\(audioAccounting.deliveredEngineSamples) droppedSamples=\(channelStats?.totalDroppedSamples ?? 0) overflow=\(stats.overflowDropped) reject=\(stats.wrongSessionRejected) peakRMS=\(String(format: "%.5f", stats.peakRMS))")
             ZFLog.info("Drain state=\(drainBarrier.state.rawValue) lateAppends=\(lateAppends) seqDegraded=\(seqDegraded) channelDegraded=\(channelDegraded) reconciled=\(reconciled)")
             if seqDegraded || channelDegraded || barrierTimedOut || lateAppends > 0 || !reconciled {
                 // Gap/overflow/drain-timeout/reconciliation-mismatch means the
@@ -734,7 +765,7 @@ final class DictationController: ObservableObject {
                 ZFLog.info("Audio capture degraded — discard (state=\(drainBarrier.state.rawValue) late=\(lateAppends) reconciled=\(reconciled))")
                 _ = control.stage(.captureFailed)
                 showError("Audio capture degraded — partial session discarded")
-                await activeEngine.cancel()
+                await (sessionEngine ?? activeEngine).cancel()
                 audioDeliveryTask = nil
                 audioChannel = nil
                 pcmConverter = nil
@@ -745,7 +776,9 @@ final class DictationController: ObservableObject {
         }
 
         do {
-            let final = try await activeEngine.stopAndFinalize()
+            // JOE-2249: finalize on the SESSION-captured engine, never a
+            // mutable global selection (engine reload affects future sessions).
+            let final = try await (sessionEngine ?? activeEngine).stopAndFinalize()
             // Discard if a newer session already started
             guard sessionGeneration == generation, control.isCurrent(sid) else {
                 ZFLog.info("endSession discarded — stale generation")
@@ -949,8 +982,13 @@ final class DictationController: ObservableObject {
                     PrivacyService.shared.openDictationSettings()
                 }
             }
-            await activeEngine.cancel()
+            await (sessionEngine ?? activeEngine).cancel()
         }
+        // JOE-2249: terminal outcome closes the callback gate; session-bound
+        // engine reference is released.
+        callbackGate.close(reason: .terminalOutcome)
+        activeSessionBinding = nil
+        sessionEngine = nil
     }
 
     func cancelSession() {

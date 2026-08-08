@@ -1193,6 +1193,45 @@ struct CoreTests {
                   closed.closedDroppedSamples == 50 && closed.closedDropped == 1)
         }
 
+        // ===== JOE-2249: session-bound engine + callback gating =====
+        do {
+            let sidA = SessionID(token: "a", sequence: 1, createdAtUptimeNanos: 0)
+            let sidB = SessionID(token: "b", sequence: 2, createdAtUptimeNanos: 0)
+            let tok1 = EngineToken(value: "engine-1")
+            let tok2 = EngineToken(value: "engine-2")
+            let bindA = SessionEngineBinding(sessionID: sidA, engineToken: tok1, engineKind: .whisper)
+            let bindB = SessionEngineBinding(sessionID: sidB, engineToken: tok1, engineKind: .whisper)
+
+            var gate = CallbackGate()
+            check("2249 open gate accepts current binding",
+                  gate.accepts(binding: bindA, currentSessionID: sidA, currentEngineToken: tok1))
+            // Session A callbacks cannot reach session B's engine/UI.
+            check("2249 wrong session rejected",
+                  !gate.accepts(binding: bindB, currentSessionID: sidA, currentEngineToken: tok1))
+            // Engine replacement closes the gate for old-token callbacks.
+            check("2249 stale engine token rejected after replacement",
+                  !gate.accepts(binding: bindA, currentSessionID: sidA, currentEngineToken: tok2))
+            // Cancellation closes the gate; later callbacks rejected.
+            var g2 = CallbackGate()
+            _ = g2.accepts(binding: bindA, currentSessionID: sidA, currentEngineToken: tok1)
+            g2.close(reason: .cancelled)
+            check("2249 cancelled gate rejects later callbacks",
+                  !g2.accepts(binding: bindA, currentSessionID: sidA, currentEngineToken: tok1)
+                    && g2.isClosed && g2.closeReason == .cancelled)
+            // Terminal outcome closes the gate.
+            var g3 = CallbackGate()
+            g3.close(reason: .terminalOutcome)
+            check("2249 terminal gate closed", g3.isClosed && g3.closeReason == .terminalOutcome)
+            // Single-shot close: later close reasons do not overwrite.
+            g3.close(reason: .cancelled)
+            check("2249 close single-shot", g3.closeReason == .terminalOutcome)
+            // Drain completion closes the gate (no appends after drain ack).
+            var g4 = CallbackGate()
+            g4.close(reason: .drainCompleted)
+            check("2249 drain completion gate closed",
+                  !g4.accepts(binding: bindA, currentSessionID: sidA, currentEngineToken: tok1))
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
