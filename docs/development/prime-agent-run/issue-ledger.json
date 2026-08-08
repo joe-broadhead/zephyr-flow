@@ -820,12 +820,25 @@
     "JOE-2269"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (per-outcome action matrix, plain-language copy, retention/expiry, single-shot consume, fresh-intent retry rules)",
+    "swift build: pass (persistent review panel with Retry/Copy/Discard/Settings + VoiceOver labels + shortcuts)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/InsertionReviewModel.swift",
+    "Sources/ZephyrFlowCore/SecureSessionReview.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Sources/ZephyrFlow/UI/Panel/FloatingPanel.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2272/REPORT.md"
+   ],
+   "remaining_action": "VoiceOver/keyboard review + dogfood recordings for app-switch and permission-loss scenarios (human-gate real-device items; runbook in report)."
   },
   {
    "id": "JOE-2273",

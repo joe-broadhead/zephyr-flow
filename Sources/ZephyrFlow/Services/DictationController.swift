@@ -55,6 +55,10 @@ final class DictationController: ObservableObject {
     private var sessionSensitivity: SessionSensitivity = .unknown
     private var reviewSession: SecureSessionReview?
     private var reviewClearTask: Task<Void, Never>?
+    // JOE-2272: content-free review model for the current uncertain outcome
+    // (reason + safe actions + retention), shown with the review session.
+    private var reviewModel: InsertionReviewModel?
+    private var reviewText: String?
     // JOE-2268: immutable per-session AX target evidence + validator service.
     private var targetSnapshot: TargetSnapshot?
     private let targetService = TargetValidationService.shared
@@ -167,6 +171,147 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Persistent review panel for uncertain outcomes (JOE-2272): controlled
+    /// reason, no green success, safe actions only, in-process text.
+    private func presentReview(outcome: InsertionOutcome, text: String) {
+        let now = DispatchTime.now().uptimeNanoseconds
+        var model = InsertionReviewModel(outcome: outcome, createdAtNanos: now)
+        reviewModel = model
+        reviewText = text
+        guard let sid = currentSessionID else { return }
+        let review = SecureSessionReview(sessionID: sid, text: text,
+                                         nowNanos: now,
+                                         deadlineNanosAhead: 30_000_000_000)
+        reviewSession = review
+        interimText = text
+        panelState = .reviewing
+        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
+        reviewClearTask?.cancel()
+        reviewClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            guard let self else { return }
+            await MainActor.run {
+                var m = self.reviewModel
+                if m?.expired(nowNanos: DispatchTime.now().uptimeNanoseconds) == true {
+                    self.reviewModel?.clear(.expired)
+                    self.clearReview(reason: .deadlineExpired)
+                }
+            }
+        }
+        ZFLog.info("review presented outcome=\(outcome) len=\(text.count)")
+    }
+
+    /// Retry with FRESH evidence: new session id + fresh snapshot + fresh
+    /// validation against the original target (never a stale validation).
+    func retryReview() {
+        guard let model = reviewModel, model.allowsRetry,
+              let text = reviewText else { return }
+        _ = model.consume(.retryValidation, nowNanos: DispatchTime.now().uptimeNanoseconds)
+        reviewModel = model
+        let attemptText = text
+        clearReview(reason: .retriedWithFreshIntent)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.retryInsertion(text: attemptText)
+        }
+    }
+
+    private func retryInsertion(text: String) async {
+        // Fresh session (begin() after terminal is allowed by JOE-2246),
+        // fresh snapshot, fresh validation — explicit user intent.
+        guard let sid = control.begin() else {
+            ZFLog.info("retry rejected by control plane")
+            return
+        }
+        currentSessionID = sid
+        targetSnapshot = targetService.captureSnapshot(
+            sessionID: sid,
+            nowNanos: DispatchTime.now().uptimeNanoseconds)
+        sessionSensitivity = targetSnapshot?.sensitivity.sensitivity ?? .unknown
+        sessionTargetBundleID = targetSnapshot?.target.bundleID
+
+        // Sensitive/unknown on retry => review again, never auto insert.
+        if !sessionAllowsAutomaticSideEffects {
+            presentReview(outcome: .secureTarget, text: text)
+            return
+        }
+        guard let snapshot = targetSnapshot else {
+            presentReview(outcome: .targetUnknown, text: text)
+            return
+        }
+        var validation = TargetValidationSession(sessionID: sid, snapshot: snapshot,
+                                                 deadlineNanosAhead: 2_000_000_000)
+        validation.start(nowNanos: DispatchTime.now().uptimeNanoseconds)
+        let monitor = await targetService.restoreToCapturedTarget(snapshot: snapshot)
+        let restored = monitor.status == .restored
+        let context = targetService.currentContext(nowNanos: DispatchTime.now().uptimeNanoseconds)
+        let outcome = validation.validate(context: context,
+                                          nowNanos: DispatchTime.now().uptimeNanoseconds)
+        switch outcome {
+        case .validated:
+            _ = control.stage(.targetValidationSucceeded)
+            let result = await insertion.insert(
+                text, preferPaste: restored,
+                mode: settings.settings.insertionMode,
+                targetBundleID: snapshot.target.bundleID,
+                sensitivity: validation.effectiveSensitivity)
+            switch result {
+            case .verifiedInserted:
+                _ = control.stage(.insertionSucceeded)
+                interimText = text
+                panelState = .success
+                statusMessage = nil
+                dismissPanelSoon()
+            case .explicitlyCopiedByUser:
+                _ = control.stage(.insertionSucceeded)
+                interimText = text
+                panelState = .success
+                statusMessage = result.userFacingMessage
+                clearStatusLater()
+                dismissPanelSoon()
+            case .eventPostedUnverified:
+                _ = control.stage(.insertionSucceeded)
+                interimText = text
+                panelState = .success
+                statusMessage = result.userFacingMessage
+                clearStatusLater()
+                dismissPanelSoon()
+            default:
+                _ = control.stage(.insertionFailed)
+                presentReview(outcome: .targetUnknown, text: text)
+            }
+        case .targetGone:
+            _ = control.stage(.targetChanged)
+            presentReview(outcome: .targetGone, text: text)
+        case .targetChanged:
+            _ = control.stage(.targetChanged)
+            presentReview(outcome: .targetChanged, text: text)
+        case .notEditable:
+            _ = control.stage(.targetChanged)
+            presentReview(outcome: .notEditable, text: text)
+        case .targetUnknown:
+            _ = control.stage(.targetUnknown)
+            presentReview(outcome: .targetUnknown, text: text)
+        case .secureTarget:
+            _ = control.stage(.targetSecure)
+            presentReview(outcome: .secureTarget, text: text)
+        case .deadlineExceeded:
+            _ = control.stage(.deadlineViolated)
+            presentReview(outcome: .deadlineExceeded, text: text)
+        }
+    }
+
+    func discardReview() {
+        reviewModel?.clear(.userDiscarded)
+        clearReview(reason: .userDismissed)
+    }
+
+    func openAccessibilitySettings() {
+        reviewModel?.clear(.userDiscarded)
+        clearReview(reason: .userDismissed)
+        Task { await MainActor.run { WindowRouter.openOnboarding() } }
+    }
+
     /// Explicit, informed user copy for secure/unknown sessions. Consumes the
     /// review content and writes ONLY then; audit stays content-free.
     func copyReviewContent() {
@@ -191,6 +336,13 @@ final class DictationController: ObservableObject {
         reviewSession = nil
         reviewClearTask?.cancel()
         reviewClearTask = nil
+        reviewModel = nil
+        reviewText = nil
+        reviewTitle = nil
+        reviewDetail = nil
+        reviewAllowsRetry = false
+        reviewWarnsCopy = false
+        reviewAllowsSettings = false
         panelState = .hidden
         interimText = ""
     }
@@ -707,27 +859,36 @@ final class DictationController: ObservableObject {
                     dismissPanelSoon()
                 case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
                      .notEditable, .clipboardNotRestoredBecauseChanged,
-                     .clipboardRestoreFailed, .deadlineExceeded, .cancelled,
-                     .failed(let msg):
+                     .clipboardRestoreFailed, .deadlineExceeded, .cancelled:
+                    showError(result.userFacingMessage)
+                case .failed(let msg):
                     showError(msg)
                 }
             case .targetChanged, .targetGone, .notEditable:
-                // Controlled abort: no write, honest terminal outcome.
+                // Controlled abort: no write, honest terminal outcome; the
+                // review panel shows the exact controlled reason (JOE-2272).
                 _ = control.stage(.targetChanged)
-                showError("Target changed — insertion cancelled")
+                let reviewOutcome: InsertionOutcome
+                switch outcome {
+                case .targetGone: reviewOutcome = .targetGone
+                case .notEditable: reviewOutcome = .notEditable
+                default: reviewOutcome = .targetChanged
+                }
+                presentReview(outcome: reviewOutcome, text: trimmed)
                 ZFLog.info("insertion cancelled outcome=\(outcome.rawValue)")
             case .targetUnknown:
                 _ = control.stage(.targetUnknown)
-                // Fail closed: unknown target — review-only with explicit copy.
-                presentSecureReview(trimmed)
+                // Fail closed: unknown target — persistent review panel with
+                // reason + settings link + explicit copy only.
+                presentReview(outcome: .targetUnknown, text: trimmed)
             case .secureTarget:
                 _ = control.stage(.targetSecure)
-                // Fail closed: secure reclassification — review-only, no
-                // paste/AX/history, explicit copy only.
-                presentSecureReview(trimmed)
+                // Fail closed: secure reclassification — persistent review
+                // panel, no paste/AX/history, explicit copy only.
+                presentReview(outcome: .secureTarget, text: trimmed)
             case .deadlineExceeded:
                 _ = control.stage(.deadlineViolated)
-                showError("Target validation timed out")
+                presentReview(outcome: .deadlineExceeded, text: trimmed)
             }
 
         } catch {

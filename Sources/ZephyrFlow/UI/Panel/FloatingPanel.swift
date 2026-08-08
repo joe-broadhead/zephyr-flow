@@ -180,7 +180,15 @@ struct FloatingPanelRoot: View {
                     onStyle: { controller.applyQuickAction($0) },
                     onStop: { controller.stopAndInsert() },
                     onCancel: { controller.cancelSession() },
-                    onReviewCopy: { controller.copyReviewContent() }
+                    onReviewCopy: { controller.copyReviewContent() },
+                    onReviewRetry: { controller.retryReview() },
+                    onReviewDiscard: { controller.discardReview() },
+                    onReviewSettings: { controller.openAccessibilitySettings() },
+                    reviewTitle: controller.reviewTitle,
+                    reviewDetail: controller.reviewDetail,
+                    reviewAllowsRetry: controller.reviewAllowsRetry,
+                    reviewWarnsCopy: controller.reviewWarnsCopy,
+                    reviewAllowsSettings: controller.reviewAllowsSettings
                 )
                 .transition(.scale(scale: 0.88).combined(with: .opacity))
             }
@@ -212,7 +220,7 @@ struct FloatingPanelRoot: View {
             // Esc or ⌘. clears review / cancels session
             if event.keyCode == 53 || (event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == ".") {
                 if controller.panelState == .reviewing {
-                    controller.clearReview(reason: .userDismissed)
+                    controller.discardReview()   // JOE-2272: discard clears text + model
                 } else {
                     controller.cancelSession()
                 }
@@ -266,9 +274,22 @@ struct FloatingPanelView: View {
     let onCancel: () -> Void
     let onReviewCopy: () -> Void
 
+    let onReviewRetry: () -> Void
+    let onReviewDiscard: () -> Void
+    let onReviewSettings: () -> Void
+    let reviewTitle: String?
+    let reviewDetail: String?
+    let reviewAllowsRetry: Bool
+    let reviewWarnsCopy: Bool
+    let reviewAllowsSettings: Bool
+
     init(state: PanelState, text: String, levels: [Float], activeStyle: FlowStyle,
          onStyle: @escaping (FlowStyle) -> Void, onStop: @escaping () -> Void,
-         onCancel: @escaping () -> Void, onReviewCopy: @escaping () -> Void) {
+         onCancel: @escaping () -> Void, onReviewCopy: @escaping () -> Void,
+         onReviewRetry: @escaping () -> Void, onReviewDiscard: @escaping () -> Void,
+         onReviewSettings: @escaping () -> Void,
+         reviewTitle: String?, reviewDetail: String?,
+         reviewAllowsRetry: Bool, reviewWarnsCopy: Bool, reviewAllowsSettings: Bool) {
         self.state = state
         self.text = text
         self.levels = levels
@@ -277,6 +298,14 @@ struct FloatingPanelView: View {
         self.onStop = onStop
         self.onCancel = onCancel
         self.onReviewCopy = onReviewCopy
+        self.onReviewRetry = onReviewRetry
+        self.onReviewDiscard = onReviewDiscard
+        self.onReviewSettings = onReviewSettings
+        self.reviewTitle = reviewTitle
+        self.reviewDetail = reviewDetail
+        self.reviewAllowsRetry = reviewAllowsRetry
+        self.reviewWarnsCopy = reviewWarnsCopy
+        self.reviewAllowsSettings = reviewAllowsSettings
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -462,23 +491,79 @@ struct FloatingPanelView: View {
     }
 
     private var reviewActions: some View {
-        VStack(spacing: 8) {
-            Text("Secure target — review only. Nothing is pasted or saved automatically.")
-                .font(.system(size: 11))
-                .foregroundColor(ZephyrTheme.warning)
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-            Button(action: onReviewCopy) {
-                Label("Copy", systemImage: "doc.on.doc")
+        VStack(spacing: 10) {
+            if let reviewTitle {
+                Text(reviewTitle)
                     .font(.system(size: 13, weight: .semibold))
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 8)
-                    .background(ZephyrTheme.warning.opacity(0.9), in: Capsule())
-                    .foregroundColor(.black)
+                    .foregroundColor(ZephyrTheme.warning)
+                    .multilineTextAlignment(.center)
+                    .accessibilityLabel("Review: \(reviewTitle)")
             }
-            .buttonStyle(.plain)
+            if let reviewDetail {
+                Text(reviewDetail)
+                    .font(.system(size: 11))
+                    .foregroundColor(ZephyrTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .accessibilityLabel(reviewDetail)
+            }
+            HStack(spacing: 8) {
+                if reviewAllowsRetry {
+                    Button(action: onReviewRetry) {
+                        Label("Retry", systemImage: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(ZephyrTheme.bgElevated, in: Capsule())
+                            .foregroundColor(ZephyrTheme.textPrimary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Retry validation against the original target")
+                    .keyboardShortcut("r", modifiers: .command)
+                }
+                Button(action: onReviewCopy) {
+                    Label(reviewWarnsCopy ? "Copy to Clipboard" : "Copy", systemImage: "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(ZephyrTheme.warning.opacity(0.9), in: Capsule())
+                        .foregroundColor(.black)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(reviewWarnsCopy
+                    ? "Copy to clipboard — this places the text on the global clipboard"
+                    : "Copy text to clipboard")
+                .keyboardShortcut(.return, modifiers: [])
+                if reviewAllowsSettings {
+                    Button(action: onReviewSettings) {
+                        Label("Settings", systemImage: "gearshape")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(ZephyrTheme.bgElevated, in: Capsule())
+                            .foregroundColor(ZephyrTheme.textPrimary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open Accessibility settings")
+                }
+                Button(action: onReviewDiscard) {
+                    Label("Discard", systemImage: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(ZephyrTheme.bgElevated, in: Capsule())
+                        .foregroundColor(ZephyrTheme.danger)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Discard and clear the text")
+                .keyboardShortcut(.escape, modifiers: [])
+            }
+            Text("Clears automatically in 30s")
+                .font(.system(size: 9))
+                .foregroundColor(ZephyrTheme.textMuted)
         }
     }
+
 
     private var quickActions: some View {
         HStack(spacing: 6) {

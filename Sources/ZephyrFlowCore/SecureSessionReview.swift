@@ -13,6 +13,7 @@ public final class SecureSessionReview: @unchecked Sendable {
         case sessionCancelled
         case appTerminating
         case consumedByExplicitCopy
+        case retriedWithFreshIntent   // JOE-2272
     }
 
     private final class Box {

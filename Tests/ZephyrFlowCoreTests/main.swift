@@ -847,6 +847,55 @@ struct CoreTests {
             }
         }
 
+        // ===== JOE-2272: no-side-effect review UX model =====
+        do {
+            let changed = InsertionReviewModel(outcome: .targetChanged, createdAtNanos: 0)
+            check("2272 changed: retry+copy+discard, no settings, non-technical",
+                  changed.allowsRetry && changed.allowsCopy && changed.allowsDiscard
+                    && !changed.allowsOpenAccessibilitySettings && changed.isUncertain)
+            check("2272 changed headline plain language",
+                  changed.title == "The target changed" && changed.detail.contains("changed"))
+            check("2272 changed no green by construction", !changed.outcome.permitsGreenSuccessUI)
+
+            let gone = InsertionReviewModel(outcome: .targetGone, createdAtNanos: 0)
+            check("2272 gone: retry allowed", gone.allowsRetry && gone.title == "The target closed")
+
+            let notEditable = InsertionReviewModel(outcome: .notEditable, createdAtNanos: 0)
+            check("2272 notEditable: retry allowed, plain language",
+                  notEditable.allowsRetry && notEditable.detail.contains("read-only"))
+
+            let deadline = InsertionReviewModel(outcome: .deadlineExceeded, createdAtNanos: 0)
+            check("2272 deadline: retry allowed", deadline.allowsRetry)
+
+            let unknown = InsertionReviewModel(outcome: .targetUnknown, createdAtNanos: 0)
+            check("2272 unknown: no retry, settings + warn copy",
+                  !unknown.allowsRetry && unknown.allowsOpenAccessibilitySettings
+                    && unknown.shouldWarnBeforeCopy && unknown.detail.contains("Accessibility"))
+
+            let secure = InsertionReviewModel(outcome: .secureTarget, createdAtNanos: 0)
+            check("2272 secure: no retry, warn copy, no auto anything",
+                  !secure.allowsRetry && secure.shouldWarnBeforeCopy
+                    && !secure.allowsOpenAccessibilitySettings && secure.detail.contains("Nothing was pasted"))
+
+            // single-shot + retention
+            var r = InsertionReviewModel(outcome: .targetChanged, createdAtNanos: 1_000, retentionNanosAhead: 1_000)
+            check("2272 expiry detected", r.expired(nowNanos: 2_001))
+            check("2272 consume after expiry refused", !r.consume(.explicitCopy, nowNanos: 2_001))
+            var c = InsertionReviewModel(outcome: .targetChanged, createdAtNanos: 1_000, retentionNanosAhead: 30_000)
+            check("2272 consume copy once", c.consume(.explicitCopy, nowNanos: 2_000) && c.consumedAction == .explicitCopy)
+            check("2272 second consume refused", !c.consume(.discard, nowNanos: 2_000))
+            var rt = InsertionReviewModel(outcome: .targetChanged, createdAtNanos: 0)
+            check("2272 retry consumes with fresh intent",
+                  rt.consume(.retryValidation, nowNanos: 100) && rt.clearReason == .retriedWithFreshIntent)
+            var st = InsertionReviewModel(outcome: .secureTarget, createdAtNanos: 0)
+            check("2272 retry refused for secure", !st.consume(.retryValidation, nowNanos: 100))
+            var u = InsertionReviewModel(outcome: .targetUnknown, createdAtNanos: 0)
+            check("2272 settings action allowed for unknown",
+                  u.consume(.openAccessibilitySettings, nowNanos: 100) && u.consumedAction == .openAccessibilitySettings)
+            u.clear(.userDiscarded)
+            check("2272 discard clears", u.clearReason == .userDiscarded)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")
