@@ -1499,7 +1499,7 @@
    "status": "Backlog",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "90977e4"
    ],
    "aurum_commits": [],
    "tests": [
