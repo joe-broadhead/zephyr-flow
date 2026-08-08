@@ -285,6 +285,97 @@ struct CoreTests {
             check("forced conservative", !FlowLanguageContext(language: "en", forceConservative: true).isEnglishQualified)
         }
 
+        // ===== JOE-2246: session control model =====
+        do {
+            // release during a blocked fake model load prevents capture
+            var c = SessionControlModel()
+            let sid = c.begin(nowNanos: 0)
+            check("begin allocates SessionID and enters preparing", sid != nil && c.state == .preparing)
+            let stopEffect = c.stop()
+            check("stop during preparing cancels", stopEffect == .transitioned(.cancelled))
+            let capture = c.stage(.readyToCapture)
+            var rejected = false
+            if case .rejected = capture { rejected = true }
+            check("release before capture prevents later capture", rejected)
+            check("terminal outcome cancelled", c.terminal == .cancelled)
+        }
+        do {
+            // idempotent duplicate begin/stop/cancel; exactly-one outcome
+            var c = SessionControlModel()
+            _ = c.begin()
+            check("duplicate begin is no-op", c.begin() == nil)
+            _ = c.stage(.readyToCapture)
+            check("stop during capturing -> draining", c.stop() == .transitioned(.draining))
+            check("duplicate stop is no-op", c.stop() == .idempotentNoop)
+            _ = c.stage(.drainFinished)
+            _ = c.stage(.transcriptionFinished)
+            _ = c.stage(.transformationFinished)
+            _ = c.stage(.targetValidationSucceeded)
+            let done = c.stage(.insertionSucceeded)
+            var completed = false
+            if case .accepted(let st) = done, st == .completed { completed = true }
+            check("happy path completes", completed)
+            check("terminal recorded once", c.terminal == .completed)
+            check("duplicate cancel is idempotent after terminal", c.cancel() == .idempotentNoop)
+            var lateRejected = false
+            if case .rejected = c.stage(.insertionFailed) { lateRejected = true }
+            check("late events rejected after terminal", lateRejected)
+        }
+        do {
+            // stale callback from session A cannot mutate session B
+            var c1 = SessionControlModel()
+            let a = c1.begin()!
+            c1.cancel()
+            check("cancelled session is not current", !c1.isCurrent(a))
+            var c2 = SessionControlModel()
+            let a2 = c2.begin()!
+            _ = c2.cancel()
+            let b2 = c2.begin()
+            check("new session B begins after terminal", b2 != nil)
+            check("B is current", b2 != nil && c2.isCurrent(b2!))
+            check("A stale callback rejected", a2 != b2 && !c2.isCurrent(a2))
+        }
+        do {
+            // shutdown rejects new sessions and reports abandonment
+            var c = SessionControlModel()
+            _ = c.begin()
+            let eff = c.shutdown()
+            check("shutdown abandons active session", eff == .transitioned(.abandonedDuringShutdown))
+            check("shutdown terminal recorded", c.terminal == .abandonedDuringShutdown)
+            check("shutdown rejects new sessions", c.begin() == nil)
+            let again = c.shutdown()
+            check("shutdown idempotent", again == .idempotentNoop)
+        }
+        do {
+            // 10,000 randomized press/release/cancel edges preserve invariants
+            var seed: UInt64 = 0xD1B54A32D192ED03
+            func nextRand() -> UInt64 {
+                seed = seed &* 6364136223846793005 &+ 1442695040888963407
+                return seed >> 33
+            }
+            var c = SessionControlModel()
+            var invalid = false
+            var terminalCount = 0
+            for _ in 0..<10_000 {
+                let r = Int(nextRand() % 3)
+                switch r {
+                case 0: _ = c.begin()
+                case 1: _ = c.stop()
+                default: _ = c.cancel()
+                }
+                if c.terminal != nil {
+                    terminalCount += 1
+                    // duplicates after terminal must never produce .illegal
+                    if c.cancel() == .illegal || c.stop() == .illegal { invalid = true }
+                    // terminal is absorbing: stage events are rejected or ignored
+                    if case .accepted = c.stage(.insertionSucceeded) { invalid = true }
+                    c = SessionControlModel() // fresh cycle (new session)
+                }
+            }
+            check("10k randomized edges keep invariants", !invalid && terminalCount > 0)
+        }
+
+
         print("")
         if failed == 0 {
             print("All tests passed.")

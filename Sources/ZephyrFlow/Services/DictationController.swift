@@ -39,6 +39,10 @@ final class DictationController: ObservableObject {
     /// Bumps on each begin; end ignores stale generations.
     private var sessionGeneration: UInt64 = 0
     private var usingAppleEngine = false
+    /// Deterministic session control plane (JOE-2246): SessionID, admission,
+    /// idempotent edges and exactly-one terminal outcome.
+    private var control = SessionControlModel()
+    private var currentSessionID: SessionID?
 
     private init() {
         activeEngine = whisperEngine
@@ -120,6 +124,9 @@ final class DictationController: ObservableObject {
     func stop() {
         hotkey.stop()
         levelsTask?.cancel()
+        // Close admission and abandon any active session honestly (JOE-2246).
+        control.shutdown()
+        currentSessionID = nil
         Task {
             await audio.stop()
             await activeEngine.cancel()
@@ -272,6 +279,13 @@ final class DictationController: ObservableObject {
             ZFLog.info("beginSession ignored — already active")
             return
         }
+        // Allocate immutable SessionID before ANY asynchronous preparation.
+        guard let sid = control.begin() else {
+            ZFLog.info("beginSession rejected by control plane")
+            return
+        }
+        currentSessionID = sid
+        ZFLog.info("SessionID allocated \(sid) gen=\(control.generation)")
 
         privacy.refresh()
         // Fail fast — never await permission dialogs on the hotkey path
@@ -317,23 +331,26 @@ final class DictationController: ObservableObject {
             await preloadEngine()
         }
 
-        // If release already ended this generation, abort quietly
-        guard isSessionActive, sessionGeneration == generation else {
-            ZFLog.info("Session begin aborted — generation superseded")
+        // If release/cancel already ended this session, abort quietly
+        // (release during a blocked model load prevents capture — JOE-2246).
+        guard isSessionActive, control.isCurrent(sid) else {
+            ZFLog.info("Session begin aborted — session superseded")
             await activeEngine.cancel()
             return
         }
+        _ = control.stage(.readyToCapture)
 
         do {
             let localOnly = settings.settings.localOnlyMode
             try await activeEngine.startStreaming(localOnly: localOnly) { [weak self] partial in
                 Task { @MainActor in
-                    guard let self, self.sessionGeneration == generation else { return }
+                    guard let self, self.sessionGeneration == generation,
+                          let sid = self.currentSessionID, self.control.isCurrent(sid) else { return }
                     self.interimText = partial.text
                 }
             }
 
-            guard isSessionActive, sessionGeneration == generation else {
+            guard isSessionActive, control.isCurrent(sid) else {
                 await activeEngine.cancel()
                 return
             }
@@ -356,6 +373,7 @@ final class DictationController: ObservableObject {
             await FocusStore.shared.restore()
         } catch {
             ZFLog.error("Session start failed: \(error.localizedDescription)")
+            _ = control.stage(.captureFailed)
             if sessionGeneration == generation {
                 isSessionActive = false
                 let msg = error.localizedDescription
@@ -374,11 +392,20 @@ final class DictationController: ObservableObject {
             ZFLog.info("endSession ignored — not active")
             return
         }
+        guard let sid = currentSessionID, control.isCurrent(sid) else {
+            ZFLog.info("endSession ignored — stale/terminal session")
+            return
+        }
         let generation = sessionGeneration
         isSessionActive = false
         levelsTask?.cancel()
         panelState = .processing
         FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
+        // Immediate control effect: stop is not queued behind stage work.
+        let effect = control.stop()
+        if effect == .idempotentNoop || effect == .illegal {
+            ZFLog.info("endSession control no-op state=\(control.state.rawValue)")
+        }
         ZFLog.info("Session end gen=\(generation) — finalizing")
 
         await audio.stop()
@@ -390,10 +417,12 @@ final class DictationController: ObservableObject {
         do {
             let final = try await activeEngine.stopAndFinalize()
             // Discard if a newer session already started
-            guard sessionGeneration == generation else {
+            guard sessionGeneration == generation, control.isCurrent(sid) else {
                 ZFLog.info("endSession discarded — stale generation")
                 return
             }
+            _ = control.stage(.drainFinished)   // draining -> transcribing
+            _ = control.stage(.transcriptionFinished) // transcribing -> transforming
 
             let style = activeFlowStyle
             let flowT0 = Date()
@@ -412,10 +441,11 @@ final class DictationController: ObservableObject {
             }
 
             // Stale session check after flow (may have taken up to neural timeout)
-            guard sessionGeneration == generation else {
+            guard sessionGeneration == generation, control.isCurrent(sid) else {
                 ZFLog.info("endSession discarded after flow — stale generation")
                 return
             }
+            _ = control.stage(.transformationFinished) // transforming -> resolvingTarget
 
             panelState = .processing
             FloatingPanelController.shared.hide()
@@ -430,6 +460,17 @@ final class DictationController: ObservableObject {
                 targetBundleID: sessionTargetBundleID ?? FocusStore.shared.lastBundleID
             )
             ZFLog.info("Insertion result: \(String(describing: result))")
+            switch result {
+            case .inserted, .pasted:
+                _ = control.stage(.targetValidationSucceeded) // resolvingTarget -> inserting
+                _ = control.stage(.insertionSucceeded)        // inserting -> completed
+            case .copiedToClipboard:
+                // Copy-only is an explicit user-visible outcome, not an insert.
+                _ = control.stage(.targetValidationSucceeded)
+                _ = control.stage(.insertionSucceeded)
+            case .failed:
+                _ = control.stage(.insertionFailed)
+            }
 
             if settings.settings.saveHistory {
                 history.add(
@@ -473,6 +514,8 @@ final class DictationController: ObservableObject {
     func cancelSession() {
         enqueueSession {
             self.sessionGeneration &+= 1
+            _ = self.control.cancel()
+            self.currentSessionID = nil
             self.isSessionActive = false
             self.levelsTask?.cancel()
             await self.audio.stop()
