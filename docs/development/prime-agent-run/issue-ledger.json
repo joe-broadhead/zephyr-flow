@@ -1497,12 +1497,29 @@
     "JOE-2284"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (JOE-2289 block: key resolution/fallback, context completeness, transcription matrix Auto+BCP-47, pseudolocalization, long probe, protected identifiers, RTL readiness, parameterized format, onboarding keys)",
+    "python3 Scripts/string_scan.py: OK (52 catalog keys, all references resolve; no unreviewed hard-coded UI strings)",
+    "swift build: pass; swift-format lint 0; mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/AppStrings.swift",
+    "Sources/ZephyrFlowCore/CapabilityOnboarding.swift",
+    "Sources/ZephyrFlow/UI/Settings/SettingsView.swift",
+    "Sources/ZephyrFlow/UI/Panel/FloatingPanel.swift",
+    "Sources/ZephyrFlow/UI/MenuBar/MenuBarView.swift",
+    "Sources/ZephyrFlow/UI/Onboarding/OnboardingView.swift",
+    "Scripts/string_scan.py",
+    "Scripts/ci_checks.sh",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2289/REPORT.md"
+   ],
+   "remaining_action": "Pseudolocalization and RTL screenshots for critical surfaces on a real machine \u2014 human-gate runbook."
   },
   {
    "id": "JOE-2290",

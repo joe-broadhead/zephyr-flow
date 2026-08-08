@@ -88,7 +88,7 @@ struct OnboardingView: View {
         var all: [OnboardingStep] = [
             OnboardingStep(
                 id: "welcome", capability: .localOnlyImplications,
-                title: "Private dictation,\non your machine",
+                title: AppStrings.key("onboarding.welcome.title"),
                 explanation:
                     "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default. Steps below ask only for what the selected product path needs.",
                 requiresSystemPrompt: false)
@@ -182,13 +182,13 @@ struct OnboardingView: View {
             }
 
             VStack(spacing: 10) {
-                Text(current?.title ?? "")
+                Text(current.map { AppStrings.key($0.titleKey) } ?? "")
                     .font(.system(size: 26, weight: .bold, design: .rounded))
                     .foregroundStyle(ZephyrTheme.textPrimary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text(current?.explanation ?? "")
+                Text(current.map { AppStrings.key($0.explanationKey) } ?? "")
                     .font(.system(size: 14, weight: .regular, design: .rounded))
                     .foregroundStyle(ZephyrTheme.textSecondary)
                     .multilineTextAlignment(.center)
@@ -213,7 +213,7 @@ struct OnboardingView: View {
     private func statusChip(for capability: OnboardingCapability) -> some View {
         let satisfied = stepSatisfiedForCapability(capability)
         return Label(
-            satisfied ? "Granted" : "Not granted yet",
+            satisfied ? AppStrings.key("onboarding.granted") : AppStrings.key("onboarding.notGranted"),
             systemImage: satisfied ? "checkmark.seal.fill" : "circle.dashed"
         )
         .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -221,7 +221,7 @@ struct OnboardingView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(Capsule().fill(ZephyrTheme.bgCard.opacity(0.8)))
-        .accessibilityLabel(satisfied ? "Capability granted" : "Capability not granted")
+        .accessibilityLabel(satisfied ? AppStrings.key("onboarding.granted") : AppStrings.key("onboarding.notGranted"))
     }
 
     private func stepSatisfiedForCapability(_ capability: OnboardingCapability) -> Bool {
@@ -238,7 +238,7 @@ struct OnboardingView: View {
     private var footer: some View {
         HStack(spacing: 12) {
             if index > 0 {
-                Button("Back") { goBack() }
+                Button(AppStrings.key("onboarding.back")) { goBack() }
                     .buttonStyle(ZephyrSecondaryButtonStyle())
                     .keyboardShortcut(.cancelAction)
             }
@@ -246,11 +246,11 @@ struct OnboardingView: View {
             Spacer()
 
             if current?.id == "welcome" {
-                Button("Get started") { goForward() }
+                Button(AppStrings.key("onboarding.getStarted")) { goForward() }
                     .buttonStyle(ZephyrPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             } else if current?.id == "ready" {
-                Button("Start using ZephyrFlow") { finish() }
+                Button(AppStrings.key("onboarding.startUsing")) { finish() }
                     .buttonStyle(ZephyrPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             } else if let current {
@@ -262,7 +262,7 @@ struct OnboardingView: View {
                 .disabled(isRequesting)
 
                 if current.skippable {
-                    Button("Skip") {
+                    Button(AppStrings.key("onboarding.skip")) {
                         let skip = CapabilityGraph.skipExplanation(for: productPath, step: current)
                         skipNote = skip.limitations
                         completed.remove(current.capability)
@@ -276,11 +276,11 @@ struct OnboardingView: View {
 
     private func primaryActionTitle(for step: OnboardingStep) -> String {
         switch step.capability {
-        case .microphone: return "Allow Microphone"
-        case .speechRecognition: return "Allow Speech Recognition"
-        case .accessibility: return "Enable Accessibility"
-        case .modelAcquisition: return "Download Model"
-        default: return "Continue"
+        case .microphone: return AppStrings.key("onboarding.allowMic")
+        case .speechRecognition: return AppStrings.key("onboarding.allowSpeech")
+        case .accessibility: return AppStrings.key("onboarding.enableAX")
+        case .modelAcquisition: return AppStrings.key("onboarding.downloadModel")
+        default: return AppStrings.key("onboarding.continue")
         }
     }
 

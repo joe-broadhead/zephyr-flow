@@ -28,6 +28,10 @@ public struct OnboardingStep: Sendable, Equatable {
     public let capability: OnboardingCapability
     public let title: String
     public let explanation: String
+    // JOE-2289: localization-ready semantic keys (English values above are
+    // the fallback/display; a locale pipeline resolves via AppStrings).
+    public let titleKey: String
+    public let explanationKey: String
     /// A system permission prompt (TCC/AX) requiring explicit user action.
     public let requiresSystemPrompt: Bool
     /// Network class: none / modelDownload / updateCheck — shown separately
@@ -39,6 +43,7 @@ public struct OnboardingStep: Sendable, Equatable {
     public init(
         id: String, capability: OnboardingCapability,
         title: String, explanation: String,
+        titleKey: String? = nil, explanationKey: String? = nil,
         requiresSystemPrompt: Bool, networkClass: String = "none",
         skippable: Bool = true
     ) {
@@ -46,6 +51,8 @@ public struct OnboardingStep: Sendable, Equatable {
         self.capability = capability
         self.title = title
         self.explanation = explanation
+        self.titleKey = titleKey ?? "onboarding.\(id).title"
+        self.explanationKey = explanationKey ?? "onboarding.\(id).explanation"
         self.requiresSystemPrompt = requiresSystemPrompt
         self.networkClass = networkClass
         self.skippable = skippable

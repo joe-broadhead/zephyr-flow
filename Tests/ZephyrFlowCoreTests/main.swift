@@ -3590,6 +3590,86 @@ struct CoreTests {
                 axSkip.limitations.lowercased().contains("copy"))
         }
 
+        // ===== JOE-2289: localization-ready strings =====
+        do {
+            // 1. Catalog completeness: every UI reference resolves; unknown
+            //    keys resolve to themselves (surfaced by the CI scan).
+            let known = AppStrings.key("panel.processing")
+            check("2289 known key resolves", known == "Processing…")
+            check("2289 unknown key returns key", AppStrings.key("nope.missing") == "nope.missing")
+
+            // 2. Every catalog entry has a translator context and non-empty
+            //    English value.
+            for (k, entry) in AppStrings.catalog {
+                check("2289 context for \(k)", !entry.context.isEmpty)
+                check("2289 value for \(k)", !entry.value.isEmpty)
+            }
+
+            // 3. UI locale independence: the transcription-language picker is
+            //    independent of the UI locale. SupportedLanguage is the
+            //    engine-capability matrix (JOE-2254) with Auto.
+            check(
+                "2289 transcription matrix has Auto",
+                SupportedLanguage.allCases.contains(.auto))
+            check(
+                "2289 matrix is BCP-47",
+                SupportedLanguage.allCases.allSatisfy { $0.isAuto || ($0.bcp47?.isEmpty == false) })
+
+            // 4. Pseudolocalization expands length (layout probe).
+            let pseudo = AppStrings.pseudolocalize("Hold Fn to speak")
+            check("2289 pseudolocalize expands", pseudo.count > "Hold Fn to speak".count)
+            check(
+                "2289 pseudolocalize wraps markers",
+                pseudo.hasPrefix("⟦") && pseudo.hasSuffix("⟧"))
+
+            // 5. Long-string probe expands ~1.8x for layout testing.
+            let long = AppStrings.longProbe("Stop and insert")
+            check("2289 long probe expands", long.count >= "Stop and insert".count * 2)
+
+            // 6. Technical identifiers are protected (never localized).
+            check(
+                "2289 model id protected",
+                AppStrings.isProtected("openai_whisper-tiny"))
+            check(
+                "2289 bundle id protected",
+                AppStrings.isProtected("com.zephyrflow.history-key"))
+            check(
+                "2289 path protected",
+                AppStrings.isProtected("~/Library/Logs/ZephyrFlow/"))
+            check("2289 app name protected", AppStrings.isProtected("ZephyrFlow"))
+
+            // 7. RTL readiness: no hard-coded leading directional punctuation
+            //    in catalog values.
+            for (k, entry) in AppStrings.catalog {
+                check(
+                    "2289 rtl probe \(k)",
+                    AppStrings.rtlProbeReady(entry.value))
+            }
+
+            // 8. Parameterized strings format without concatenating
+            //    grammar-sensitive fragments.
+            let review = AppStrings.format("panel.reviewTitle", "Target changed")
+            check(
+                "2289 parameterized format",
+                review == "Review: Target changed")
+            let engine = AppStrings.format("menu.engine", "Whisper Tiny")
+            check("2289 engine label format", engine == "Engine: Whisper Tiny")
+
+            // 9. Onboarding steps carry localization-ready keys that resolve.
+            for p in OnboardingProductPath.allCases {
+                for st in CapabilityGraph.steps(for: p) {
+                    check(
+                        "2289 step \(st.id) key resolves",
+                        AppStrings.key(st.titleKey) != st.titleKey
+                            && AppStrings.key(st.explanationKey) != st.explanationKey)
+                }
+            }
+
+            // 10. Locale-aware byte/duration formatting produce output.
+            check("2289 byte size formatted", !AppStrings.byteSize(1_500_000).isEmpty)
+            check("2289 duration formatted", !AppStrings.duration(65).isEmpty)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

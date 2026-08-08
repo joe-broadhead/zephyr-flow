@@ -40,10 +40,13 @@ else
   fail "missing baseline $BASELINE"
 fi
 
-# 4. Formatting lint (warnings are failures).
-step "4/8 swift-format lint --strict"
+# 4. Formatting lint (warnings are failures) + string-catalog completeness.
+step "4/8 swift-format lint + string catalog scan"
 if ! swift format lint --strict --recursive Sources Tests 2>&1 | tail -3; then
   fail "swift-format lint"
+fi
+if ! python3 Scripts/string_scan.py 2>&1 | tail -3; then
+  fail "string catalog scan"
 fi
 
 # 5. Shell + YAML lint.

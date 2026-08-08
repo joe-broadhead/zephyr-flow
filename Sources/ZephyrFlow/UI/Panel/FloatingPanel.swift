@@ -493,16 +493,16 @@ struct FloatingPanelView: View {
                     .frame(maxWidth: 260, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
                 if message.localizedCaseInsensitiveContains("microphone") {
-                    Text("Open Microphone settings from the menu bar → Setup")
+                    Text(AppStrings.key("panel.openMicSettings"))
                         .font(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundStyle(ZephyrTheme.textSecondary)
                 } else if message.localizedCaseInsensitiveContains("accessib") {
-                    Text("Open Accessibility settings from the menu bar → Setup")
+                    Text(AppStrings.key("panel.openAXSettings"))
                         .font(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundStyle(ZephyrTheme.textSecondary)
                 }
             } else if state == .processing && text.isEmpty {
-                Text("Processing…")
+                Text(AppStrings.key("panel.processing"))
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(ZephyrTheme.textSecondary)
             } else {
@@ -525,7 +525,7 @@ struct FloatingPanelView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(ZephyrTheme.warning)
                     .multilineTextAlignment(.center)
-                    .accessibilityLabel("Review: \(reviewTitle)")
+                    .accessibilityLabel(AppStrings.format("panel.reviewTitle", reviewTitle ?? ""))
             }
             if let reviewDetail {
                 Text(reviewDetail)
@@ -538,7 +538,7 @@ struct FloatingPanelView: View {
             HStack(spacing: 8) {
                 if reviewAllowsRetry {
                     Button(action: onReviewRetry) {
-                        Label("Retry", systemImage: "arrow.clockwise")
+                        Label(AppStrings.key("panel.retry"), systemImage: "arrow.clockwise")
                             .font(.system(size: 12, weight: .semibold))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
@@ -546,7 +546,7 @@ struct FloatingPanelView: View {
                             .foregroundColor(ZephyrTheme.textPrimary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Retry validation against the original target")
+                    .accessibilityLabel(AppStrings.key("panel.retryHint"))
                     .keyboardShortcut("r", modifiers: .command)
                 }
                 Button(action: onReviewCopy) {
@@ -566,7 +566,7 @@ struct FloatingPanelView: View {
                 .keyboardShortcut(.return, modifiers: [])
                 if reviewAllowsSettings {
                     Button(action: onReviewSettings) {
-                        Label("Settings", systemImage: "gearshape")
+                        Label(AppStrings.key("panel.settings"), systemImage: "gearshape")
                             .font(.system(size: 12, weight: .semibold))
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
@@ -574,10 +574,10 @@ struct FloatingPanelView: View {
                             .foregroundColor(ZephyrTheme.textPrimary)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Open Accessibility settings")
+                    .accessibilityLabel(AppStrings.key("panel.openAX"))
                 }
                 Button(action: onReviewDiscard) {
-                    Label("Discard", systemImage: "trash")
+                    Label(AppStrings.key("panel.discard"), systemImage: "trash")
                         .font(.system(size: 12, weight: .semibold))
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
@@ -585,10 +585,10 @@ struct FloatingPanelView: View {
                         .foregroundColor(ZephyrTheme.danger)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Discard and clear the text")
+                .accessibilityLabel(AppStrings.key("panel.discardHint"))
                 .keyboardShortcut(.escape, modifiers: [])
             }
-            Text("Clears automatically in 30s")
+            Text(AppStrings.key("panel.autoClear"))
                 .font(.system(size: 9))
                 .foregroundColor(ZephyrTheme.textMuted)
         }
@@ -627,8 +627,8 @@ struct FloatingPanelView: View {
                     .background(Circle().fill(ZephyrTheme.mint))
             }
             .buttonStyle(.plain)
-            .help("Stop & Insert")
-            .accessibilityLabel("Stop and insert")
+            .help(AppStrings.key("panel.help.stopInsert"))
+            .accessibilityLabel(AppStrings.key("panel.stopAndInsert"))
 
             Button(action: onCancel) {
                 Image(systemName: "xmark")
@@ -638,8 +638,8 @@ struct FloatingPanelView: View {
                     .background(Circle().fill(ZephyrTheme.bgElevated))
             }
             .buttonStyle(.plain)
-            .help("Cancel (discard)")
-            .accessibilityLabel("Cancel")
+            .help(AppStrings.key("panel.help.cancelDiscard"))
+            .accessibilityLabel(AppStrings.key("panel.cancel"))
         }
     }
 
@@ -688,7 +688,7 @@ struct PanelWarningView: View {
                     .foregroundColor(ZephyrTheme.textSecondary)
                     .multilineTextAlignment(.center)
             }
-            Button("Dismiss", action: onDiscard)
+            Button(AppStrings.key("panel.dismiss"), action: onDiscard)
                 .font(.system(size: 12, weight: .semibold))
                 .buttonStyle(.plain)
                 .padding(.horizontal, 14)
@@ -696,7 +696,7 @@ struct PanelWarningView: View {
                 .background(ZephyrTheme.bgElevated, in: Capsule())
                 .foregroundColor(ZephyrTheme.textPrimary)
                 .keyboardShortcut(.escape, modifiers: [])
-                .accessibilityLabel("Dismiss warning")
+                .accessibilityLabel(AppStrings.key("panel.dismissWarning"))
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
