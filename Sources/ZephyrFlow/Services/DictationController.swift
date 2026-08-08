@@ -794,7 +794,7 @@ final class DictationController: ObservableObject {
             if !sessionAllowsAutomaticSideEffects {
                 _ = control.stage(.transformationFinished) // transforming -> resolvingTarget
                 _ = control.stage(.targetSecure)           // resolvingTarget -> secureTarget (terminal)
-                let conservative = await flow.process(final.rawText, style: .clean)
+                let conservative = await flow.process(final.text, style: .clean)
                 let reviewText = conservative.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !reviewText.isEmpty else {
                     showError("No speech detected — try again")
@@ -810,11 +810,11 @@ final class DictationController: ObservableObject {
 
             let style = activeFlowStyle
             let flowT0 = Date()
-            let processed = await flow.process(final.rawText, style: style)
+            let processed = await flow.process(final.text, style: style)
             let flowMs = Int(Date().timeIntervalSince(flowT0) * 1000)
             // Lengths only — never log transcript body
             ZFLog.info(
-                "Processed len=\(processed.count) raw len=\(final.rawText.count) flowMs=\(flowMs) style=\(style.rawValue) backend=\(settings.settings.flowBackend.rawValue)"
+                "Processed len=\(processed.count) raw len=\(final.text.count) flowMs=\(flowMs) style=\(style.rawValue) backend=\(settings.settings.flowBackend.rawValue) completeness=\(final.completeness.rawValue)"
             )
 
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -908,10 +908,10 @@ final class DictationController: ObservableObject {
                    result.permitsHistoryRetention {
                     history.add(
                         HistoryEntry(
-                            originalText: final.rawText,
+                            originalText: final.text,
                             finalText: trimmed,
-                            duration: final.duration,
-                            modelUsed: final.modelUsed
+                            duration: TimeInterval(final.inferenceDurationNanos ?? 0) / 1_000_000_000,
+                            modelUsed: final.engine.modelName
                         )
                     )
                 } else if settings.settings.saveHistory {

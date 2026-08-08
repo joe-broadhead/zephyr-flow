@@ -1312,6 +1312,67 @@ struct CoreTests {
             check("2250 stress ends reusable", ownership.reusable)
         }
 
+        // ===== JOE-2252: rich EngineResult completeness/provenance/warnings =====
+        do {
+            func result(text: String, completeness: EngineResultCompleteness,
+                        accounting: EngineFrameAccounting?,
+                        termination: EngineResultTermination = .completed,
+                        warnings: [EngineWarning] = []) -> EngineResult {
+                EngineResult(text: text, completeness: completeness,
+                             frameAccounting: accounting,
+                             engine: EngineIdentity(kind: .whisper, modelName: "Tiny",
+                                                    modelVersion: "1.0", modelDigest: "abc"),
+                             languageRequested: "en", languageDetected: "en",
+                             confidence: 0.9, confidenceSource: "engine",
+                             startedAtUptimeNanos: 1000, endedAtUptimeNanos: 2000,
+                             inferenceDurationNanos: 1_000_000_000,
+                             warnings: warnings, fallbackReason: nil,
+                             termination: termination)
+            }
+            let full = EngineFrameAccounting(capturedSourceSamples: 16000,
+                                             deliveredEngineSamples: 16000,
+                                             decodedEngineSamples: 16000,
+                                             droppedSourceSamples: 0)
+            // Complete requires reconciled evidence.
+            let complete = result(text: "hello", completeness: .complete, accounting: full)
+            check("2252 complete with reconciled evidence", complete.isComplete)
+            check("2252 complete permits success claim",
+                  complete.completeness.permitsSuccessClaim)
+            // Missing frame evidence cannot enable complete.
+            let noEvidence = result(text: "hello", completeness: .complete, accounting: nil)
+            check("2252 complete without evidence not trusted", !noEvidence.isComplete)
+            // Unreconciled evidence (delivered != decoded) fails.
+            let bad = EngineFrameAccounting(capturedSourceSamples: 16000,
+                                            deliveredEngineSamples: 16000,
+                                            decodedEngineSamples: 9000,
+                                            droppedSourceSamples: 0)
+            check("2252 unreconciled evidence fails",
+                  !result(text: "hi", completeness: .complete, accounting: bad).isComplete)
+            // Partial/truncated/degraded never permit success claims.
+            check("2252 partial/truncated/degraded conservative",
+                  !result(text: "hi", completeness: .partial, accounting: full).completeness.permitsSuccessClaim
+                    && !result(text: "hi", completeness: .truncated, accounting: full).completeness.permitsSuccessClaim
+                    && !result(text: "hi", completeness: .degraded, accounting: full).completeness.permitsSuccessClaim)
+            // Distinguishable fallback modes.
+            check("2252 partial fallback distinguishable",
+                  result(text: "hi", completeness: .partial, accounting: nil,
+                         warnings: [.partialFallback]).warnings == [.partialFallback])
+            check("2252 short-audio fallback distinguishable",
+                  result(text: "hi", completeness: .partial, accounting: nil,
+                         warnings: [.shortAudioFallback]).warnings == [.shortAudioFallback])
+            check("2252 deadline termination distinguishable",
+                  result(text: "hi", completeness: .truncated, accounting: nil,
+                         termination: .deadlineExceeded, warnings: [.deadlineExceeded]).termination == .deadlineExceeded)
+            // Diagnostics exclude transcript content.
+            let diag = complete.diagnosticsPayload
+            check("2252 diagnostics exclude text",
+                  diag.completeness == .complete && diag.engine.modelName == "Tiny"
+                    && diag.confidence == 0.9 && diag.frameAccounting == full)
+            // No redundant processedText field (Flow is a separate stage).
+            check("2252 result has text only (no processedText)",
+                  complete.text == "hello")
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

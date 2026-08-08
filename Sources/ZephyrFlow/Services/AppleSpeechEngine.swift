@@ -177,12 +177,38 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
             throw WhisperEngineError.transcriptionFailed(err)
         }
 
-        return FinalTranscription(
-            rawText: finalText,
-            processedText: finalText,
-            duration: duration,
-            modelUsed: modelName
-        )
+        // Apple Speech: completeness derived from the final callback + error
+        // state. A rolling partial is never promoted to `complete`.
+        let completeness: EngineResultCompleteness
+        if sawFinal && err == nil {
+            completeness = .complete
+        } else if !finalText.isEmpty {
+            completeness = .partial
+        } else {
+            completeness = .degraded
+        }
+        let warnings: [EngineWarning] = {
+            if sawFinal && err == nil { return [] }
+            if !finalText.isEmpty { return [.partialFallback] }
+            return [.captureDegraded]
+        }()
+        let accounting = EngineFrameAccounting(capturedSourceSamples: 0,
+                                               deliveredEngineSamples: 0,
+                                               decodedEngineSamples: 0,
+                                               droppedSourceSamples: 0)
+        return EngineResult(text: finalText,
+                            completeness: completeness,
+                            frameAccounting: accounting,
+                            engine: EngineIdentity(kind: .appleSpeech, modelName: modelName,
+                                                   modelVersion: nil, modelDigest: nil),
+                            languageRequested: nil, languageDetected: nil,
+                            confidence: nil, confidenceSource: nil,
+                            startedAtUptimeNanos: nil,
+                            endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
+                            inferenceDurationNanos: UInt64(duration * 1_000_000_000),
+                            warnings: warnings,
+                            fallbackReason: (sawFinal && err == nil) ? nil : "rolling partial / degraded",
+                            termination: err == nil ? .completed : .failed)
     }
 
     func cancel() async {

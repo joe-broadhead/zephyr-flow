@@ -153,13 +153,23 @@ actor WhisperKitEngine: WhisperEngineProtocol {
 
         guard samples.count >= 1_600 else {
             let fallback = lastPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let accounting = EngineFrameAccounting(capturedSourceSamples: UInt64(samples.count),
+                                                   deliveredEngineSamples: 0,
+                                                   decodedEngineSamples: 0,
+                                                   droppedSourceSamples: 0)
             cleanup()
-            return FinalTranscription(
-                rawText: fallback,
-                processedText: fallback,
-                duration: duration,
-                modelUsed: modelName
-            )
+            return EngineResult(text: fallback,
+                                completeness: .partial,
+                                frameAccounting: accounting,
+                                engine: engineIdentity(),
+                                languageRequested: nil, languageDetected: nil,
+                                confidence: nil, confidenceSource: nil,
+                                startedAtUptimeNanos: startTime?.timeIntervalSince1970 != nil ? DispatchTime.now().uptimeNanoseconds : nil,
+                                endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
+                                inferenceDurationNanos: UInt64(duration * 1_000_000_000),
+                                warnings: [.shortAudioFallback],
+                                fallbackReason: "short-audio fallback",
+                                termination: .completed)
         }
 
         guard let kit else {
@@ -176,13 +186,25 @@ actor WhisperKitEngine: WhisperEngineProtocol {
             let fallback = lastPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
             if !fallback.isEmpty {
                 ZFLog.info("Whisper finalize failed; using last partial len=\(fallback.count)")
+                let accounting = EngineFrameAccounting(capturedSourceSamples: UInt64(samples.count),
+                                                       deliveredEngineSamples: 0,
+                                                       decodedEngineSamples: 0,
+                                                       droppedSourceSamples: 0)
                 cleanup()
-                return FinalTranscription(
-                    rawText: fallback,
-                    processedText: fallback,
-                    duration: duration,
-                    modelUsed: modelName
-                )
+                // A final-decode failure with a rolling partial is NEVER
+                // `complete` (JOE-2252): it is `partial` with a warning.
+                return EngineResult(text: fallback,
+                                    completeness: .partial,
+                                    frameAccounting: accounting,
+                                    engine: engineIdentity(),
+                                    languageRequested: nil, languageDetected: nil,
+                                    confidence: nil, confidenceSource: nil,
+                                    startedAtUptimeNanos: nil,
+                                    endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
+                                    inferenceDurationNanos: UInt64(duration * 1_000_000_000),
+                                    warnings: [.partialFallback],
+                                    fallbackReason: "final decode failed; rolling partial used",
+                                    termination: .failed)
             }
             cleanup()
             throw WhisperEngineError.transcriptionFailed(error.localizedDescription)
@@ -191,13 +213,34 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         let finalText = raw.isEmpty
             ? lastPartialText.trimmingCharacters(in: .whitespacesAndNewlines)
             : raw
+        // Frame evidence: captured == delivered (16 kHz reference), decoded
+        // == delivered — required for a `complete` claim.
+        let captured = UInt64(samples.count)
+        let delivered = UInt64(samples.count)
+        let accounting = EngineFrameAccounting(capturedSourceSamples: captured,
+                                               deliveredEngineSamples: delivered,
+                                               decodedEngineSamples: delivered,
+                                               droppedSourceSamples: 0)
+        let completeness: EngineResultCompleteness = raw.isEmpty ? .partial : .complete
+        let warnings: [EngineWarning] = raw.isEmpty ? [.partialFallback] : []
         cleanup()
-        return FinalTranscription(
-            rawText: finalText,
-            processedText: finalText,
-            duration: duration,
-            modelUsed: modelName
-        )
+        return EngineResult(text: finalText,
+                            completeness: completeness,
+                            frameAccounting: accounting,
+                            engine: engineIdentity(),
+                            languageRequested: nil, languageDetected: nil,
+                            confidence: nil, confidenceSource: nil,
+                            startedAtUptimeNanos: nil,
+                            endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
+                            inferenceDurationNanos: UInt64(duration * 1_000_000_000),
+                            warnings: warnings,
+                            fallbackReason: raw.isEmpty ? "no final decode; partial used" : nil,
+                            termination: .completed)
+    }
+
+    private func engineIdentity() -> EngineIdentity {
+        EngineIdentity(kind: .whisper, modelName: modelName,
+                       modelVersion: nil, modelDigest: nil)
     }
 
     func cancel() async {

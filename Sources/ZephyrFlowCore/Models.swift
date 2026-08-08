@@ -14,19 +14,181 @@ public struct PartialTranscription: Sendable, Equatable {
     }
 }
 
-public struct FinalTranscription: Sendable, Equatable {
-    public let rawText: String
-    public let processedText: String
-    public let duration: TimeInterval
-    public let modelUsed: String
+// MARK: - Engine result (JOE-2252)
 
-    public init(rawText: String, processedText: String, duration: TimeInterval, modelUsed: String) {
-        self.rawText = rawText
-        self.processedText = processedText
-        self.duration = duration
-        self.modelUsed = modelUsed
+/// Completeness of a transcription result (controlled taxonomy).
+public enum EngineResultCompleteness: String, Codable, CaseIterable, Sendable, Equatable {
+    /// Complete: full accepted audio decoded; requires reconciled frame evidence.
+    case complete
+    /// Rolling partial used (fallback) — never treated as complete.
+    case partial
+    /// Session was truncated (deadline/cancellation mid-decode).
+    case truncated
+    /// Degraded capture (overflow/gap/timeout) — fail closed.
+    case degraded
+
+    /// Unknown/default values are conservative and can never enable success.
+    public var permitsSuccessClaim: Bool { self == .complete }
+}
+
+/// How the decode session ended (controlled).
+public enum EngineResultTermination: String, Codable, CaseIterable, Sendable, Equatable {
+    case completed
+    case cancelled
+    case deadlineExceeded
+    case failed
+}
+
+/// Controlled warning (content-free).
+public enum EngineWarning: String, Codable, CaseIterable, Sendable, Equatable {
+    case partialFallback
+    case shortAudioFallback
+    case deadlineExceeded
+    case truncation
+    case captureDegraded
+    case lowConfidence
+    case engineFallback
+}
+
+/// Frame/range accounting attached to a result (JOE-2248 counts, no payloads).
+public struct EngineFrameAccounting: Sendable, Equatable {
+    public let capturedSourceSamples: UInt64
+    public let deliveredEngineSamples: UInt64
+    public let decodedEngineSamples: UInt64
+    public let droppedSourceSamples: UInt64
+
+    public init(capturedSourceSamples: UInt64, deliveredEngineSamples: UInt64,
+                decodedEngineSamples: UInt64, droppedSourceSamples: UInt64) {
+        self.capturedSourceSamples = capturedSourceSamples
+        self.deliveredEngineSamples = deliveredEngineSamples
+        self.decodedEngineSamples = decodedEngineSamples
+        self.droppedSourceSamples = droppedSourceSamples
+    }
+
+    /// Complete results REQUIRE reconciled evidence: delivered (engine-rate)
+    /// equals decoded, and captured−dropped equals delivered at the reference
+    /// ratio, within the defined rounding tolerance. Missing/zero evidence
+    /// cannot enable a completeness claim.
+    public func reconciled(converterRatio: Double,
+                           roundingToleranceSamples: UInt64) -> Bool {
+        guard capturedSourceSamples > 0 || deliveredEngineSamples > 0 else { return false }
+        guard deliveredEngineSamples == decodedEngineSamples else { return false }
+        let expected = Double(capturedSourceSamples &- droppedSourceSamples) * converterRatio
+        let diff = UInt64(abs(expected - Double(deliveredEngineSamples)))
+        return diff <= roundingToleranceSamples
     }
 }
+
+/// Engine-neutral result with enough evidence for honest UI, history, metrics
+/// and release qualification (JOE-2252). Adapters must NEVER convert a
+/// final-decode failure with a rolling partial into `.complete`.
+public struct EngineResult: Sendable, Equatable {
+    public let text: String
+    public let completeness: EngineResultCompleteness
+    public let frameAccounting: EngineFrameAccounting?
+    /// Engine/model identity (version/digest when available).
+    public let engine: EngineIdentity
+    public let languageRequested: String?
+    public let languageDetected: String?
+    public let confidence: Float?
+    public let confidenceSource: String?
+    /// Timing provenance (monotonic nanoseconds when reliable).
+    public let startedAtUptimeNanos: UInt64?
+    public let endedAtUptimeNanos: UInt64?
+    public let inferenceDurationNanos: UInt64?
+    public let warnings: [EngineWarning]
+    public let fallbackReason: String?
+    public let termination: EngineResultTermination
+
+    public init(text: String,
+                completeness: EngineResultCompleteness,
+                frameAccounting: EngineFrameAccounting?,
+                engine: EngineIdentity,
+                languageRequested: String?,
+                languageDetected: String?,
+                confidence: Float?,
+                confidenceSource: String?,
+                startedAtUptimeNanos: UInt64?,
+                endedAtUptimeNanos: UInt64?,
+                inferenceDurationNanos: UInt64?,
+                warnings: [EngineWarning],
+                fallbackReason: String?,
+                termination: EngineResultTermination) {
+        self.text = text
+        self.completeness = completeness
+        self.frameAccounting = frameAccounting
+        self.engine = engine
+        self.languageRequested = languageRequested
+        self.languageDetected = languageDetected
+        self.confidence = confidence
+        self.confidenceSource = confidenceSource
+        self.startedAtUptimeNanos = startedAtUptimeNanos
+        self.endedAtUptimeNanos = endedAtUptimeNanos
+        self.inferenceDurationNanos = inferenceDurationNanos
+        self.warnings = warnings
+        self.fallbackReason = fallbackReason
+        self.termination = termination
+    }
+
+    /// Complete results require reconciled frame evidence (conservative).
+    public var isComplete: Bool {
+        guard completeness == .complete else { return false }
+        guard let accounting = frameAccounting else { return false }
+        return accounting.reconciled(converterRatio: 1.0, roundingToleranceSamples: 64)
+    }
+
+    /// Diagnostics serialization EXCLUDES transcript content by default.
+    public var diagnosticsPayload: EngineResultDiagnostics {
+        EngineResultDiagnostics(completeness: completeness,
+                                termination: termination,
+                                engine: engine,
+                                languageRequested: languageRequested,
+                                languageDetected: languageDetected,
+                                confidence: confidence,
+                                confidenceSource: confidenceSource,
+                                inferenceDurationNanos: inferenceDurationNanos,
+                                warnings: warnings,
+                                fallbackReason: fallbackReason,
+                                frameAccounting: frameAccounting)
+    }
+}
+
+/// Content-free diagnostics view of an EngineResult (no transcript text).
+public struct EngineResultDiagnostics: Sendable, Equatable {
+    public let completeness: EngineResultCompleteness
+    public let termination: EngineResultTermination
+    public let engine: EngineIdentity
+    public let languageRequested: String?
+    public let languageDetected: String?
+    public let confidence: Float?
+    public let confidenceSource: String?
+    public let inferenceDurationNanos: UInt64?
+    public let warnings: [EngineWarning]
+    public let fallbackReason: String?
+    public let frameAccounting: EngineFrameAccounting?
+}
+
+/// Engine/model identity (version/digest when available).
+public struct EngineIdentity: Sendable, Equatable {
+    public let kind: EngineKind
+    public let modelName: String
+    public let modelVersion: String?
+    public let modelDigest: String?
+
+    public init(kind: EngineKind, modelName: String, modelVersion: String?,
+                modelDigest: String?) {
+        self.kind = kind
+        self.modelName = modelName
+        self.modelVersion = modelVersion
+        self.modelDigest = modelDigest
+    }
+}
+
+/// Backward-compat migration for `FinalTranscription` callers: the old
+/// success-shaped container is replaced by `EngineResult`. This alias keeps
+/// the migration explicit (compile error surfaces remain in callers).
+public typealias FinalTranscription = EngineResult
+
 
 // MARK: - Flow
 

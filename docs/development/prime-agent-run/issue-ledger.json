@@ -431,12 +431,25 @@
     "JOE-2250"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (complete requires reconciled evidence, partial/short/deadline distinguishable, diagnostics exclude text, no processedText)",
+    "swift build: pass (both engines emit EngineResult with completeness/accounting/identity; controller migrated)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/Models.swift",
+    "Sources/ZephyrFlow/Services/WhisperKitEngine.swift",
+    "Sources/ZephyrFlow/Services/AppleSpeechEngine.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2252/REPORT.md"
+   ],
+   "remaining_action": "Real-engine golden fixture results + exhaustive UI/history/metrics mapping per completeness case (human-gate runbook)."
   },
   {
    "id": "JOE-2253",
