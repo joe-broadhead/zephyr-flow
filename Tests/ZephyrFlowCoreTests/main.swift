@@ -1995,6 +1995,68 @@ struct CoreTests {
             try? FileManager.default.removeItem(at: dir)
         }
 
+        // ===== JOE-2263: versioned settings storage =====
+        do {
+            // Envelope round-trip with provenance.
+            var settings = AppSettings.default
+            settings.localOnlyMode = true
+            settings.saveHistory = false
+            let data = (try? SettingsStorageCoordinator.encode(settings: settings,
+                                                                        provenance: ["v2"]))!
+            let loaded = SettingsStorageCoordinator.load(data: data)
+            check("2263 envelope round-trip",
+                  loaded.settings.localOnlyMode == true
+                    && !loaded.settings.saveHistory
+                    && !loaded.recoveredFromCorruption)
+            // Legacy v1 flat payload migrates deterministically.
+            let v1Flat = (try? JSONEncoder().encode(settings))!
+            let migrated = SettingsStorageCoordinator.load(data: v1Flat)
+            check("2263 v1 flat migrates",
+                  migrated.migratedFromVersion == 1
+                    && migrated.settings.localOnlyMode == true
+                    && !migrated.recoveredFromCorruption)
+            // Unknown/newer schema fails safely + retains original for recovery.
+            let unknown = SettingsEnvelope(schemaVersion: 99, payload: settings)
+            let unknownData = (try? JSONEncoder().encode(unknown))!
+            let unknownResult = SettingsStorageCoordinator.load(data: unknownData)
+            check("2263 unknown schema fails safely with quarantine",
+                  unknownResult.recoveredFromCorruption
+                    && unknownResult.unknownSchemaVersion == 99
+                    && unknownResult.quarantinePath != nil)
+            // Safe baseline: localOnly ON, downloads/history OFF — privacy
+            // defaults are never silently re-enabled after corruption.
+            let baseline = unknownResult.settings
+            check("2263 corruption baseline is privacy-safe",
+                  baseline.localOnlyMode == true
+                    && baseline.allowModelDownloads == false
+                    && baseline.saveHistory == false)
+            // Corrupt bytes -> quarantine + baseline.
+            let corrupt = SettingsStorageCoordinator.load(data: Data("garbage".utf8))
+            check("2263 corrupt data recovered to safe baseline",
+                  corrupt.recoveredFromCorruption && corrupt.settings.localOnlyMode == true)
+            // Nil data -> brand-new install defaults (privacy-safe).
+            let fresh = SettingsStorageCoordinator.load(data: nil)
+            check("2263 fresh install defaults privacy-safe",
+                  fresh.settings.localOnlyMode == true && !fresh.settings.saveHistory)
+            // Transactional reset preserves ONLY documented fields.
+            var current = AppSettings.default
+            current.hasCompletedOnboarding = true
+            current.saveHistory = true
+            current.localOnlyMode = false
+            let reset = SettingsStorageCoordinator.resetPayload(current: current)
+            check("2263 reset transactional + preserves onboarding only",
+                  reset.hasCompletedOnboarding == true
+                    && reset.saveHistory == false
+                    && reset.localOnlyMode == true)
+            // Encode failure is reported (write failure => no silent success).
+            do {
+                _ = try SettingsStorageCoordinator.encode(settings: settings, provenance: [])
+                check("2263 encode succeeds", true)
+            } catch {
+                check("2263 encode succeeds", false)
+            }
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

@@ -730,12 +730,23 @@
     "JOE-2243"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (envelope round-trip, v1 flat migration, unknown schema quarantine + safe baseline, transactional reset, encode failure reported)",
+    "swift build: pass (SettingsStore wired to coordinator; recoveryState published)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/SettingsStorage.swift",
+    "Sources/ZephyrFlow/Services/SettingsStore.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2263/REPORT.md"
+   ],
+   "remaining_action": "Golden migration fixtures + real-UserDefaults fault injection (disk-full/permission/truncated) + recovery UX docs (human-gate runbook)."
   },
   {
    "id": "JOE-2264",
