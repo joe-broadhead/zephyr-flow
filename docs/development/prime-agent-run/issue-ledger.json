@@ -822,7 +822,7 @@
    "status": "Backlog",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "a04df16"
    ],
    "aurum_commits": [],
    "tests": [
