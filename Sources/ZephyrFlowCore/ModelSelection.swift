@@ -40,8 +40,10 @@ public struct ModelSelectionTracker: Sendable, Equatable {
 
     /// Submit a new selection; supersedes any in-flight request.
     @discardableResult
-    public mutating func submit(model: ModelIdentifier,
-                                settings: ModelSelectionSettings) -> UInt64 {
+    public mutating func submit(
+        model: ModelIdentifier,
+        settings: ModelSelectionSettings
+    ) -> UInt64 {
         nextRequestID += 1
         currentRequestID = nextRequestID
         currentModel = model
@@ -55,10 +57,12 @@ public struct ModelSelectionTracker: Sendable, Equatable {
 
     /// Decide what a completion MAY publish. Stale completions become typed
     /// superseded events; the current failed/ready state is untouched.
-    public mutating func acceptCompletion(requestID: UInt64,
-                                          model: ModelIdentifier,
-                                          outcome: ModelLoadOutcome,
-                                          nowNanos: UInt64 = 0) -> ModelLoadOutcome {
+    public mutating func acceptCompletion(
+        requestID: UInt64,
+        model: ModelIdentifier,
+        outcome: ModelLoadOutcome,
+        nowNanos: UInt64 = 0
+    ) -> ModelLoadOutcome {
         guard isCurrent(requestID) else {
             return .superseded(model: model, byRequestID: currentRequestID)
         }
