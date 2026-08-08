@@ -463,12 +463,23 @@
     "JOE-2252"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (stale-token rejection, empty-final preserves partial, deadline partial-only, error taxonomy, resume-once)",
+    "swift build: pass (Apple Speech event-driven finalization + exactly-once release)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/SpeechRecognitionTracker.swift",
+    "Sources/ZephyrFlow/Services/AppleSpeechEngine.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2253/REPORT.md"
+   ],
+   "remaining_action": "Fake-recognizer callback soak + 1,000-session Apple Speech leak/resource counters (human-gate runbook)."
   },
   {
    "id": "JOE-2254",

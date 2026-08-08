@@ -1373,6 +1373,46 @@ struct CoreTests {
                   complete.text == "hello")
         }
 
+        // ===== JOE-2253: Apple Speech tokenized callbacks + event finalization =====
+        do {
+            let tok = RecognitionToken(value: "t1")
+            let stale = RecognitionToken(value: "t2")
+            var tracker = SpeechRecognitionTracker()
+            tracker.start(token: tok)
+            check("2253 current token accepted", tracker.isCurrent(token: tok))
+            // Late/duplicate/out-of-order callbacks from a PRIOR task rejected.
+            check("2253 stale token partial rejected",
+                  !tracker.notePartial(token: stale, text: "old") && tracker.staleCallbackRejections == 1)
+            check("2253 stale token final rejected",
+                  tracker.noteFinal(token: stale, hasText: true) == .cancelled)
+            check("2253 current partial kept", tracker.notePartial(token: tok, text: "hello") == true)
+            // Empty final preserves the latest usable partial with provenance.
+            check("2253 empty final preserves partial",
+                  tracker.noteFinal(token: tok, hasText: false) == .emptyFinalWithPartial
+                    && tracker.latestPartial == "hello")
+            check("2253 terminal rejects later callbacks",
+                  tracker.notePartial(token: tok, text: "after") == false)
+            // Error with partial => provenance; without partial => no text.
+            var e1 = SpeechRecognitionTracker(); e1.start(token: tok)
+            _ = e1.notePartial(token: tok, text: "partial")
+            check("2253 error with partial preserved",
+                  e1.noteError(token: tok, code: 203, friendly: "no speech") == .terminalErrorWithPartial)
+            var e2 = SpeechRecognitionTracker(); e2.start(token: tok)
+            check("2253 error without text",
+                  e2.noteError(token: tok, code: 201, friendly: "disabled") == .terminalErrorNoText)
+            // Deadline with partial is partial/degraded — NEVER complete.
+            var d1 = SpeechRecognitionTracker(); d1.start(token: tok)
+            _ = d1.notePartial(token: tok, text: "partial")
+            check("2253 deadline with partial is partial-only",
+                  d1.noteDeadline() == .deadlineWithPartial && d1.finalEvent == .deadlineExceeded)
+            var d2 = SpeechRecognitionTracker(); d2.start(token: tok)
+            check("2253 deadline without text",
+                  d2.noteDeadline() == .deadlineNoText)
+            // Waiter resume exactly once.
+            var r1 = SpeechRecognitionTracker(); r1.start(token: tok)
+            check("2253 resume once", r1.markResumed() && !r1.markResumed())
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

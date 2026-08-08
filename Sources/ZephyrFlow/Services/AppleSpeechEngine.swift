@@ -23,6 +23,10 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     private var finalWaiters: [CheckedContinuation<Void, Never>] = []
     private var sawFinal = false
     private var lastError: String?
+    // JOE-2253: tokenized callbacks + event-driven finalization.
+    private var recognitionTracker = SpeechRecognitionTracker()
+    private var finalContinuation: CheckedContinuation<Void, Never>?
+    private var finalizationPending = false
 
     func levels() -> [Float] { latestLevels }
 
@@ -53,6 +57,8 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     ) async throws {
         guard isReady, let recognizer else { throw WhisperEngineError.notReady }
         guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
+        // JOE-2253: unique token per start; callbacks carry it.
+        recognitionTracker.start(token: RecognitionToken())
 
         // Auth — request if needed (caller should activate app so dialogs appear)
         let speechStatus = SFSpeechRecognizer.authorizationStatus()
@@ -128,9 +134,10 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         }
         self.audioEngine = engine
 
+        let token = recognitionTracker.currentToken ?? RecognitionToken()
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
-            Task { await self.handleRecognition(result: result, error: error) }
+            Task { await self.handleRecognition(token: token, result: result, error: error) }
         }
     }
 
@@ -144,27 +151,34 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
         ZFLog.info("stopAndFinalize accumulated_len=\(accumulated.count) sawFinal=\(sawFinal)")
 
-        // Stop mic first
-        if let engine = audioEngine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-        }
-        audioEngine = nil
-
-        // Signal end of audio to recognizer
+        // Signal end of audio to the recognizer, then WAIT for the final
+        // event (final result / terminal error / cancellation) until a
+        // bounded deadline — never break early merely because partial text
+        // exists (JOE-2253 event-driven finalization).
         request?.endAudio()
 
-        // Wait for final callback (up to ~2s), polling accumulated
-        let deadline = Date().addingTimeInterval(2.0)
-        while Date() < deadline {
-            if sawFinal { break }
-            // If we already have text and a short quiet period, accept it
-            if !accumulated.isEmpty {
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                if sawFinal || !accumulated.isEmpty { break }
+        if !sawFinal && !finalizationPending {
+            finalizationPending = true
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { [weak self] in
+                    guard let self else { return }
+                    await self.awaitFinalEvent()
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
+                await group.next()
+                group.cancelAll()
             }
-            try? await Task.sleep(nanoseconds: 50_000_000)
+            // Deadline reached: a non-empty partial is only partial/degraded.
+            if !sawFinal {
+                let outcome = recognitionTracker.noteDeadline()
+                ZFLog.info("finalize deadline outcome=\(outcome.rawValue)")
+            }
         }
+
+        // Exactly-once release of task/tap/continuations.
+        finishRecognition()
 
         let finalText = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
         let duration = Date().timeIntervalSince(startTime ?? Date())
@@ -212,42 +226,92 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     }
 
     func cancel() async {
-        task?.cancel()
-        request?.endAudio()
-        if let engine = audioEngine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-        }
+        let token = recognitionTracker.currentToken ?? RecognitionToken()
+        _ = recognitionTracker.cancel(token: token)
+        finishRecognition()
         cleanupStream()
     }
 
     // MARK: - Private
 
-    private func handleRecognition(result: SFSpeechRecognitionResult?, error: Error?) {
+    /// Waits for the final recognition event (resumed exactly once by
+    /// finishRecognition from any terminal path).
+    private func awaitFinalEvent() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            finalContinuation = cont
+            if sawFinal || recognitionTracker.finalEvent != nil {
+                finishRecognition()
+            }
+        }
+    }
+
+    private func handleRecognition(token: RecognitionToken,
+                                    result: SFSpeechRecognitionResult?,
+                                    error: Error?) {
+        // JOE-2253: reject callbacks whose token is no longer current.
+        guard recognitionTracker.isCurrent(token: token) else {
+            ZFLog.info("stale recognition callback rejected (token mismatch)")
+            return
+        }
         if let result {
             let text = result.bestTranscription.formattedString
-            // Never overwrite a good partial with an empty final (common on cancel/end).
+            // Never overwrite a good partial with an empty final (common on
+            // cancel/end) — tracker preserves latest usable partial.
+            _ = recognitionTracker.notePartial(token: token, text: text)
             if !text.isEmpty {
                 accumulated = text
                 onPartial?(PartialTranscription(text: text, isFinal: result.isFinal))
             }
-            if result.isFinal {
-                sawFinal = true
-            }
             // Never log transcript content — lengths only (PII).
             ZFLog.info("partial isFinal=\(result.isFinal) len=\(text.count) kept=\(accumulated.count)")
+            if result.isFinal {
+                sawFinal = true
+                let outcome = recognitionTracker.noteFinal(token: token, hasText: !text.isEmpty)
+                ZFLog.info("final event outcome=\(outcome.rawValue) len=\(text.count)")
+                finishRecognition()
+            }
         }
         if let error {
             let ns = error as NSError
             // 1 = cancelled, 203 = no speech, 1110 = no speech detected — keep partials
             // 201 = Siri/Dictation disabled system-wide (blocks SFSpeechRecognizer)
-            lastError = Self.friendlySpeechError(ns)
+            let friendly = Self.friendlySpeechError(ns)
+            lastError = friendly
+            let outcome = recognitionTracker.noteError(token: token,
+                                                       code: Int32(ns.code),
+                                                       friendly: friendly)
+            ZFLog.info("recognition error outcome=\(outcome.rawValue) domain=\(ns.domain) code=\(ns.code)")
             ZFLog.error("recognition error domain=\(ns.domain) code=\(ns.code) \(ns.localizedDescription)")
             if !accumulated.isEmpty {
                 sawFinal = true
                 lastError = nil // we have usable text
             }
+            finishRecognition()
         }
+    }
+
+    /// Exactly-once terminal path: cancels/releases the task and resumes any
+    /// finalization waiter. Called from every terminal path (success, error,
+    /// cancel, reload, shutdown).
+    private func finishRecognition() {
+        task?.cancel()
+        task = nil
+        request?.endAudio()
+        request = nil
+        if let engine = audioEngine {
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+        }
+        audioEngine = nil
+        if recognitionTracker.markResumed() {
+            finalContinuation?.resume()
+            finalContinuation = nil
+        }
+        for waiter in finalWaiters {
+            waiter.resume()
+        }
+        finalWaiters = []
+        finalizationPending = false
     }
 
     private func updateLevels(_ sampleLevel: Float) {
