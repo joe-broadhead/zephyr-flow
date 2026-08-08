@@ -1614,7 +1614,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "4cb8c91"
    ],
    "aurum_commits": [],
    "tests": [
