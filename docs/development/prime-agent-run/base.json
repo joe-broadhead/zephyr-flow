@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "run_id": "20260808T103416Z",
+  "linear_project_id": "b0c7580d-a4b9-4396-b2af-09c05c48fa96",
+  "linear_project_name": "zephyr-flow",
+  "zephyr_branch": "agent/zephyr-production-run-20260808T103416Z",
+  "zephyr_base_commit": "f5816fa3aa512c597497ee2993c2d6996f33c4c4",
+  "aurum_branch": "agent/zephyr-helper-run-20260808T103416Z",
+  "aurum_base_commit": "2d80982ccb426ea49648f35f33c749b80ae837b9"
+}
