@@ -318,6 +318,9 @@ public actor DictationSession {
     private let idFactory: SessionIDFactory
     private var broadcaster: SessionStateBroadcaster<SessionUIState>
     private var commandContinuation: AsyncStream<Command>.Continuation?
+    /// The single command stream for the whole session (capture wait AND
+    /// review phases consume it, so buffered follow-ups are never lost).
+    private var commandStream: AsyncStream<Command>?
     private var captureTask: Task<Void, Never>?
     private var levelsTask: Task<Void, Never>?
     private var state = SessionUIState()
@@ -382,6 +385,7 @@ public actor DictationSession {
 
         var commands: AsyncStream<Command>!
         commands = AsyncStream { self.commandContinuation = $0 }
+        self.commandStream = commands
 
         // Session-scoped preparation: AX target snapshot + engine binding.
         await provider.prepare(sessionID: sessionID)
@@ -582,9 +586,10 @@ public actor DictationSession {
 
     /// Review phase loop: the user may retry (fresh validation/insertion),
     /// dismiss or cancel. The session stays alive until one of those edges.
+    /// Consumes the SAME command stream as run() (buffered follow-ups are
+    /// never lost when a review phase replaces the capture wait).
     private func handleReviewCommands(secureOnly: Bool) async {
-        var commands: AsyncStream<Command>!
-        commands = AsyncStream { self.commandContinuation = $0 }
+        guard let commands = commandStream else { return }
         for await c in commands {
             switch c {
             case .retry:
@@ -639,6 +644,7 @@ public actor DictationSession {
         captureTask = nil
         levelsTask = nil
         commandContinuation = nil
+        commandStream = nil
         broadcaster.finish()
     }
 }

@@ -1612,12 +1612,24 @@
     "JOE-2244"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (11 JOE-2292 checks: PRNG determinism, stress green at fixed seeds 40/60 iters, replay reproducible, sensitive side effects blocked, validation-before-mutation, corpus all green)",
+    "swift build: pass; swift-format lint 0; mkdocs build --strict: pass",
+    "Full suite deterministic (~8s compiled); seed corpus retained"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/SessionStressHarness.swift",
+    "Sources/ZephyrFlowCore/DictationSession.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/ci/coverage-map.md",
+    "docs/development/evidence/JOE-2292/REPORT.md"
+   ],
+   "remaining_action": "Failing-seed corpus grows as new defects are discovered; coverage map maintained in CI."
   },
   {
    "id": "JOE-2293",
