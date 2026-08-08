@@ -557,12 +557,24 @@
     "JOE-2258"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (empty/plain/rich multi-item byte-exact fixtures, budget overflow refusal, change-window preservation, single-shot, sensitivity gate)",
+    "swift build: pass (transactional pasteViaClipboard with ordered snapshot + marker + equivalence restore)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/PasteboardTransaction.swift",
+    "Sources/ZephyrFlow/Services/InsertionService.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/evidence/JOE-2260/REPORT.md",
+    "docs/development/contracts/sensitivity-policy.md"
+   ],
+   "remaining_action": "Real-AppKit integration round-trip + crash/termination recovery exercise (human-gate real-device items; runbook in report)."
   },
   {
    "id": "JOE-2261",

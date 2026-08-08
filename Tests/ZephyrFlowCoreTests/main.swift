@@ -896,6 +896,82 @@ struct CoreTests {
             check("2272 discard clears", u.clearReason == .userDiscarded)
         }
 
+        // ===== JOE-2260: lossless bounded pasteboard transaction =====
+        do {
+            let sid = SessionID(token: "pb", sequence: 1, createdAtUptimeNanos: 0)
+            func item(_ records: [(String, String)]) -> PasteboardItemSnapshot {
+                PasteboardItemSnapshot(types: records.map { PasteboardTypeRecord(type: $0.0, data: Data($0.1.utf8)) })
+            }
+            // Empty original => restore means clear.
+            let empty = PasteboardSnapshot(items: [], changeCount: 100)
+            var t0 = PasteboardTransaction(sessionID: sid, original: empty)!
+            check("2260 empty snapshot recognized", empty.isEmpty && empty.itemCount == 0)
+            t0.applyTemporary(changeCount: 101)
+            t0.markPosted()
+            check("2260 empty restore safe (clear)", t0.attemptRestore(currentChangeCount: 101, currentIsOurMarker: true) == .restored)
+            // Plain text fixture round-trips byte-for-byte.
+            let textData = Data("hello world".utf8)
+            let plain = PasteboardSnapshot(items: [PasteboardItemSnapshot(types: [PasteboardTypeRecord(type: "public.utf8-plain-text", data: textData)])], changeCount: 5)
+            var t1 = PasteboardTransaction(sessionID: sid, original: plain)!
+            t1.applyTemporary(changeCount: 6)
+            t1.markPosted()
+            check("2260 plain round-trip restored", t1.attemptRestore(currentChangeCount: 6, currentIsOurMarker: true) == .restored)
+            check("2260 plain original bytes exact", t1.original.items[0].types[0].data == textData)
+            // Multi-item multi-type (text + RTF + image + file URL) fixture.
+            let rich = PasteboardSnapshot(items: [
+                PasteboardItemSnapshot(types: [
+                    PasteboardTypeRecord(type: "public.utf8-plain-text", data: Data("hi".utf8)),
+                    PasteboardTypeRecord(type: "public.rtf", data: Data([0x7b, 0x5c, 0x72, 0x74, 0x66])),
+                ]),
+                PasteboardItemSnapshot(types: [
+                    PasteboardTypeRecord(type: "public.png", data: Data([0x89, 0x50, 0x4e, 0x47])),
+                ]),
+                PasteboardItemSnapshot(types: [
+                    PasteboardTypeRecord(type: "public.file-url", data: Data("file:///tmp/x".utf8)),
+                ]),
+            ], changeCount: 9)
+            var t2 = PasteboardTransaction(sessionID: sid, original: rich)!
+            t2.applyTemporary(changeCount: 10)
+            t2.markPosted()
+            check("2260 rich fixture within budget",
+                  PasteboardBudget().withinBudget(rich) && t2.original.itemCount == 3)
+            check("2260 rich round-trip restored", t2.attemptRestore(currentChangeCount: 10, currentIsOurMarker: true) == .restored)
+            check("2260 rich bytes exact",
+                  t2.original.items[1].types[0].data == Data([0x89, 0x50, 0x4e, 0x47])
+                    && t2.original.items[0].types[1].type == "public.rtf")
+            // User/target change during window => preserve new value.
+            var t3 = PasteboardTransaction(sessionID: sid, original: plain)!
+            t3.applyTemporary(changeCount: 6)
+            t3.markPosted()
+            check("2260 changed pasteboard not overwritten",
+                  t3.attemptRestore(currentChangeCount: 99, currentIsOurMarker: false) == .notRestoredBecauseChanged)
+            // Budget overflow => no transaction at all (no destructive mutation).
+            let huge = PasteboardSnapshot(items: [
+                PasteboardItemSnapshot(types: [PasteboardTypeRecord(type: "public.data", data: Data(repeating: 1, count: 9_000_000))])
+            ], changeCount: 1)
+            check("2260 over-budget snapshot detected", !PasteboardBudget().withinBudget(huge))
+            check("2260 over-budget transaction refused (nil => no mutation)",
+                  PasteboardTransaction(sessionID: sid, original: huge) == nil)
+            // Single-shot terminal.
+            var t4 = PasteboardTransaction(sessionID: sid, original: plain)!
+            t4.applyTemporary(changeCount: 6)
+            t4.markPosted()
+            _ = t4.attemptRestore(currentChangeCount: 6, currentIsOurMarker: true)
+            check("2260 restore single-shot", t4.attemptRestore(currentChangeCount: 7, currentIsOurMarker: false) == .restored)
+            // cancel / shutdown recorded.
+            var t5 = PasteboardTransaction(sessionID: sid, original: plain)!
+            t5.cancel()
+            check("2260 cancel outcome", t5.outcome == .cancelled)
+            var t6 = PasteboardTransaction(sessionID: sid, original: plain)!
+            t6.shutdown()
+            check("2260 shutdown outcome", t6.outcome == .abandonedDuringShutdown)
+            // Sensitivity gate: secure/unknown cannot run this transaction.
+            check("2260 secure/unknown cannot transact",
+                  !PasteboardTransactionPolicy.allowed(sensitivity: .secure)
+                    && !PasteboardTransactionPolicy.allowed(sensitivity: .unknown)
+                    && PasteboardTransactionPolicy.allowed(sensitivity: .normal))
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

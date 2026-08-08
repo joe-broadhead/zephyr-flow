@@ -35,3 +35,12 @@ was upgraded before insertion, and a timestamp — never transcript content.
 
 Every transcript-bearing stage routes through `TranscriptStageGate.gate(...)`
 before performing its action; UI/services do not re-implement the table.
+
+
+## Pasteboard transaction gate (JOE-2260)
+
+Automatic paste runs only as a lossless bounded transaction:
+`PasteboardTransaction` snapshots every item/type/data (never flattened),
+enforces a reviewed budget before any mutation, uses a unique marker +
+change-count equivalence for safe restoration, and preserves user/target
+changes (`notRestoredBecauseChanged`). Only `.normal` sensitivity may call it.
