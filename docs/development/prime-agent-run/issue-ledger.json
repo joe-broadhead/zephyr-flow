@@ -2,7 +2,7 @@
  "aurum_base_commit": "2d80982ccb426ea49648f35f33c749b80ae837b9",
  "aurum_head": "2d80982ccb426ea49648f35f33c749b80ae837b9",
  "base_commit": "f5816fa3aa512c597497ee2993c2d6996f33c4c4",
- "integration_head": "c5789d260cd88ae03392c30128a043c8ad80ba15",
+ "integration_head": "d6e580bf5f53853d85ed9c870f42f1c83abc3244",
  "issues": [
   {
    "id": "JOE-2232",
@@ -2205,6 +2205,12 @@
    "parent_summary": 8,
    "deferred_by_contract": 8
   },
-  "final_gate_requested": false
+  "final_gate_requested": false,
+  "final_gate": {
+   "requested": true,
+   "passed_at": "d6e580bf5f53853d85ed9c870f42f1c83abc3244",
+   "aurum_head": "2d80982ccb426ea49648f35f33c749b80ae837b9",
+   "output": "/tmp/final_gate4.log"
+  }
  }
 }
