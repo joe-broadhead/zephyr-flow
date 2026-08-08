@@ -31,9 +31,12 @@ code elsewhere — adding untested Core code lowers the measured percentage.
 7. **Drift** — after all gates, `git diff --exit-code` must be clean: no
    generated artifacts may be left dirty by the build/test/docs steps.
 8. **Trust-boundary coverage** — instrumented CLT run + `llvm-cov` restricted
-   to ZephyrFlowCore: line ≥ 70%, branch ≥ 75% (measured baseline
-   74.35% / 82.40%). Thresholds are policy; the required module set
-   (`ZephyrFlowCore`) is fixed by policy and cannot be bypassed.
+   to ZephyrFlowCore: line ≥ 70%, region ≥ 70% (measured baseline
+   82.40% lines / 74.35% regions). The Swift toolchain emits no literal
+   branch data for this target; REGION coverage is the equivalent signal.
+   Thresholds are policy; the required module set (`ZephyrFlowCore`) is
+   fixed by policy and cannot be bypassed — adding untested Core code
+   lowers the measured percentage.
 
 ## Tool versions and reproducibility
 
