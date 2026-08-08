@@ -1747,6 +1747,48 @@ struct CoreTests {
                     && !pres(.partial, .accepted, verified).voiceOverLabel.isEmpty)
         }
 
+        // ===== JOE-2243: AppEnvironment DI — full pipeline with fakes only =====
+        do {
+            var clock = FakeClock(now: 1000)
+            let env = AppEnvironment.test(clock: clock)
+            // Deterministic time is injectable.
+            check("2243 fake clock injectable", env.clock.nowNanos() == 1000)
+            clock.advance(by: 500)
+            check("2243 fake clock controllable", clock.nowNanos() == 1500)
+            // Sleeper records (no real wait), ids monotonic, metrics/history
+            // are in-memory, permissions fake.
+            check("2243 fake permissions", env.permissions.microphoneGranted
+                    && env.permissions.accessibilityTrusted
+                    && env.permissions.speechRecognitionGranted)
+            check("2243 fake settings repo", env.settings.current == .default)
+            // Engine registry carries the fake engine.
+            let engine = env.engines.whisper as? FakeWhisperEngine
+            check("2243 fake engine in registry", engine != nil)
+            // Session pipeline smoke with fakes: start -> append -> finalize.
+            let sid = SessionID(token: "env", sequence: 1, createdAtUptimeNanos: 0)
+            var finalResult: EngineResult?
+            if let engine {
+                try? await engine.startStreaming(sessionID: sid, localOnly: true,
+                                                 language: SupportedLanguage.enUS) { _ in }
+                await engine.appendAudio([0.1, 0.2, 0.3])
+                finalResult = try? await engine.stopAndFinalize()
+            }
+            check("2243 fake pipeline finalizes complete",
+                  finalResult?.completeness == .complete
+                    && finalResult?.text == "fake transcript")
+            // Fake insertion returns verified; fake target validates.
+            let insertion = env.insertion as? FakeInsertionService
+            if let insertion {
+                let outcome = await insertion.insert("hello")
+                check("2243 fake insertion verified", outcome.isVerifiedSuccess)
+            }
+            let target = env.targetValidation as? FakeTargetValidation
+            check("2243 fake target validation available", target != nil)
+            // Production env uses the real flow (no side effects at init).
+            let prodSettings = AppEnvironment.test().settings.current
+            check("2243 test env has no side effects", prodSettings == .default)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

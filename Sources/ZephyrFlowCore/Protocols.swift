@@ -45,6 +45,27 @@ public enum WhisperEngineError: LocalizedError, Sendable {
 
 public protocol InsertionServiceProtocol: Actor {
     func insert(_ text: String) async -> InsertionOutcome
+
+    /// Full-parameter insertion (session-scoped; JOE-2260/2269/2271).
+    func insert(_ text: String,
+                preferPaste: Bool,
+                mode: InsertionMode,
+                targetBundleID: String?,
+                sensitivity: SessionSensitivity,
+                sessionID: SessionID?,
+                copyOnlyOverrides: Set<String>) async -> InsertionOutcome
+}
+
+public extension InsertionServiceProtocol {
+    func insert(_ text: String,
+                preferPaste: Bool,
+                mode: InsertionMode,
+                targetBundleID: String?,
+                sensitivity: SessionSensitivity,
+                sessionID: SessionID?,
+                copyOnlyOverrides: Set<String>) async -> InsertionOutcome {
+        await insert(text)
+    }
 }
 
 // MARK: - Flow Processor

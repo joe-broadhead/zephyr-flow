@@ -17,7 +17,7 @@ import ZephyrFlowCore
 //    before insertion (TargetValidationSession), also content-free.
 
 @MainActor
-final class TargetValidationService {
+final class TargetValidationService: TargetValidationProviding {
     static let shared = TargetValidationService()
 
     private let ownBundleID = Bundle.main.bundleIdentifier ?? "dev.zephyrflow.app"
@@ -145,8 +145,7 @@ final class TargetValidationService {
     /// monitor until restored, rejected (attempt cap) or deadlineExceeded.
     /// Never sleeps blindly — every wait step re-observes frontmost state.
     func restoreToCapturedTarget(snapshot: TargetSnapshot,
-                                 deadlineNanosAhead: UInt64 = 2_000_000_000,
-                                 pollStepNanos: UInt64 = 50_000_000) async -> TargetRestoreMonitor {
+                                 deadlineNanosAhead: UInt64 = 2_000_000_000) async -> TargetRestoreMonitor {
         var monitor = TargetRestoreMonitor(deadlineNanosAhead: deadlineNanosAhead, maxAttempts: 40)
         monitor.start(nowNanos: DispatchTime.now().uptimeNanoseconds)
 

@@ -7,7 +7,7 @@ import ZephyrFlowCore
 /// Orchestrates hotkey → capture → transcribe → flow → insert.
 @MainActor
 final class DictationController: ObservableObject {
-    static let shared = DictationController()
+    static let shared = DictationController(environment: AppEnvironment.production())
 
     @Published var panelState: PanelState = .hidden
     @Published var interimText: String = ""
@@ -26,11 +26,15 @@ final class DictationController: ObservableObject {
     /// Bundle id captured at session start for insertion strategies.
     private(set) var sessionTargetBundleID: String?
 
+    // JOE-2243: dependency-injected environment (production assembled at
+    // launch; tests inject fakes). UI/infrastructure singletons below remain
+    // production providers only.
+    private let environment: AppEnvironment
+    private let insertion: any InsertionServiceProtocol
+    private let flow: any FlowProcessorProtocol
     private let audio = AudioCapture.shared
-    private let insertion = InsertionService.shared
-    private let flow = FlowRouter.shared
-    private let settings = SettingsStore.shared
-    private let history = HistoryStore.shared
+    private let settingsStore = SettingsStore.shared
+    private let historyStore = HistoryStore.shared
     private let privacy = PrivacyService.shared
     private let hotkey = HotkeyService.shared
     private let modelReadiness = ModelReadinessStore.shared
@@ -70,23 +74,28 @@ final class DictationController: ObservableObject {
     private var reviewText: String?
     // JOE-2268: immutable per-session AX target evidence + validator service.
     private var targetSnapshot: TargetSnapshot?
-    private let targetService = TargetValidationService.shared
     // JOE-2249: session-bound engine snapshot + callback gate.
     private var currentEngineToken = EngineToken()
     private var activeSessionBinding: SessionEngineBinding?
     private var callbackGate = CallbackGate()
     private var sessionEngine: (any WhisperEngineProtocol)?
 
-    private init() {
-        activeEngine = whisperEngine
+    init(environment: AppEnvironment) {
+        self.environment = environment
+        self.insertion = environment.insertion
+        self.flow = environment.flow
+        activeEngine = environment.engines.whisper ?? WhisperKitEngine()
         usingAppleEngine = false
-        activeFlowStyle = SettingsStore.shared.settings.defaultFlowStyle
+        activeFlowStyle = settingsStore.settings.defaultFlowStyle
         configureFlowRouter()
     }
 
     private func configureFlowRouter() {
+        // The environment owns the Flow pipeline; only the production
+        // FlowRouter needs backend configuration (fakes are pre-configured).
+        guard let router = flow as? FlowRouter else { return }
         Task {
-            await flow.configure(
+            await router.configure(
                 backend: { await MainActor.run { SettingsStore.shared.settings.flowBackend } },
                 enhancedReady: {
                     await MainActor.run {
@@ -106,8 +115,8 @@ final class DictationController: ObservableObject {
     func start() {
         privacy.refresh()
         hotkey.configure(
-            hotkey: settings.settings.hotkey,
-            mode: settings.settings.listeningMode
+            hotkey: settingsStore.settings.hotkey,
+            mode: settingsStore.settings.listeningMode
         )
         hotkey.start { [weak self] event in
             guard let self else { return }
@@ -127,7 +136,7 @@ final class DictationController: ObservableObject {
         }
         // Pre-flight permissions so the first Fn press is never blocked on a dialog
         Task { await self.ensurePermissionsUpFront() }
-        ZFLog.info("DictationController started hotkey=\(settings.settings.hotkey.displayName)")
+        ZFLog.info("DictationController started hotkey=\(settingsStore.settings.hotkey.displayName)")
     }
 
     private func ensurePermissionsUpFront() async {
@@ -143,7 +152,7 @@ final class DictationController: ObservableObject {
 
         // Prefer the stepped Setup window over stacking raw system sheets at launch.
         // System prompts fire one-at-a-time from OnboardingView for clean UX.
-        if !settings.settings.hasCompletedOnboarding {
+        if !settingsStore.settings.hasCompletedOnboarding {
             ZFLog.info("Permission preflight deferred to onboarding")
             return
         }
@@ -171,7 +180,7 @@ final class DictationController: ObservableObject {
     private func presentSecureReview(_ text: String) {
         guard let sid = currentSessionID else { return }
         let review = SecureSessionReview(sessionID: sid, text: text,
-                                         nowNanos: DispatchTime.now().uptimeNanoseconds,
+                                         nowNanos: environment.clock.nowNanos(),
                                          deadlineNanosAhead: 30_000_000_000)
         reviewSession = review
         interimText = text
@@ -188,7 +197,7 @@ final class DictationController: ObservableObject {
     /// Persistent review panel for uncertain outcomes (JOE-2272): controlled
     /// reason, no green success, safe actions only, in-process text.
     private func presentReview(outcome: InsertionOutcome, text: String) {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = environment.clock.nowNanos()
         var model = InsertionReviewModel(outcome: outcome, createdAtNanos: now)
         reviewModel = model
         reviewText = text
@@ -206,7 +215,7 @@ final class DictationController: ObservableObject {
             guard let self else { return }
             await MainActor.run {
                 var m = self.reviewModel
-                if m?.expired(nowNanos: DispatchTime.now().uptimeNanoseconds) == true {
+                if m?.expired(nowNanos: environment.clock.nowNanos()) == true {
                     self.reviewModel?.clear(.expired)
                     self.clearReview(reason: .deadlineExpired)
                 }
@@ -220,7 +229,7 @@ final class DictationController: ObservableObject {
     func retryReview() {
         guard var model = reviewModel, model.allowsRetry,
               let text = reviewText else { return }
-        _ = model.consume(.retryValidation, nowNanos: DispatchTime.now().uptimeNanoseconds)
+        _ = model.consume(.retryValidation, nowNanos: environment.clock.nowNanos())
         reviewModel = model
         let attemptText = text
         clearReview(reason: .retriedWithFreshIntent)
@@ -238,9 +247,9 @@ final class DictationController: ObservableObject {
             return
         }
         currentSessionID = sid
-        targetSnapshot = targetService.captureSnapshot(
+        targetSnapshot = environment.targetValidation.captureSnapshot(
             sessionID: sid,
-            nowNanos: DispatchTime.now().uptimeNanoseconds)
+            nowNanos: environment.clock.nowNanos())
         sessionSensitivity = targetSnapshot?.sensitivity.sensitivity ?? .unknown
         sessionTargetBundleID = targetSnapshot?.target.bundleID
 
@@ -255,22 +264,22 @@ final class DictationController: ObservableObject {
         }
         var validation = TargetValidationSession(sessionID: sid, snapshot: snapshot,
                                                  deadlineNanosAhead: 2_000_000_000)
-        validation.start(nowNanos: DispatchTime.now().uptimeNanoseconds)
-        let monitor = await targetService.restoreToCapturedTarget(snapshot: snapshot)
+        validation.start(nowNanos: environment.clock.nowNanos())
+        let monitor = await environment.targetValidation.restoreToCapturedTarget(snapshot: snapshot, deadlineNanosAhead: 2_000_000_000)
         let restored = monitor.status == .restored
-        let context = targetService.currentContext(nowNanos: DispatchTime.now().uptimeNanoseconds)
+        let context = environment.targetValidation.currentContext(nowNanos: environment.clock.nowNanos())
         let outcome = validation.validate(context: context,
-                                          nowNanos: DispatchTime.now().uptimeNanoseconds)
+                                          nowNanos: environment.clock.nowNanos())
         switch outcome {
         case .validated:
             _ = control.stage(.targetValidationSucceeded)
-            let result = await insertion.insert(
+            let result = await environment.insertion.insert(
                 text, preferPaste: restored,
-                mode: settings.settings.insertionMode,
+                mode: settingsStore.settings.insertionMode,
                 targetBundleID: snapshot.target.bundleID,
                 sensitivity: validation.effectiveSensitivity,
                 sessionID: sid,
-                copyOnlyOverrides: Set(settings.settings.copyOnlyOverrideBundleIDs))
+                copyOnlyOverrides: Set(settingsStore.settings.copyOnlyOverrideBundleIDs))
             switch result {
             case .verifiedInserted:
                 _ = control.stage(.insertionSucceeded)
@@ -334,7 +343,7 @@ final class DictationController: ObservableObject {
         guard let review = reviewSession else { return }
         let decision = sensitivityDecision()
         guard let taken = review.consumeForExplicitCopy(decision: decision,
-                                                        nowNanos: DispatchTime.now().uptimeNanoseconds) else {
+                                                        nowNanos: environment.clock.nowNanos()) else {
             return
         }
         let pasteboard = NSPasteboard.general
@@ -399,8 +408,8 @@ final class DictationController: ObservableObject {
         // Full restart so Fn system override + tap config apply cleanly
         hotkey.stop()
         hotkey.configure(
-            hotkey: settings.settings.hotkey,
-            mode: settings.settings.listeningMode
+            hotkey: settingsStore.settings.hotkey,
+            mode: settingsStore.settings.listeningMode
         )
         hotkey.start { [weak self] event in
             guard let self else { return }
@@ -413,7 +422,7 @@ final class DictationController: ObservableObject {
                 self.enqueueSession { await self.endSession() }
             }
         }
-        ZFLog.info("Hotkey reloaded \(settings.settings.hotkey.displayName)")
+        ZFLog.info("Hotkey reloaded \(settingsStore.settings.hotkey.displayName)")
     }
 
     /// FIFO session mutations — prevents press/release Task races.
@@ -451,7 +460,7 @@ final class DictationController: ObservableObject {
     // MARK: - Engine
 
     private func preloadEngine() async {
-        let snapshot = await MainActor.run { settings.settings }
+        let snapshot = await MainActor.run { self.settingsStore.settings }
         let model = snapshot.preferredModel
         let mayDownload = snapshot.mayDownloadModels
 
@@ -577,9 +586,9 @@ final class DictationController: ObservableObject {
         FocusStore.shared.captureNow()
         // JOE-2268: capture the immutable target snapshot (AX evidence).
         // Missing AX permission => nil => session stays .unknown (fail closed).
-        targetSnapshot = targetService.captureSnapshot(
+        targetSnapshot = environment.targetValidation.captureSnapshot(
             sessionID: sid,
-            nowNanos: DispatchTime.now().uptimeNanoseconds)
+            nowNanos: environment.clock.nowNanos())
         sessionSensitivity = targetSnapshot?.sensitivity.sensitivity ?? .unknown
         // No stale lastBundleID fallback (JOE-2268): the snapshot is the only
         // authority for the insert target; nil means fail-closed review-only.
@@ -587,7 +596,7 @@ final class DictationController: ObservableObject {
 
         // Surface model download state if Whisper isn't ready yet
         if !usingAppleEngine {
-            let model = settings.settings.preferredModel
+            let model = settingsStore.settings.preferredModel
             let ready = ModelReadinessStore.shared.readiness(for: model)
             if case .downloading = ready.state {
                 interimText = ModelReadinessStore.shared.bannerMessage ?? "Downloading model…"
@@ -601,7 +610,7 @@ final class DictationController: ObservableObject {
         let generation = sessionGeneration
         isSessionActive = true
         interimText = ""
-        activeFlowStyle = settings.settings.defaultFlowStyle
+        activeFlowStyle = settingsStore.settings.defaultFlowStyle
         panelState = .listening
         FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
         ZFLog.info("Session begin gen=\(generation) usingApple=\(usingAppleEngine)")
@@ -621,11 +630,11 @@ final class DictationController: ObservableObject {
         _ = control.stage(.readyToCapture)
 
         do {
-            let localOnly = settings.settings.localOnlyMode
+            let localOnly = settingsStore.settings.localOnlyMode
             try await sessionEngineHandle.startStreaming(
                 sessionID: sid,
                 localOnly: localOnly,
-                language: settings.settings.language) { [weak self] partial in
+                language: settingsStore.settings.language) { [weak self] partial in
                 Task { @MainActor in
                     // JOE-2249: reject callbacks after cancellation, drain
                     // completion, terminal outcome or engine replacement.
@@ -680,7 +689,7 @@ final class DictationController: ObservableObject {
                         await engine.appendAudio(mono)
                         self.audioAccounting.noteDelivered(engineSamples: UInt64(mono.count))
                         _ = self.drainBarrier.noteDelivered(sequence: chunk.sequence,
-                                                            nowNanos: DispatchTime.now().uptimeNanoseconds)
+                                                            nowNanos: environment.clock.nowNanos())
                     }
                 }
                 try await audio.start(sessionID: sid, channel: channel)
@@ -733,7 +742,7 @@ final class DictationController: ObservableObject {
             let channel = audioChannel
             if let finalSeq = channel?.stats().lastAcceptedSequence {
                 drainBarrier.begin(finalSequence: finalSeq,
-                                   nowNanos: DispatchTime.now().uptimeNanoseconds)
+                                   nowNanos: environment.clock.nowNanos())
             }
             await audioDeliveryTask?.value
             let stats = await audio.captureStats()
@@ -811,7 +820,7 @@ final class DictationController: ObservableObject {
                 _ = control.stage(.targetSecure)           // resolvingTarget -> secureTarget (terminal)
                 let conservativeOutcome = await flow.process(FlowRequest(
                     sessionID: sid, text: final.text, style: .clean,
-                    language: settings.settings.language,
+                    language: settingsStore.settings.language,
                     sensitivity: sessionSensitivity))
                 let conservative = conservativeOutcome.text
                 let reviewText = conservative.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -831,13 +840,13 @@ final class DictationController: ObservableObject {
             let flowT0 = Date()
             let flowOutcome = await flow.process(FlowRequest(
                 sessionID: sid, text: final.text, style: style,
-                language: settings.settings.language,
+                language: settingsStore.settings.language,
                 sensitivity: sessionSensitivity))
             let processed = flowOutcome.text
             let flowMs = Int(Date().timeIntervalSince(flowT0) * 1000)
             // Lengths only — never log transcript body
             ZFLog.info(
-                "Processed len=\(processed.count) raw len=\(final.text.count) flowMs=\(flowMs) style=\(style.rawValue) backend=\(settings.settings.flowBackend.rawValue) completeness=\(final.completeness.rawValue) flowStatus=\(flowOutcome.status.rawValue) lossClass=\(flowOutcome.resolvedLossClass.rawValue) guardProtected=\(flowOutcome.protectedSpansPreserved) fallback=\(flowOutcome.fallbackReason ?? "nil")"
+                "Processed len=\(processed.count) raw len=\(final.text.count) flowMs=\(flowMs) style=\(style.rawValue) backend=\(settingsStore.settings.flowBackend.rawValue) completeness=\(final.completeness.rawValue) flowStatus=\(flowOutcome.status.rawValue) lossClass=\(flowOutcome.resolvedLossClass.rawValue) guardProtected=\(flowOutcome.protectedSpansPreserved) fallback=\(flowOutcome.fallbackReason ?? "nil")"
             )
 
             let trimmed = processed.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -874,35 +883,35 @@ final class DictationController: ObservableObject {
                 sessionID: sid,
                 snapshot: snapshot,
                 deadlineNanosAhead: 2_000_000_000)
-            validation.start(nowNanos: DispatchTime.now().uptimeNanoseconds)
+            validation.start(nowNanos: environment.clock.nowNanos())
 
             // Bounded, observable restore (TargetRestoreMonitor): activates the
             // captured app and polls frontmost state — never a blind sleep.
-            let monitor = await targetService.restoreToCapturedTarget(snapshot: snapshot)
+            let monitor = await environment.targetValidation.restoreToCapturedTarget(snapshot: snapshot, deadlineNanosAhead: 2_000_000_000)
             let restored = monitor.status == .restored
             ZFLog.info("target restore status=\(monitor.status.rawValue) attempts=\(monitor.attempts) restored=\(restored)")
 
             // Re-resolve the current focused AX context immediately before any
             // side effect and decide the controlled outcome (content-free).
-            let context = targetService.currentContext(
-                nowNanos: DispatchTime.now().uptimeNanoseconds)
+            let context = environment.targetValidation.currentContext(
+                nowNanos: environment.clock.nowNanos())
             let outcome = validation.validate(
                 context: context,
-                nowNanos: DispatchTime.now().uptimeNanoseconds)
+                nowNanos: environment.clock.nowNanos())
             ZFLog.info("target validation outcome=\(outcome.rawValue) reason=\(validation.reason?.rawValue ?? "nil")")
 
             switch outcome {
             case .validated:
                 // Zero transcript-bearing side effects happened before this.
                 _ = control.stage(.targetValidationSucceeded) // resolvingTarget -> inserting
-                let result = await insertion.insert(
+                let result = await environment.insertion.insert(
                     trimmed,
                     preferPaste: restored,
-                    mode: settings.settings.insertionMode,
+                    mode: settingsStore.settings.insertionMode,
                     targetBundleID: snapshot.target.bundleID,
                     sensitivity: validation.effectiveSensitivity,
                     sessionID: sid,
-                    copyOnlyOverrides: Set(settings.settings.copyOnlyOverrideBundleIDs)
+                    copyOnlyOverrides: Set(settingsStore.settings.copyOnlyOverrideBundleIDs)
                 )
                 ZFLog.info("Insertion result: \(String(describing: result))")
                 switch result {
@@ -926,10 +935,10 @@ final class DictationController: ObservableObject {
                 // JOE-2259/2269: history is a transcript-bearing mutation; the
                 // central outcome policy decides retention (never for
                 // unverified/uncertain outcomes), combined with sensitivity.
-                if settings.settings.saveHistory,
+                if settingsStore.settings.saveHistory,
                    SensitiveSessionPolicy.historyWriteAllowed(sensitivity: validation.effectiveSensitivity),
                    result.permitsHistoryRetention {
-                    history.add(
+                    await environment.history.add(
                         HistoryEntry(
                             originalText: final.text,
                             finalText: trimmed,
@@ -937,7 +946,7 @@ final class DictationController: ObservableObject {
                             modelUsed: final.engine.modelName
                         )
                     )
-                } else if settings.settings.saveHistory {
+                } else if settingsStore.settings.saveHistory {
                     ZFLog.info("History skipped — outcome=\(String(describing: result)) sens=\(validation.effectiveSensitivity.rawValue)")
                 }
 
@@ -1052,7 +1061,7 @@ final class DictationController: ObservableObject {
         audioLevels = (0..<24).map { i in
             Float(0.15 + 0.55 * abs(sin(Double(i) * 0.45)))
         }
-        activeFlowStyle = settings.settings.defaultFlowStyle
+        activeFlowStyle = settingsStore.settings.defaultFlowStyle
         panelState = .listening
         FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
         FloatingPanelController.shared.resizeToFit()
@@ -1151,7 +1160,7 @@ final class DictationController: ObservableObject {
         }
     }
 
-    private func clearStatusLater() {
+    func clearStatusLater() {
         let generation = sessionGeneration
         Task {
             try? await Task.sleep(nanoseconds: 3_500_000_000)

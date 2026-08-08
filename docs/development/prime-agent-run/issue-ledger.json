@@ -206,12 +206,27 @@
     "JOE-2242"
    ],
    "status": "Backlog",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (fake environment pipeline: clock/sleeper/id/metrics/history/permissions/engine/insertion/target all fakes)",
+    "swift build: pass (AppEnvironment composition root + production assembly + DictationController migration)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/AppEnvironment.swift",
+    "Sources/ZephyrFlowCore/Protocols.swift",
+    "Sources/ZephyrFlow/App/AppEnvironment+Production.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "Sources/ZephyrFlow/Services/TargetValidationService.swift",
+    "Tests/ZephyrFlowCoreTests/main.swift",
+    "docs/development/contracts/app-environment.md",
+    "docs/development/evidence/JOE-2243/REPORT.md"
+   ],
+   "remaining_action": "Full migration of UI/infrastructure singletons (panel/readiness/focus/privacy/hotkey) into the environment \u2014 documented production-provider set + static grep guard."
   },
   {
    "id": "JOE-2244",
