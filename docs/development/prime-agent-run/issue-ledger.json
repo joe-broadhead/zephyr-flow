@@ -1519,12 +1519,32 @@
     "JOE-2243"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "0ebd002",
+    "a894809",
+    "a70e91c",
+    "6bb1b85",
+    "727a12f"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "bash Scripts/ci_checks.sh: ALL GATES PASSED (XCTest 0, CLT parity 0, strict-concurrency complete == pinned baseline, swift-format lint 0, shellcheck 0, YAML ok, mkdocs --strict 0, version sync ok, drift clean, ZephyrFlowCore line=82.40% region=74.35%)",
+    "Fail-closed probes (reverted): version drift, format whitespace, new strict-concurrency warning \u2014 each gate exits non-zero",
+    "swift run ZephyrFlowCoreTests: pass (full suite after formatting normalization)",
+    "swift build: pass",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Scripts/ci_checks.sh",
+    ".github/workflows/ci.yml",
+    ".swift-format",
+    "docs/development/ci/ci-policy.md",
+    "docs/development/ci/strict-concurrency-warnings-baseline.txt",
+    "docs/development/ci/coverage-baseline-report.txt",
+    "docs/development/evidence/JOE-2291/REPORT.md"
+   ],
+   "remaining_action": "GitHub Actions run on the next PR/push to confirm the gates job executes end-to-end on macos-15 (CI runtime qualification) \u2014 external evidence."
   },
   {
    "id": "JOE-2292",
