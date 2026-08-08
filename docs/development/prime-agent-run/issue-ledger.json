@@ -741,7 +741,7 @@
    "status": "Todo",
    "disposition": "done_with_evidence",
    "commits": [
-    "PENDING"
+    "f8cfeaf"
    ],
    "aurum_commits": [],
    "tests": [
