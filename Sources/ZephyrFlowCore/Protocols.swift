@@ -51,7 +51,11 @@ public protocol FlowProcessorProtocol: Actor {
 public protocol AudioCaptureProtocol: Actor {
     var isCapturing: Bool { get }
     func requestPermission() async -> Bool
-    func start(onBuffer: @escaping @Sendable ([Float]) -> Void) async throws
+    /// Start capture producing owned `AudioChunk`s into a bounded, ordered,
+    /// session-bound channel (JOE-2247). The single consumer drains in exact
+    /// producer order; overflow/cross-session chunks are surfaced, never
+    /// silently dropped.
+    func start(sessionID: SessionID, channel: BoundedAudioChannel) async throws
     func stop() async
     func levels() async -> [Float]
 }

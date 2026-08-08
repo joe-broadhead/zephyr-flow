@@ -290,12 +290,24 @@
     "JOE-2246"
    ],
    "status": "Todo",
-   "disposition": "unstarted",
-   "commits": [],
+   "disposition": "done_with_evidence",
+   "commits": [
+    "PENDING"
+   ],
    "aurum_commits": [],
-   "tests": [],
-   "evidence": [],
-   "remaining_action": ""
+   "tests": [
+    "swift run ZephyrFlowCoreTests: pass (bounded memory, overflow counted, cross-session reject, sequencer order/gap/reorder)",
+    "swift build: pass (producer tap + single ordered consumer wired)",
+    "mkdocs build --strict: pass"
+   ],
+   "evidence": [
+    "Sources/ZephyrFlowCore/AudioChannel.swift",
+    "Sources/ZephyrFlow/Services/AudioCapture.swift",
+    "Sources/ZephyrFlow/Services/SessionAudioConverter.swift",
+    "Sources/ZephyrFlow/Services/DictationController.swift",
+    "docs/development/evidence/JOE-2247/REPORT.md"
+   ],
+   "remaining_action": "Real-device microphone latency/order benchmark (JOE-2257); fuzzed scheduler-contention microbenchmarks (JOE-2292)"
   },
   {
    "id": "JOE-2248",

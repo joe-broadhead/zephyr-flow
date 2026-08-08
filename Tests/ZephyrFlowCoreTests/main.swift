@@ -479,6 +479,53 @@ struct CoreTests {
             check("case labels are honest", FlowBackend.allCases.map { String(describing: $0) }.sorted() == ["auto", "enhanced", "regex"])
         }
 
+        // ===== JOE-2247: bounded ordered audio channel =====
+        do {
+            let sid = SessionID(token: "1", sequence: 1, createdAtUptimeNanos: 0)
+            let ch = BoundedAudioChannel(sessionID: sid, capacity: 64)
+            var produced: [UInt64] = []
+            for i in 0..<1000 {
+                let chunk = AudioChunk(sessionID: sid, sequence: UInt64(i), startSample: UInt64(i) * 512,
+                                       sampleRate: 16000, channelCount: 1, samples: [Float(i)])
+                produced.append(chunk.sequence)
+                _ = ch.enqueue(chunk)
+            }
+            var seen: [UInt64] = []
+            var seq = AudioChunkSequencer()
+            let consumer = Task {
+                for await c in ch.chunks { seen.append(c.sequence); _ = seq.accept(c) }
+            }
+            ch.close()
+            consumer.cancel()
+            let stats = ch.stats()
+            check("channel capacity respected (memory bounded)", stats.capacity == 64 && stats.enqueued == 64
+                  && ch.occupancy == 64)
+            // with no consumer, overflow must have dropped the excess (64 of them)
+            check("overflow counted not silent", stats.overflowDropped == 936 && !seq.isDegraded)
+        }
+        do {
+            let a = SessionID(token: "1", sequence: 1, createdAtUptimeNanos: 0)
+            let b = SessionID(token: "2", sequence: 1, createdAtUptimeNanos: 0)
+            let ch = BoundedAudioChannel(sessionID: a, capacity: 8)
+            _ = ch.enqueue(AudioChunk(sessionID: b, sequence: 0, startSample: 0, sampleRate: 16000, channelCount: 1, samples: [0]))
+            check("cross-session chunk rejected and counted", ch.stats().wrongSessionRejected == 1 && ch.isDegraded)
+            _ = ch.close()
+            _ = ch.enqueue(AudioChunk(sessionID: a, sequence: 0, startSample: 0, sampleRate: 16000, channelCount: 1, samples: [0]))
+            check("closed channel counted", ch.stats().closedDropped == 1)
+        }
+        do {
+            // determinism: exact order on the sequencer, gap and reorder detection
+            var seq = AudioChunkSequencer()
+            let sid = SessionID(token: "1", sequence: 1, createdAtUptimeNanos: 0)
+            let c0 = AudioChunk(sessionID: sid, sequence: 0, startSample: 0, sampleRate: 16000, channelCount: 1, samples: [0])
+            let c1 = AudioChunk(sessionID: sid, sequence: 1, startSample: 16, sampleRate: 16000, channelCount: 1, samples: [0])
+            let c3 = AudioChunk(sessionID: sid, sequence: 3, startSample: 48, sampleRate: 16000, channelCount: 1, samples: [0])
+            check("exact order accepted", seq.accept(c0) && seq.accept(c1))
+            check("gap fast-forward counted", !seq.accept(c3) && seq.gaps == 1 && seq.nextExpected == 4)
+            let c2 = AudioChunk(sessionID: sid, sequence: 2, startSample: 32, sampleRate: 16000, channelCount: 1, samples: [0])
+            check("reordered counted", !seq.accept(c2) && seq.reordered == 1 && seq.isDegraded)
+        }
+
         print("")
         if failed == 0 {
             print("All tests passed.")

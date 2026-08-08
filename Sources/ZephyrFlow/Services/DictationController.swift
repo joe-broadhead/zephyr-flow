@@ -43,6 +43,13 @@ final class DictationController: ObservableObject {
     /// idempotent edges and exactly-one terminal outcome.
     private var control = SessionControlModel()
     private var currentSessionID: SessionID?
+    // JOE-2247 bounded ordered audio: one producer (tap -> channel), one
+    // ordered consumer task feeding the selected engine.
+    private var audioChannel: BoundedAudioChannel?
+    private var audioDeliveryTask: Task<Void, Never>?
+    private var audioSequencer = AudioChunkSequencer()
+    private var audioDegraded = false
+    private var pcmConverter: SessionAudioConverter?
 
     private init() {
         activeEngine = whisperEngine
@@ -129,6 +136,10 @@ final class DictationController: ObservableObject {
         currentSessionID = nil
         Task {
             await audio.stop()
+            await audioDeliveryTask?.value
+            audioDeliveryTask = nil
+            audioChannel = nil
+            pcmConverter = nil
             await activeEngine.cancel()
         }
         panelState = .hidden
@@ -358,14 +369,32 @@ final class DictationController: ObservableObject {
             if usingAppleEngine {
                 startAppleLevelsPolling()
             } else {
-                try await audio.start { [weak self] samples in
-                    guard let self else { return }
-                    // UI meter from the same PCM Whisper gets (MainActor, no actor hop lag).
-                    Task { @MainActor in
-                        self.applyMicLevels(samples)
+                // Bounded, ordered audio channel (JOE-2247): capacity 256
+                // chunks covers a ~21 s tail at a 48 kHz / 4096-frame tap
+                // with no consumer stall; bounded memory regardless of
+                // recording length.
+                let channel = BoundedAudioChannel(sessionID: sid, capacity: 256)
+                audioChannel = channel
+                audioSequencer = AudioChunkSequencer()
+                audioDegraded = false
+                let converter = SessionAudioConverter()
+                pcmConverter = converter
+                let engine = activeEngine
+                audioDeliveryTask = Task { [weak self] in
+                    for await chunk in channel.chunks {
+                        guard let self else { return }
+                        // Reordered/late chunks can never be appended: counted,
+                        // skipped, and the session is marked degraded.
+                        if chunk.sequence < self.audioSequencer.nextExpected {
+                            self.audioDegraded = true
+                            continue
+                        }
+                        self.audioSequencer.accept(chunk)
+                        guard let mono = converter.convert(chunk) else { continue }
+                        await engine.appendAudio(mono)
                     }
-                    Task { await self.activeEngine.appendAudio(samples) }
                 }
+                try await audio.start(sessionID: sid, channel: channel)
                 startAudioLevelsPolling()
             }
 
@@ -410,8 +439,26 @@ final class DictationController: ObservableObject {
 
         await audio.stop()
         if !usingAppleEngine {
+            // Drain the bounded ordered channel into the engine BEFORE
+            // finalize so delivery order is exact, then surface degradation.
+            await audioDeliveryTask?.value
+            let channel = audioChannel
             let stats = await audio.captureStats()
-            ZFLog.info("Capture stats frames16k=\(stats.frames) peakRMS=\(String(format: "%.5f", stats.peakRMS))")
+            let seqDegraded = audioSequencer.isDegraded
+            let channelDegraded = channel?.isDegraded ?? false
+            ZFLog.info("Capture stats enqueued=\(stats.enqueued) overflowDropped=\(stats.overflowDropped) wrongSession=\(stats.wrongSessionRejected) peakRMS=\(String(format: "%.5f", stats.peakRMS))")
+            if seqDegraded || channelDegraded {
+                // Overflow/desync/cross-session means the capture is not a
+                // complete session: fail closed instead of ordinary success.
+                ZFLog.info("Audio capture degraded — discard (overflow=\(stats.overflowDropped) reject=\(stats.wrongSessionRejected))")
+                _ = control.stage(.captureFailed)
+                showError("Audio capture degraded — partial session discarded")
+                await activeEngine.cancel()
+                audioDeliveryTask = nil
+                audioChannel = nil
+                pcmConverter = nil
+                return
+            }
         }
 
         do {
@@ -519,6 +566,10 @@ final class DictationController: ObservableObject {
             self.isSessionActive = false
             self.levelsTask?.cancel()
             await self.audio.stop()
+            await self.audioDeliveryTask?.value
+            self.audioDeliveryTask = nil
+            self.audioChannel = nil
+            self.pcmConverter = nil
             await self.activeEngine.cancel()
             self.panelState = .hidden
             self.interimText = ""

@@ -1,0 +1,167 @@
+import Foundation
+
+/// AudioChunk (JOE-2247): one owned, contiguous PCM slice bound to an
+/// immutable session. Samples are a private copy — never borrowed from an
+/// AVAudioEngine tap buffer.
+public struct AudioChunk: Sendable, Equatable {
+    public let sessionID: SessionID
+    /// Monotonic producer sequence; strictly increasing per session.
+    public let sequence: UInt64
+    /// Absolute sample offset since capture start (16 kHz mono reference).
+    public let startSample: UInt64
+    public let sampleRate: Double
+    public let channelCount: Int
+    public let samples: [Float]
+
+    public init(sessionID: SessionID,
+                sequence: UInt64,
+                startSample: UInt64,
+                sampleRate: Double,
+                channelCount: Int,
+                samples: [Float]) {
+        self.sessionID = sessionID
+        self.sequence = sequence
+        self.startSample = startSample
+        self.sampleRate = sampleRate
+        self.channelCount = channelCount
+        self.samples = samples
+    }
+
+    public var isEmpty: Bool { samples.isEmpty }
+}
+
+/// Bounded, ordered, cross-session-isolated PCM channel (JOE-2247).
+///
+/// - Producer: the real-time audio tap calls `enqueue(_:)` — synchronous,
+///   lock-guarded, one bounded copy. Never allocates unboundedly.
+/// - Consumer: exactly one, `chunks` AsyncStream; conversion and engine
+///   append happen there in producer order. Reordering is impossible by
+///   construction.
+/// - Overflow / wrong-session / post-close chunks are counted and surfaced
+///   via `stats()`/`isDegraded`; nothing is dropped silently, and degraded
+///   channels prevent ordinary success outcomes.
+public final class BoundedAudioChannel: @unchecked Sendable {
+    public let sessionID: SessionID
+    public let capacity: Int
+
+    private var ring: [AudioChunk?]
+    private var head_ = 0
+    private var count_ = 0
+    private let lock = NSLock()
+    private var closed_ = false
+    private var continuation: AsyncStream<AudioChunk>.Continuation?
+    private let stream: AsyncStream<AudioChunk>
+
+    private(set) public var overflowDropped: UInt64 = 0
+    private(set) public var wrongSessionRejected: UInt64 = 0
+    private(set) public var closedDropped: UInt64 = 0
+    private(set) public var enqueued: UInt64 = 0
+
+    public init(sessionID: SessionID, capacity: Int) {
+        precondition(capacity > 0)
+        self.sessionID = sessionID
+        self.capacity = capacity
+        self.ring = Array(repeating: nil, count: capacity)
+        var cont: AsyncStream<AudioChunk>.Continuation?
+        self.stream = AsyncStream<AudioChunk> { cont = $0 }
+        self.continuation = cont
+    }
+
+    /// Producer entry: synchronous, safe on the audio callout. Copies the
+    /// chunk into the bounded ring before returning.
+    @discardableResult
+    public func enqueue(_ chunk: AudioChunk) -> AudioEnqueueResult {
+        lock.lock(); defer { lock.unlock() }
+        guard chunk.sessionID == sessionID else {
+            wrongSessionRejected += 1
+            return .wrongSessionRejected
+        }
+        guard !closed_ else {
+            closedDropped += 1
+            return .closed
+        }
+        guard count_ < capacity else {
+            overflowDropped += 1
+            return .overflowDropped
+        }
+        ring[(head_ + count_) % capacity] = chunk
+        count_ += 1
+        enqueued += 1
+        continuation?.yield(chunk)
+        return .accepted
+    }
+
+    /// Exactly-one consumer stream, ordered by producer sequence.
+    public var chunks: AsyncStream<AudioChunk> { stream }
+
+    public func close() {
+        lock.lock(); defer { lock.unlock() }
+        guard !closed_ else { return }
+        closed_ = true
+        continuation?.finish()
+    }
+
+    public var isClosed: Bool { lock.withLock { closed_ } }
+    public var occupancy: Int { lock.withLock { count_ } }
+
+    /// ANY overflow or cross-session rejection makes the capture degraded:
+    /// callers must map this to a non-ordinary outcome.
+    public var isDegraded: Bool {
+        lock.withLock { overflowDropped > 0 || wrongSessionRejected > 0 }
+    }
+
+    public func stats() -> AudioChannelStats {
+        lock.withLock {
+            AudioChannelStats(capacity: capacity,
+                              enqueued: enqueued,
+                              overflowDropped: overflowDropped,
+                              wrongSessionRejected: wrongSessionRejected,
+                              closedDropped: closedDropped)
+        }
+    }
+}
+
+public enum AudioEnqueueResult: Sendable, Equatable {
+    case accepted
+    case overflowDropped
+    case wrongSessionRejected
+    case closed
+}
+
+public struct AudioChannelStats: Sendable, Equatable {
+    public let capacity: Int
+    public let enqueued: UInt64
+    public let overflowDropped: UInt64
+    public let wrongSessionRejected: UInt64
+    public let closedDropped: UInt64
+
+    public var totalDropped: UInt64 { overflowDropped + wrongSessionRejected + closedDropped }
+}
+
+/// One-shot sequential gate: keeps the consumer honest even if upstream ever
+/// reorders (defense-in-depth). Expected sequence fast-forwards over gaps.
+public struct AudioChunkSequencer: Sendable {
+    public private(set) var nextExpected: UInt64 = 0
+    public private(set) var gaps: UInt64 = 0
+    public private(set) var reordered: UInt64 = 0
+
+    public init() {}
+
+    /// Returns true when the chunk is the exact next sequence.
+    @discardableResult
+    public mutating func accept(_ chunk: AudioChunk) -> Bool {
+        guard chunk.sequence == nextExpected else {
+            if chunk.sequence > nextExpected {
+                gaps += UInt64(chunk.sequence - nextExpected)
+                nextExpected = chunk.sequence &+ 1
+            } else {
+                reordered += 1
+            }
+            return false
+        }
+        nextExpected &+= 1
+        return true
+    }
+
+    public var isDegraded: Bool { gaps > 0 || reordered > 0 }
+}
