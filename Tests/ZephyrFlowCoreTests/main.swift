@@ -412,8 +412,9 @@ struct CoreTests {
         do {
             let s = AppSettings.default
             check("local only default", s.localOnlyMode)
-            check("downloads on by default", s.allowModelDownloads)
-            check("mayDownload follows allow flag", s.mayDownloadModels)
+            // Review R6.1: downloads default OFF until explicit consent.
+            check("downloads off by default", !s.allowModelDownloads)
+            check("mayDownload follows allow flag", !s.mayDownloadModels)
             check("default model whisper tiny", s.preferredModel == .whisperTiny)
             check("default hotkey fn", s.hotkey.specialKey == .fn)
             check("debug logging off", !s.debugLogging)

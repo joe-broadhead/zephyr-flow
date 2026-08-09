@@ -94,10 +94,15 @@ final class DictationController: ObservableObject {
                 self.enqueueSession { await self.endSession() }
             }
         }
-        // Detached so SFSpeech/mic permission callbacks (main queue) cannot
-        // deadlock with @MainActor awaiting the engine actor.
-        Task.detached { [weak self] in
-            await self?.preloadEngine()
+        // Review R6.1: do NOT preload/acquire models before onboarding
+        // consent. With downloads default-off and this gate, a fresh install
+        // cannot fetch a model until the user explicitly enables it in
+        // onboarding/settings. Detached so SFSpeech/mic permission callbacks
+        // (main queue) cannot deadlock with @MainActor awaiting the engine.
+        if settingsStore.settings.hasCompletedOnboarding {
+            Task.detached { [weak self] in
+                await self?.preloadEngine()
+            }
         }
         Task { await self.ensurePermissionsUpFront() }
         ZFLog.info("DictationController started hotkey=\(settingsStore.settings.hotkey.displayName)")

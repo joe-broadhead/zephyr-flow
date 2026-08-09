@@ -528,7 +528,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
         defaultFlowStyle: .clean,
         language: .auto,
         localOnlyMode: true,
-        allowModelDownloads: true,
+        // Review R6.1: downloads default DISABLED until explicit onboarding
+        // consent. (The init default is false; this static default was the
+        // outlier enabling pre-consent acquisition.)
+        allowModelDownloads: false,
         launchAtLogin: false,
         listeningMode: .holdToTalk,
         hasCompletedOnboarding: false,
