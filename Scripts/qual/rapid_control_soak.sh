@@ -3,8 +3,10 @@
 # Usage: rapid_control_soak.sh [--minutes N] [--app /path/to/ZephyrFlow.app]
 set -euo pipefail
 MINUTES="${1:-5}"
+# used below: sleep loop duration
+# shellcheck source=_common.sh
 QUAL_NAME="rapid-control" source "$(dirname "$0")/_common.sh"
-echo "## Deterministic rapid-control stress (seeded, CLT)" >> "$REPORT"
+echo "## Deterministic rapid-control stress (seeded, CLT; minutes=$MINUTES)" >> "$REPORT"
 echo >> "$REPORT"
 swift run ZephyrFlowCoreTests 2>&1 | grep -E '✓ 2293|✓ 2292' >> "$REPORT" || qual_fail "CLT stress checks"
 if swift run ZephyrFlowCoreTests 2>&1 | grep -q 'All tests passed'; then

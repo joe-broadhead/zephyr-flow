@@ -14,7 +14,7 @@ fail() { echo "GATE FAILED: $*"; FAILURES=$((FAILURES+1)); }
 #    XCTest files MUST be discovered and executed; `swift test list` must
 #    report them. Local machines using only CommandLineTools cannot run
 #    xctest — the parity CLT suite (gate 2) covers them, documented.
-step "1/8 XCTest (swift test)"
+step "1/9 XCTest (swift test)"
 if ! swift test 2>&1 | tail -3; then fail "swift test"; fi
 TEST_LIST="$(swift test list 2>/dev/null | grep -c 'test' || true)"
 if [[ "${CI:-false}" == "true" && "$TEST_LIST" -lt 1 ]]; then
@@ -25,19 +25,31 @@ if [[ "$TEST_LIST" -lt 1 ]]; then
 fi
 
 # 2. CLT runner parity (distinct purpose: no Xcode required, same contracts).
-step "2/8 CLT Core runner (parity)"
+step "2/9 CLT Core runner (parity)"
 if ! swift run ZephyrFlowCoreTests 2>&1 | tail -2; then fail "swift run ZephyrFlowCoreTests"; fi
 
 # 3. Swift 6 strict concurrency at the strongest supported setting; NEW
 #    warnings fail (pinned baseline).
-step "3/8 strict concurrency (complete) vs baseline"
+step "3/9 strict concurrency (complete) vs baseline"
 WARN_LOG="$(mktemp)"
 # Clean build so every warning is emitted (a cached build would emit none and
-# silently pass); the baseline was produced the same way.
+# silently pass); the baseline was produced the same way. Review R8.1: the
+# BUILD's exit status is authoritative — a compile failure must FAIL the gate,
+# never be swallowed by `|| true` (the old pipe masked build errors as a
+# zero-warning pass).
 swift package clean >/dev/null 2>&1 || true
-swift build -Xswiftc -strict-concurrency=complete 2>&1 \
-  | grep 'warning:' | sed -E 's/^[[:space:]]*[|`-]*[[:space:]]*//' \
-  | sed -E 's/[[:space:]]+/ /g' | sort -u > "$WARN_LOG" || true
+set +e
+swift build -Xswiftc -strict-concurrency=complete > /tmp/zf_sc_build.log 2>&1
+SC_BUILD_RC=$?
+set -e
+if [[ $SC_BUILD_RC -ne 0 ]]; then
+  echo "strict-concurrency BUILD FAILED (rc=$SC_BUILD_RC):"
+  grep -E 'error:' /tmp/zf_sc_build.log | head -20 || true
+  fail "strict-concurrency build failed"
+fi
+grep 'warning:' /tmp/zf_sc_build.log \
+  | sed -E 's/^[[:space:]]*[|`-]*[[:space:]]*//' \
+  | sed -E 's/[[:space:]]+/ /g' | sort -u > "$WARN_LOG"
 BASELINE="docs/development/ci/strict-concurrency-warnings-baseline.txt"
 if [[ -f "$BASELINE" ]]; then
   NEW="$(comm -13 <(grep -v '^#' "$BASELINE" | sed '/^$/d' | sort -u) "$WARN_LOG")"
@@ -51,7 +63,7 @@ else
 fi
 
 # 4. Formatting lint (warnings are failures) + string-catalog completeness.
-step "4/8 swift-format lint + string catalog scan"
+step "4/9 swift-format lint + string catalog scan"
 if ! swift format lint --strict --recursive Sources Tests 2>&1 | tail -3; then
   fail "swift-format lint"
 fi
@@ -60,21 +72,35 @@ if ! python3 Scripts/string_scan.py 2>&1 | tail -3; then
 fi
 
 # 5. Shell + YAML lint.
-step "5/8 shell + YAML lint"
-for sh in Scripts/*.sh; do
+step "5/9 shell + YAML lint"
+# Review R8.1: shellcheck covers ALL Scripts subdirectories (recursive),
+# not just Scripts/*.sh, and its absence is a FAILURE (not a silent skip).
+for sh in Scripts/*.sh Scripts/**/*.sh; do
+  [[ -f "$sh" ]] || continue
   bash -n "$sh" || fail "bash -n $sh"
 done
 if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck Scripts/*.sh || fail "shellcheck"
+  for sh in Scripts/*.sh Scripts/**/*.sh; do
+    [[ -f "$sh" ]] || continue
+    # --severity=warning: real defects (warnings/errors) fail the gate;
+    # info-level notes (e.g. SC1091 follow-sourcing, SC2086 quoting) do not.
+    shellcheck --severity=warning -x "$sh" || fail "shellcheck $sh"
+  done
+else
+  fail "shellcheck not installed (required by the gate)"
 fi
-if command -v python3 >/dev/null 2>&1; then
+# Review R8.1: YAML validation must not be silently omitted when PyYAML is
+# missing — require it.
+if python3 -c 'import yaml' 2>/dev/null; then
   for yml in .github/workflows/*.yml; do
     python3 -c "import yaml,sys; list(yaml.safe_load_all(open('$yml')))" || fail "YAML $yml"
   done
+else
+  fail "PyYAML not installed (required by the gate)"
 fi
 
 # 6. Docs strict build + version gate.
-step "6/8 docs strict + version gate"
+step "6/9 docs strict + version gate"
 if command -v mkdocs >/dev/null 2>&1; then
   mkdocs build --strict || fail "mkdocs --strict"
 else
@@ -86,7 +112,7 @@ grep -q "<string>$v</string>" Resources/Info.plist || fail "VERSION/Info.plist d
 grep -q "^## \[$v\]" CHANGELOG.md || fail "VERSION/CHANGELOG drift"
 
 # 7. Generated-artifact drift: nothing may be left dirty by the gates above.
-step "7/8 drift check (git diff --exit-code)"
+step "7/9 drift check (git diff --exit-code)"
 if ! git diff --exit-code --quiet; then
   git status --porcelain | head -20
   fail "working tree dirty after gates (generated drift)"
@@ -94,7 +120,7 @@ fi
 
 # 8. Trust-boundary coverage (ZephyrFlowCore only — cannot be inflated by
 #    untested code elsewhere; adding untested Core code LOWERS the %).
-step "8/8 trust-boundary coverage (ZephyrFlowCore)"
+step "8/9 trust-boundary coverage (ZephyrFlowCore)"
 COV_TMP="$(mktemp -d)"
 BIN="$(swift build --show-bin-path 2>/dev/null)"
 if [[ -z "$BIN" ]]; then BIN=".build/debug"; fi
@@ -116,7 +142,7 @@ if swift test --enable-code-coverage >/dev/null 2>&1 \
     echo "ZephyrFlowCore coverage: line=${LINE}% region=${REGION}% (Swift toolchain emits no literal branch data; region is the equivalent)"
     if ! awk -v x="$LINE" 'BEGIN{exit !(x>=70)}'; then fail "coverage line < 70% (got ${LINE}%)"; fi
     if ! awk -v x="$REGION" 'BEGIN{exit !(x>=70)}'; then fail "coverage region < 70% (got ${REGION}%)"; fi
-    cp "$COV_TMP/report.txt" docs/development/ci/coverage-baseline-report.txt
+    cp "$COV_TMP/report.txt" /tmp/zephyr-flow-coverage-baseline-report.txt
   else
     fail "coverage report"
   fi

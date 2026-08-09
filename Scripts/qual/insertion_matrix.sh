@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # JOE-2273/2274 supported-app insertion matrix + focus/secure-field probes.
 set -euo pipefail
+# shellcheck source=_common.sh
 QUAL_NAME="insertion-matrix" source "$(dirname "$0")/_common.sh"
 echo "## Insertion + target-validation checks (deterministic, CLT)" >> "$REPORT"
 echo >> "$REPORT"

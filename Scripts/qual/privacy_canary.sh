@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # JOE-2297 end-to-end privacy canary matrix (deterministic portion).
 set -euo pipefail
+# shellcheck source=_common.sh
 QUAL_NAME="privacy-canary" source "$(dirname "$0")/_common.sh"
 echo "## Privacy canary (deterministic, CLT)" >> "$REPORT"
 echo >> "$REPORT"

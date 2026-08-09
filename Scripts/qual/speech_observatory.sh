@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # JOE-2294/2295/2296 real-speech observatory + hardware profile (manual).
 set -euo pipefail
+# shellcheck source=_common.sh
 QUAL_NAME="speech-observatory" source "$(dirname "$0")/_common.sh"
 echo "## Real-speech observatory (manual, hardware required)" >> "$REPORT"
 cat >> "$REPORT" <<'EOF'
