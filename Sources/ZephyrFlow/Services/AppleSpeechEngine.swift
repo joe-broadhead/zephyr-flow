@@ -193,17 +193,9 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
         if !sawFinal && !finalizationPending {
             finalizationPending = true
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { [weak self] in
-                    guard let self else { return }
-                    await self.awaitFinalEvent()
-                }
-                group.addTask {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-                }
-                await group.next()
-                group.cancelAll()
-            }
+            // Review R3.1: race the final event against a hard deadline with
+            // an actor-owned, cancel-aware wait (cannot hang past 2s).
+            await waitForFinalEvent(deadlineNanosAhead: 2_000_000_000)
             // Deadline reached: a non-empty partial is only partial/degraded.
             if !sawFinal {
                 let outcome = recognitionTracker.noteDeadline()
@@ -227,19 +219,12 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
         // Apple Speech: completeness derived from the final callback + error
         // state. A rolling partial is never promoted to `complete`.
-        let completeness: EngineResultCompleteness
-        if sawFinal && err == nil {
-            completeness = .complete
-        } else if !finalText.isEmpty {
-            completeness = .partial
-        } else {
-            completeness = .degraded
-        }
-        let warnings: [EngineWarning] = {
-            if sawFinal && err == nil { return [] }
-            if !finalText.isEmpty { return [.partialFallback] }
-            return [.captureDegraded]
-        }()
+        // Review R3.1: `.complete` requires a genuine final event with NO
+        // error and usable text. Any error keeps the result partial/degraded.
+        let completeness = SpeechCompletenessPolicy.completeness(
+            sawFinal: sawFinal, error: err, hasText: !finalText.isEmpty)
+        let warnings = SpeechCompletenessPolicy.warnings(
+            sawFinal: sawFinal, error: err, hasText: !finalText.isEmpty)
         let accounting = EngineFrameAccounting(
             capturedSourceSamples: 0,
             deliveredEngineSamples: 0,
@@ -283,6 +268,38 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         }
     }
 
+    /// Review R3.1: bounded, cancel-aware wait for the final recognition event.
+    /// Runs ON the actor so it can mutate finalContinuation; the deadline task
+    /// is a separate unstructured task that calls the actor to resume the
+    /// continuation if the final event never arrives — the wait can never hang.
+    private func waitForFinalEvent(deadlineNanosAhead: UInt64) async {
+        // The deadline task cancels the wait by resuming the continuation
+        // exactly once via the actor.
+        // The deadline task guarantees the wait is bounded: after the
+        // deadline it hops to the actor and resumes the continuation exactly
+        // once (if still pending). The continuation itself is stored on the
+        // actor, so no Sendable closure touches actor state.
+        let deadlineTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: deadlineNanosAhead)
+            await self?.cancelFinalizationWait()
+        }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            finalContinuation = cont
+            if sawFinal || recognitionTracker.finalEvent != nil {
+                finishRecognition()  // resumes cont exactly once
+            }
+        }
+        deadlineTask.cancel()
+    }
+
+    /// Actor-side: resume the finalization continuation if still pending.
+    private func cancelFinalizationWait() {
+        if let cont = finalContinuation {
+            finalContinuation = nil
+            cont.resume()
+        }
+    }
+
     private func handleRecognition(
         token: RecognitionToken,
         result: SFSpeechRecognitionResult?,
@@ -323,9 +340,12 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
                 friendly: friendly)
             ZFLog.info("recognition error outcome=\(outcome.rawValue) domain=\(ns.domain) code=\(ns.code)")
             ZFLog.error("recognition error domain=\(ns.domain) code=\(ns.code) \(ns.localizedDescription)")
+            // Review R3.1: preserve the error. An errored partial must NEVER
+            // be promoted to `.complete` — keeping lastError set makes the
+            // completeness mapping below return .partial/.degraded, never
+            // .complete, even though usable text exists.
             if !accumulated.isEmpty {
-                sawFinal = true
-                lastError = nil  // we have usable text
+                sawFinal = false  // no final event arrived; only partial text
             }
             finishRecognition()
         }

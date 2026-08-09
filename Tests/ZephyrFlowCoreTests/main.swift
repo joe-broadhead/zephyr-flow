@@ -2186,6 +2186,35 @@ struct CoreTests {
                 complete.text == "hello")
         }
 
+        // ===== R3.1 regression: errored partial never complete =====
+        do {
+            // Review R3.1: an error after non-empty partial text must yield
+            // .partial (with a warning), never .complete.
+            let erroredPartial = SpeechCompletenessPolicy.completeness(
+                sawFinal: true, error: "recognition failed", hasText: true)
+            check("R3.1 errored partial is partial, not complete",
+                  erroredPartial == .partial)
+            let w = SpeechCompletenessPolicy.warnings(
+                sawFinal: true, error: "recognition failed", hasText: true)
+            check("R3.1 errored partial warns partialFallback", w == [.partialFallback])
+            // A genuine final with no error and text is complete.
+            let good = SpeechCompletenessPolicy.completeness(
+                sawFinal: true, error: nil, hasText: true)
+            check("R3.1 final-no-error with text is complete", good == .complete)
+            // No final, no error, but text => partial (rolling).
+            let rolling = SpeechCompletenessPolicy.completeness(
+                sawFinal: false, error: nil, hasText: true)
+            check("R3.1 rolling partial is partial", rolling == .partial)
+            // No text at all => degraded.
+            let empty = SpeechCompletenessPolicy.completeness(
+                sawFinal: false, error: nil, hasText: false)
+            check("R3.1 no text is degraded", empty == .degraded)
+            // Error with no text => degraded.
+            let errEmpty = SpeechCompletenessPolicy.completeness(
+                sawFinal: false, error: "boom", hasText: false)
+            check("R3.1 error-no-text is degraded", errEmpty == .degraded)
+        }
+
         // ===== JOE-2253: Apple Speech tokenized callbacks + event finalization =====
         do {
             let tok = RecognitionToken(value: "t1")
