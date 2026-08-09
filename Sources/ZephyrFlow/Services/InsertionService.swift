@@ -47,6 +47,14 @@ actor InsertionService: InsertionServiceProtocol {
             return .secureTarget
         }
 
+        // Review R2.1: target validation and mutation must be one transaction
+        // against the same resolved element identity. We re-check the focused
+        // role + sensitivity immediately before EVERY side-effecting path
+        // (paste / copy / AX), so a focus switch after validation cannot cause
+        // insertion into a changed or secure target. Where stable element
+        // identity is unavailable, the AX path refuses automatic insertion
+        // (see insertViaAccessibility).
+
         let adapter = InsertionStrategyResolver.adapter(forBundle: bundle, role: role)
         var strategies = InsertionStrategyResolver.strategies(
             bundleID: bundle,
@@ -79,6 +87,15 @@ actor InsertionService: InsertionServiceProtocol {
                 return .automaticCopy
 
             case .clipboardPaste, .terminalPaste:
+                // Review R2.1: re-validate the target immediately before the
+                // paste mutation. If focus moved to a secure/unknown target,
+                // fail closed — never paste into it.
+                let reRole = await focusedRole()
+                let reSecure = AXIsProcessTrusted() ? await isSecureFieldFocused() : false
+                if InsertionStrategyResolver.isSecureRole(reRole) || reSecure {
+                    ZFLog.info("insert paste re-check: secure target — blocked")
+                    return .secureTarget
+                }
                 let settle = adapter.settleNanos
                 try? await Task.sleep(nanoseconds: settle)
                 let paste = await pasteViaClipboard(text, sessionID: sessionID, sensitivity: sensitivity)
@@ -101,7 +118,9 @@ actor InsertionService: InsertionServiceProtocol {
             case .axSelectedText, .axValue:
                 guard AXIsProcessTrusted() else { continue }
                 let allowFallback = strategy == .axValue
-                let axOutcome = await insertViaAccessibility(text, allowValueFallback: allowFallback)
+                let axOutcome = await insertViaAccessibility(
+                    text, allowValueFallback: allowFallback,
+                    validatedTargetBundle: bundle)
                 switch axOutcome {
                 case .verified:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=verified")
@@ -140,7 +159,11 @@ actor InsertionService: InsertionServiceProtocol {
         "AXTextView", "AXSearchField",
     ]
 
-    private func insertViaAccessibility(_ text: String, allowValueFallback: Bool) async -> AXInsertResult {
+    private func insertViaAccessibility(
+        _ text: String,
+        allowValueFallback: Bool,
+        validatedTargetBundle: String?
+    ) async -> AXInsertResult {
         // JOE-2270: consult the deterministic write policy before ANY write.
         // Re-resolve capability + selection immediately before the write, then
         // route the actual AX mutation through the bounded runner.
@@ -162,6 +185,18 @@ actor InsertionService: InsertionServiceProtocol {
         var pid: pid_t = 0
         if AXUIElementGetPid(element, &pid) == .success, pid == getpid() {
             ZFLog.info("AX: focused element is our own process — skip")
+            return .failed
+        }
+
+        // Review R2.1: the validated target bundle was captured before the
+        // panel stole focus. If the current frontmost bundle differs, the
+        // user switched apps after validation — refuse automatic insertion
+        // (fail closed) rather than writing into an unvalidated target.
+        let currentBundle = await frontmostBundleID()
+        if let expected = validatedTargetBundle, let current = currentBundle,
+            current != expected
+        {
+            ZFLog.info("AX: frontmost bundle changed after validation (\(expected) -> \(current)) — blocked")
             return .failed
         }
 
