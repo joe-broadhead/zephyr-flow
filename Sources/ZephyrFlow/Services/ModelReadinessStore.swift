@@ -47,6 +47,11 @@ final class ModelReadinessStore: ObservableObject {
         await acquisition.verifiedReadiness(for: model)
     }
 
+    /// Review B8: verified artifact digest for a ready model.
+    func verifiedDigest(for model: ModelIdentifier) async -> String? {
+        await acquisition.verifiedDigest(for: model)
+    }
+
     func refreshAll() {
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in

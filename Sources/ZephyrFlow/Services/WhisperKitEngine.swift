@@ -22,6 +22,10 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     /// instance must not be reused for a new session (unsafe ownership).
     private var _isQuarantined = false
     public var isQuarantined: Bool { _isQuarantined }
+    public private(set) var verifiedDigest: String?
+    public func recordVerifiedDigest(_ digest: String?) {
+        verifiedDigest = digest
+    }
     private var currentDecodeSessionID: SessionID?
     /// Review R3.2: samples silently-dropped by the 60s rolling-window cap.
     private var droppedPrefixSamples: UInt64 = 0
@@ -299,7 +303,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     private func engineIdentity() -> EngineIdentity {
         EngineIdentity(
             kind: .whisper, modelName: modelName,
-            modelVersion: nil, modelDigest: nil)
+            modelVersion: nil, modelDigest: verifiedDigest)
     }
 
     func cancel() async {

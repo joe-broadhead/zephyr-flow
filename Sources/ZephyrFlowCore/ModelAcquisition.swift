@@ -193,6 +193,20 @@ public actor ModelAcquisitionController {
         return ModelReadiness(state: .missing)
     }
 
+    /// Review B8: the verified digest(s) of a ready model from the reviewed
+    /// manifest. Returns a stable joined hex of the artifact digests, or nil
+    /// when the model is not verified/ready. Used to bind the loaded engine's
+    /// identity to the verified artifact.
+    public func verifiedDigest(for model: ModelIdentifier) -> String? {
+        guard model.isWhisperKit else { return nil }
+        guard let manifest = fs.readManifest(for: model),
+            verifiedURL(for: model) != nil
+        else { return nil }
+        let digests = manifest.artifacts.compactMap { $0.sha256Digest }
+        guard !digests.isEmpty else { return nil }
+        return digests.joined(separator: ":")
+    }
+
     /// The ONLY source of truth for a ready model: manifest verified, URL
     /// promoted atomically.
     public func verifiedURL(for model: ModelIdentifier) -> URL? {

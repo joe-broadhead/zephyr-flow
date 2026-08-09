@@ -238,6 +238,8 @@ public struct EngineRegistry: Sendable {
 public actor FakeWhisperEngine: WhisperEngineProtocol {
     public private(set) var isReady = true
     public var isQuarantined = false
+    public private(set) var verifiedDigest: String?
+    public func recordVerifiedDigest(_ digest: String?) { verifiedDigest = digest }
     public private(set) var modelName = "Fake"
     public private(set) var appended: [Float] = []
     private var partial: (@Sendable (PartialTranscription) -> Void)?

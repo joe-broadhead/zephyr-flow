@@ -8,6 +8,12 @@ public protocol WhisperEngineProtocol: Actor {
     /// Review R6: true when the engine instance is quarantined (a native
     /// decode was still busy at cleanup) and must be replaced before reuse.
     var isQuarantined: Bool { get }
+    /// Review B8: the verified artifact digest recorded at load (from the
+    /// reviewed manifest). Carried into EngineIdentity so session evidence
+    /// records which verified artifact was loaded.
+    var verifiedDigest: String? { get }
+    /// Review B8: record the verified artifact digest for the loaded model.
+    func recordVerifiedDigest(_ digest: String?)
     func load(model: ModelIdentifier) async throws
     /// - Parameter localOnly: When true, must not use any network path (fail closed).
     /// - Parameter sessionID: immutable session this stream belongs to

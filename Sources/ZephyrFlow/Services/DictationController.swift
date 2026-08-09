@@ -676,6 +676,11 @@ final class DictationController: ObservableObject {
             // Verified cache hit: load directly.
             do {
                 try await activeEngine.load(model: model)
+                // Review B8: record the verified artifact digest (from the
+                // reviewed manifest) so session evidence ties the loaded
+                // engine to the verified artifact.
+                await activeEngine.recordVerifiedDigest(
+                    store.verifiedDigest(for: model))
                 self.isModelLoading = false
                 store.publishLoadCompletion(
                     requestID: requestID, model: model,
@@ -715,6 +720,9 @@ final class DictationController: ObservableObject {
         }
         do {
             try await activeEngine.load(model: model)
+            // Review B8: record the verified digest of the just-acquired
+            // artifact so the engine identity carries it.
+            await activeEngine.recordVerifiedDigest(store.verifiedDigest(for: model))
             self.isModelLoading = false
             store.publishLoadCompletion(
                 requestID: requestID, model: model,
