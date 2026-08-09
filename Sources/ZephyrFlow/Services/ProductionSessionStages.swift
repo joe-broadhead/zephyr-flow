@@ -95,7 +95,9 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             self.deliveryTask = Task { [weak self] in
                 guard let self, let converter = self.converter else { return }
                 for await chunk in channel.chunks {
-                    self.accounting.noteCaptured(sourceSamples: UInt64(chunk.samples.count))
+                    self.accounting.noteCaptured(
+                        sourceSamples: UInt64(chunk.samples.count),
+                        sourceRate: chunk.sampleRate)
                     if chunk.sequence < self.sequencer.nextExpected {
                         self.accounting.noteDropped(sourceSamples: UInt64(chunk.samples.count), reason: .lateAppend)
                         continue
@@ -179,7 +181,7 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                 accounting.noteDropped(sourceSamples: channelStats.closedDroppedSamples, reason: .closedDrop)
             }
         }
-        let ratio = SessionAudioConverter.targetSampleRate / 16000.0
+        let ratio = SessionAudioConverter.targetSampleRate / accounting.sourceSampleRate
         let reconciled = accounting.reconciles(
             converterRatio: ratio,
             roundingToleranceSamples: 64)

@@ -96,10 +96,15 @@ actor AudioCapture: AudioCaptureProtocol {
                 let start = producer.startSample
                 producer.sequence &+= 1
                 producer.startSample += UInt64(copy.frameLength)
+                // Review R1.2: makeFloatArray captures ONLY channel 0 into a
+                // flat mono array. Label the chunk mono (channelCount: 1) so
+                // the converter never misreads the flat array as interleaved
+                // multichannel (which would halve the frame count and reshape
+                // alternating samples into synthetic channels).
                 let chunk = AudioChunk(
                     sessionID: sessionID, sequence: seq, startSample: start,
                     sampleRate: copy.format.sampleRate,
-                    channelCount: Int(copy.format.channelCount),
+                    channelCount: 1,
                     samples: Self.makeFloatArray(copy))
                 if boundChannel.enqueue(chunk) != .accepted, !producer.overflowLogged {
                     producer.overflowLogged = true

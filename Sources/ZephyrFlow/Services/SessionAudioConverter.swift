@@ -52,11 +52,21 @@ final class SessionAudioConverter {
             return nil
         }
         inBuf.frameLength = AVAudioFrameCount(frames)
-        // fill each channel from a strided view of the flat samples
-        for ch in 0..<chunk.channelCount {
-            guard let data = inBuf.floatChannelData?[Int(ch)] else { continue }
+        // Fill each channel from the flat samples. A mono chunk
+        // (channelCount == 1, the AudioCapture producer contract) is a
+        // contiguous first-channel array; no striding is needed. Multichannel
+        // chunks use the strided planar view.
+        if chunk.channelCount == 1 {
+            guard let data = inBuf.floatChannelData?[0] else { return nil }
             for i in 0..<frames {
-                data[i] = chunk.samples[i * chunk.channelCount + ch]
+                data[i] = chunk.samples[i]
+            }
+        } else {
+            for ch in 0..<chunk.channelCount {
+                guard let data = inBuf.floatChannelData?[Int(ch)] else { continue }
+                for i in 0..<frames {
+                    data[i] = chunk.samples[i * chunk.channelCount + ch]
+                }
             }
         }
 

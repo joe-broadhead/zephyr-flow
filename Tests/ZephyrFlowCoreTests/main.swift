@@ -1741,7 +1741,7 @@ struct CoreTests {
                 for _ in 0..<chunkCount {
                     let samples = UInt64(rnd(4000)) + 16
                     captured &+= samples
-                    acct.noteCaptured(sourceSamples: samples)
+                    acct.noteCaptured(sourceSamples: samples, sourceRate: 16000)
                     let out = UInt64((Double(samples) * ratio).rounded())
                     converted &+= out
                     acct.noteConverted(engineSamples: out)
@@ -1757,7 +1757,7 @@ struct CoreTests {
         do {
             // Gap/overflow => degraded, never completes.
             var acct = AudioFrameAccounting()
-            acct.noteCaptured(sourceSamples: 16000)
+            acct.noteCaptured(sourceSamples: 16000, sourceRate: 16000)
             acct.noteDropped(sourceSamples: 8000, reason: .overflow)
             acct.noteConverted(engineSamples: 8000)
             acct.noteDelivered(engineSamples: 8000)
@@ -1766,7 +1766,7 @@ struct CoreTests {
                 acct.isDegraded && !acct.reconciles(converterRatio: 1.0, roundingToleranceSamples: 0))
             // Delivered < converted => mismatch.
             var m = AudioFrameAccounting()
-            m.noteCaptured(sourceSamples: 16000)
+            m.noteCaptured(sourceSamples: 16000, sourceRate: 16000)
             m.noteConverted(engineSamples: 16000)
             m.noteDelivered(engineSamples: 15000)
             check(
@@ -1774,7 +1774,7 @@ struct CoreTests {
                 !m.reconciles(converterRatio: 1.0, roundingToleranceSamples: 0))
             // Exact success.
             var ok = AudioFrameAccounting()
-            ok.noteCaptured(sourceSamples: 16000)
+            ok.noteCaptured(sourceSamples: 16000, sourceRate: 16000)
             ok.noteConverted(engineSamples: 16000)
             ok.noteDelivered(engineSamples: 16000)
             check(
@@ -1782,12 +1782,44 @@ struct CoreTests {
                 ok.reconciles(converterRatio: 1.0, roundingToleranceSamples: 0))
             // Converter rounding within explicit tolerance.
             var r = AudioFrameAccounting()
-            r.noteCaptured(sourceSamples: 16000)
+            r.noteCaptured(sourceSamples: 16000, sourceRate: 16000)
             r.noteConverted(engineSamples: 8000)
             r.noteDelivered(engineSamples: 8000)
             check(
                 "2248 ratio rounding within tolerance",
                 r.reconciles(converterRatio: 0.5, roundingToleranceSamples: 1))
+        }
+
+        // ===== R1.2 regression: non-16k source rate reconciles correctly =====
+        do {
+            // Review R1.2: the old code hardcoded 16k/16k for the converter
+            // ratio, so any source rate other than 16 kHz failed
+            // reconciliation even with a perfect conversion.
+            var acct = AudioFrameAccounting()
+            let sourceRate = 44_100.0
+            let captured = UInt64(44_100 * 10)   // 10 s of 44.1 kHz
+            acct.noteCaptured(sourceSamples: captured, sourceRate: sourceRate)
+            // Perfect conversion to 16 kHz: 441000 * (16000/44100) = 160000.
+            let converted = UInt64((Double(captured) * (16000.0 / sourceRate)).rounded())
+            acct.noteConverted(engineSamples: converted)
+            acct.noteDelivered(engineSamples: converted)
+            let ratio = 16000.0 / acct.sourceSampleRate
+            check(
+                "R1.2 non-16k source rate reconciles",
+                ratio == 16000.0 / 44100.0
+                    && acct.reconciles(converterRatio: ratio, roundingToleranceSamples: 64))
+            // 48 kHz too.
+            var acct48 = AudioFrameAccounting()
+            let src48 = 48_000.0
+            let cap48 = UInt64(48_000 * 5)
+            acct48.noteCaptured(sourceSamples: cap48, sourceRate: src48)
+            let conv48 = UInt64((Double(cap48) * (16000.0 / src48)).rounded())
+            acct48.noteConverted(engineSamples: conv48)
+            acct48.noteDelivered(engineSamples: conv48)
+            let ratio48 = 16000.0 / acct48.sourceSampleRate
+            check(
+                "R1.2 48k source rate reconciles",
+                acct48.reconciles(converterRatio: ratio48, roundingToleranceSamples: 64))
         }
         do {
             // Drain barrier: finalization waits for a delayed final chunk.

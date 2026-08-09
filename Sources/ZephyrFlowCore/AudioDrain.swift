@@ -27,6 +27,10 @@ public enum AudioDegradeReason: String, Codable, CaseIterable, Sendable, Equatab
 /// converter rounding defined separately and explicitly.
 public struct AudioFrameAccounting: Sendable, Equatable {
     /// Source-rate samples accepted by the channel (captured).
+    /// Source sample rate observed from the capture chunks (Hz). Chunks in
+    /// one session share the hardware source rate; the converter resamples to
+    /// the engine rate. Used for the conversion ratio (review R1.2).
+    public private(set) var sourceSampleRate: Double = 16_000
     public private(set) var capturedSourceSamples: UInt64 = 0
     /// Engine-rate samples produced by the converter.
     public private(set) var convertedEngineSamples: UInt64 = 0
@@ -43,7 +47,8 @@ public struct AudioFrameAccounting: Sendable, Equatable {
 
     public var isDegraded: Bool { !degradeReasons.isEmpty }
 
-    public mutating func noteCaptured(sourceSamples: UInt64) {
+    public mutating func noteCaptured(sourceSamples: UInt64, sourceRate: Double) {
+        if sourceRate > 0 { sourceSampleRate = sourceRate }
         capturedSourceSamples &+= sourceSamples
     }
 
