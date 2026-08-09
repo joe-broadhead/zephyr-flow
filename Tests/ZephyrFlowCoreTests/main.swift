@@ -694,6 +694,50 @@ struct CoreTests {
             check("late events rejected after terminal", lateRejected)
         }
 
+        // ===== R2/3 regression: review-retry does not strand the state machine =====
+        do {
+            // Review R2/3: a target-change review must NOT drive the control
+            // model terminal (that would make retry's targetValidationSucceeded
+            // illegal and silently ignored). The session stays in
+            // .resolvingTarget during review; retry re-validates and reaches
+            // .completed. Simulate the exact session sequence.
+            var c = SessionControlModel()
+            _ = c.begin()
+            _ = c.stage(.readyToCapture)  // capturing
+            _ = c.stage(.stop)  // draining
+            _ = c.stage(.drainFinished)  // transcribing
+            _ = c.stage(.transcriptionFinished)  // transforming
+            _ = c.stage(.transformationFinished)  // resolvingTarget
+            check(
+                "R2/3 before review: resolvingTarget (nonterminal)",
+                c.state == .resolvingTarget && !c.state.isTerminal)
+            // Review shown: do NOT stage .targetChanged (stays resolvingTarget).
+            // Retry re-validates and completes.
+            let retry = c.stage(.targetValidationSucceeded)
+            var retryAccepted = false
+            if case .accepted(let st) = retry, st == .inserting { retryAccepted = true }
+            check("R2/3 retry after review is legal (not rejected)", retryAccepted)
+            _ = c.stage(.insertionSucceeded)
+            check(
+                "R2/3 retry reaches completed terminal",
+                c.state == .completed && c.terminal == .completed)
+            // A session that instead cancels from review lands cancelled.
+            var c2 = SessionControlModel()
+            _ = c2.begin()
+            _ = c2.stage(.readyToCapture)
+            _ = c2.stage(.stop)
+            _ = c2.stage(.drainFinished)
+            _ = c2.stage(.transcriptionFinished)
+            _ = c2.stage(.transformationFinished)
+            check(
+                "R2/3 review state nonterminal before cancel",
+                c2.state == .resolvingTarget)
+            _ = c2.cancel()
+            check(
+                "R2/3 cancel from review -> cancelled",
+                c2.state == .cancelled && c2.terminal == .cancelled)
+        }
+
         // ===== R1.5 regression: finish(category:) drives terminal outcome =====
         do {
             // Review R1.5: finishTerminal must drive the CONTROL state machine

@@ -508,7 +508,9 @@ public actor DictationSession {
         // and never auto-insert (fail-closed review-only, JOE-2259).
         if !sessionAllowsAutomaticSideEffects {
             _ = control.stage(.transformationFinished)
-            _ = control.stage(.targetSecure)
+            // Review R2/3: don't force terminal here — review is shown and the
+            // session is still alive (retry/discard/cancel legal). The control
+            // model stays nonterminal; terminal is set on actual session end.
             let conservative = await provider.applyFlow(
                 FlowRequest(
                     sessionID: sessionID, text: final.text, style: .clean,
@@ -606,22 +608,24 @@ public actor DictationSession {
                 return true
             }
         case .targetChanged, .targetGone, .notEditable:
-            _ = control.stage(.targetChanged)
+            // Review R2/3: do NOT drive the control model to a terminal state
+            // before showing review — the session is still alive and retry is
+            // legal. The control model STAYS in .resolvingTarget; retry
+            // re-stages .targetValidationSucceeded (legal from there), and
+            // only the actual session end (retry success / discard / cancel)
+            // finalizes a terminal outcome.
             publish(phase: .review, interim: retainedText, level: state.audioLevel)
             await handleReviewCommands(secureOnly: false)
             return true
         case .targetUnknown:
-            _ = control.stage(.targetUnknown)
             publish(phase: .review, interim: retainedText, level: state.audioLevel)
             await handleReviewCommands(secureOnly: false)
             return true
         case .secureTarget:
-            _ = control.stage(.targetSecure)
             publish(phase: .review, interim: retainedText, level: state.audioLevel)
             await handleReviewCommands(secureOnly: false)
             return true
         case .deadlineExceeded:
-            _ = control.stage(.deadlineViolated)
             publish(phase: .review, interim: retainedText, level: state.audioLevel)
             await handleReviewCommands(secureOnly: false)
             return true
