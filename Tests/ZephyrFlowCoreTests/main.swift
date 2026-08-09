@@ -42,6 +42,9 @@ actor FakeSessionStages: DictationSessionStageProviding {
     var cancelCount = 0
     var prepareCount = 0
     var capturedSessionIDs: [SessionID] = []
+    /// Review R2/4 test hook: block stopCapture for this long so a cancel can
+    /// land mid-processing deterministically.
+    var stopDelayNanos: UInt64 = 0
 
     static func makeSnapshot(
         sessionID: SessionID,
@@ -67,6 +70,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
     func setPartials(_ p: [String]) { partials = p }
     func setValidationOutcomes(_ o: [TargetValidationOutcome]) { validationOutcomes = o }
     func setCompleteness(_ c: EngineResultCompleteness) { completeness = c }
+    func setStopDelay(_ ns: UInt64) { stopDelayNanos = ns }
 
     func prepare(sessionID: SessionID) async {
         prepareCount += 1
@@ -90,7 +94,10 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func stopCapture() async -> SessionAudioSummary {
-        SessionAudioSummary(
+        if stopDelayNanos > 0 {
+            try? await Task.sleep(nanoseconds: stopDelayNanos)
+        }
+        return SessionAudioSummary(
             capturedSourceSamples: 16000,
             deliveredEngineSamples: 16000,
             droppedSamples: 0,
@@ -736,6 +743,62 @@ struct CoreTests {
             check(
                 "R2/3 cancel from review -> cancelled",
                 c2.state == .cancelled && c2.terminal == .cancelled)
+        }
+
+        // ===== R2/4 regression: durable command mailbox (no lost controls) =====
+        do {
+            // Review R2/4: a cancel sent BEFORE run() installs the consumer
+            // must not be lost — the mailbox is created at init with buffering.
+            let provider = FakeSessionStages()
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: false,
+                    copyOnlyOverrideBundleIDs: []))
+            // Cancel before run() ever starts (continuation must already exist).
+            await s.cancel()
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            check(
+                "R2/4 pre-run cancel not lost (no success/insertion)",
+                states.contains { $0.phase == SessionPhase.hidden }
+                    && !states.contains { $0.phase == .success })
+            check(
+                "R2/4 cancel-during-capture provider cancelled",
+                await provider.cancelCount >= 1)
+        }
+        do {
+            // Review R2/4: cancel DURING processing (stopCapture blocks) must
+            // prevent insertion. The fake blocks in stopCapture so the cancel
+            // deterministically lands while the pipeline is mid-processing.
+            let provider = FakeSessionStages()
+            await provider.setPartials(["hello"])
+            await provider.setStopDelay(300_000_000)  // 300ms block in stopCapture
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 30_000_000)
+            await s.end()  // enters stopCapture (blocked 300ms)
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            await s.cancel()  // while stopCapture is blocked
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            check(
+                "R2/4 cancel during processing prevents success",
+                !states.contains { $0.phase == .success })
+            check(
+                "R2/4 cancel during processing lands hidden/cancelled",
+                states.contains { $0.phase == SessionPhase.hidden })
         }
 
         // ===== R1.5 regression: finish(category:) drives terminal outcome =====

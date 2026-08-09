@@ -326,6 +326,9 @@ public actor DictationSession {
     private var state = SessionUIState()
     private var retainedText = ""
     private var released = false
+    /// Review R2/4: set when cancel() is called, so cancellation is observed
+    /// at every stage even without an active command consumer.
+    private var cancelRequested = false
 
     public init(
         provider: any DictationSessionStageProviding,
@@ -349,6 +352,14 @@ public actor DictationSession {
         self.control = control
         self.sessionID = sid
         self.broadcaster = SessionStateBroadcaster<SessionUIState>(initial: SessionUIState())
+        // Review R2/4: create a DURABLE command mailbox at init so control
+        // events (end/cancel/retry/discard) are never lost before run()
+        // installs the consumer. Buffering keeps commands sent during setup
+        // and processing stages; the consumer drains them in order.
+        var cont: AsyncStream<Command>.Continuation?
+        let stream = AsyncStream<Command>(bufferingPolicy: .bufferingNewest(64)) { cont = $0 }
+        self.commandContinuation = cont
+        self.commandStream = stream
     }
 
     // MARK: - UI subscription (reconnect-safe)
@@ -364,6 +375,10 @@ public actor DictationSession {
     }
 
     public func cancel() {
+        // Review R2/4: set a durable flag so cancel is observed even when no
+        // command consumer is active (e.g. during drain/finalize/Flow); also
+        // yield to the stream for review-phase command handling.
+        cancelRequested = true
         commandContinuation?.yield(.cancel)
     }
 
@@ -383,9 +398,9 @@ public actor DictationSession {
         guard !released else { return }
         publish(phase: .listening, interim: "", level: 0.05)
 
-        var commands: AsyncStream<Command>!
-        commands = AsyncStream { self.commandContinuation = $0 }
-        self.commandStream = commands
+        guard let commands = commandStream else { return }
+        // commandStream was created at init (durable mailbox); the consumer
+        // drains buffered control events in order.
 
         // Session-scoped preparation: AX target snapshot + engine binding.
         await provider.prepare(sessionID: sessionID)
@@ -455,6 +470,8 @@ public actor DictationSession {
             finishTerminal(category: .failed)
             return
         }
+        // Review R2/4: a cancel during capture must preempt the stop/insert.
+        if await checkCancellation() { return }
         // Stage 2: stop capture + drain -> audio summary (counts only).
         captureTask?.cancel()
         levelsTask?.cancel()
@@ -473,6 +490,8 @@ public actor DictationSession {
             return
         }
 
+        // Review R2/4: cancel before final decode.
+        if await checkCancellation() { return }
         // Stage 3: finalize decode -> explicit engine result.
         if control.stage(.drainFinished).isRejected {
             await provider.cancel()
@@ -507,6 +526,8 @@ public actor DictationSession {
         // Stage 4: Flow — secure/unknown sessions never run structural Flow
         // and never auto-insert (fail-closed review-only, JOE-2259).
         if !sessionAllowsAutomaticSideEffects {
+            // Review R2/4: cancel before the sensitive review/Flow path.
+            if await checkCancellation() { return }
             _ = control.stage(.transformationFinished)
             // Review R2/3: don't force terminal here — review is shown and the
             // session is still alive (retry/discard/cancel legal). The control
@@ -525,6 +546,8 @@ public actor DictationSession {
         }
 
         _ = control.stage(.transformationFinished)
+        // Review R2/4: cancel before Flow transformation.
+        if await checkCancellation() { return }
         let flowOutcome = await provider.applyFlow(
             FlowRequest(
                 sessionID: sessionID, text: final.text, style: settings.defaultFlowStyle,
@@ -566,6 +589,10 @@ public actor DictationSession {
         switch validation.outcome {
         case .validated:
             _ = control.stage(.targetValidationSucceeded)
+            // Review R2/4: the LAST cancellation gate — immediately before the
+            // transcript-bearing side effect. A cancel during processing must
+            // prevent insertion, not just be buffered until review.
+            if await checkCancellation() { return true }
             let result = await provider.insert(
                 SessionInsertRequest(
                     text: retainedText,
@@ -630,6 +657,17 @@ public actor DictationSession {
             await handleReviewCommands(secureOnly: false)
             return true
         }
+    }
+
+    /// Review R2/4: check whether a cancel is pending (flag set by cancel(),
+    /// read by every side-effecting stage). Non-consuming — does not disturb
+    /// the command stream for review phases.
+    private func checkCancellation() async -> Bool {
+        guard cancelRequested else { return false }
+        await provider.cancel()
+        publish(phase: .hidden, interim: "", level: 0.05)
+        finishTerminal(category: .cancelled)
+        return true
     }
 
     /// Review phase loop: the user may retry (fresh validation/insertion),
