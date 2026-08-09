@@ -19,7 +19,7 @@ external completion gate.
   no microphone/AX/factory/notarization/independent-review evidence was
   fabricated. Real-device and human-gate issues carry exact runbooks.
 
-## What was built (46 implemented issues)
+## What was built (47 done-with-evidence issues; 46 implementation + 1 spec-tooling)
 
 - **Contracts/governance (M0):** JOE-2240/2241/2242/2245/2267/2275 —
   threat model, outcome policies, fail-closed sensitivity classification,

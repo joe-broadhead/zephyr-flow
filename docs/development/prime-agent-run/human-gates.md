@@ -4,8 +4,9 @@ Every issue below is held for human judgment, real-device evidence or
 external credentials. Nothing here is agent self-approved. Prepared artifacts
 are committed; the remaining action is exactly what a human must do.
 
-Repo: `agent/zephyr-production-run-20260808T103416Z` (head listed in
-final-report.md). All paths relative to the repo root. The app for manual
+Repo: `agent/zephyr-review-fixes` (remediation branch; head `3047bbf` — the
+reviewed production-run branch `0e5f0b2` was BLOCKED and reworked here). All
+paths relative to the repo root. The app for manual
 steps: `./Scripts/build_app.sh debug && open Dist/ZephyrFlow.app`.
 
 ---

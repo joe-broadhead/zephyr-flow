@@ -1229,7 +1229,9 @@ struct CoreTests {
             check(
                 "2269 unverified is completed action but not verified",
                 unverified.isCompletedAction && !unverified.isVerifiedSuccess)
-            check("2269 unverified message distinguishes", unverified.userFacingMessage == "Inserted — unverified")
+            check(
+                "2269 unverified message distinguishes",
+                unverified.userFacingMessage == "Paste sent — verify destination")
             check("2269 copied keeps history + green", copied.permitsGreenSuccessUI && copied.permitsHistoryRetention)
             check(
                 "2269 changed/gone/unknown/secure/notEditable uncertain + no green",

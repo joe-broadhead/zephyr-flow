@@ -434,7 +434,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var language: SupportedLanguage
     /// When true (default), user audio/transcripts are not sent off-device (no analytics; Apple Speech fail-closed).
     public var localOnlyMode: Bool
-    /// Allows one-time Whisper model file downloads (does not upload audio). Default on so Whisper Tiny works out of the box.
+    /// Allows one-time Whisper model file downloads (does not upload audio). Default OFF until explicit onboarding consent (review R6.1); enabling it makes Whisper Tiny work.
     public var allowModelDownloads: Bool
     public var launchAtLogin: Bool
     public var listeningMode: ListeningMode
@@ -732,7 +732,7 @@ public enum InsertionOutcome: Sendable, Equatable {
     public var userFacingMessage: String {
         switch self {
         case .verifiedInserted: return "Inserted"
-        case .eventPostedUnverified: return "Inserted — unverified"
+        case .eventPostedUnverified: return "Paste sent — verify destination"
         case .explicitlyCopiedByUser: return "Copied to clipboard"
         case .automaticCopy: return "Copied to clipboard (automatic) — verify the destination"
         case .automaticCopyBlocked: return "Automatic clipboard blocked — review before copying"

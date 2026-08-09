@@ -185,8 +185,6 @@ final class TargetValidationService: TargetValidationProviding {
         }
     }
 
-    private var maxStepNanos: UInt64 = 50_000_000
-
     // MARK: AX helpers
 
     private func focusedAXApplication() -> NSRunningApplication? {
