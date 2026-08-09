@@ -3093,6 +3093,57 @@ struct CoreTests {
             try? FileManager.default.removeItem(at: dir)
         }
 
+        // ===== R7 regression: fail-closed encrypted-history initialization =====
+        do {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("zf-history-r7-\(UUID().uuidString)", isDirectory: true)
+            let file = dir.appendingPathComponent("history.json")
+            // Sealed (encrypted) data written under a key, then the key goes
+            // missing: writes must be REFUSED, never overwritten with plaintext.
+            var keyStore: HistoryCryptoKey? = HistoryCryptoKey(
+                keyID: "k1", material: Data(repeating: 0xAB, count: 32))
+            let repo = ActorHistoryRepository(fileURL: file, keyProvider: { keyStore })
+            try? await repo.configureEncryption(keyProvider: { keyStore })
+            try? await repo.load()
+            await repo.add(
+                HistoryStorageEntry(
+                    timestamp: Date(), text: "sealed", duration: 1, modelUsed: "Tiny",
+                    sensitivityClass: "normal"))
+            // Now the key is lost; a fresh repo with no key sees sealed data.
+            let noKey = ActorHistoryRepository(fileURL: file, keyProvider: { nil })
+            try? await noKey.load()
+            check(
+                "R7 sealed data unreadable without key",
+                await noKey.sealedDataUnreadable)
+            // A write must fail closed (no plaintext overwrite).
+            await noKey.add(
+                HistoryStorageEntry(
+                    timestamp: Date(), text: "should-not-write", duration: 1,
+                    modelUsed: "Tiny", sensitivityClass: "normal"))
+            let writeErr = await noKey.lastWriteError
+            check("R7 missing key refuses write (fail-closed)", writeErr != nil)
+            // The on-disk file is still sealed (not overwritten with plaintext).
+            let data = try? Data(contentsOf: file)
+            let sealedStill =
+                data.flatMap {
+                    try? JSONDecoder().decode(
+                        EncryptedHistoryDocument.self, from: $0)
+                } != nil
+            check("R7 sealed file preserved (no plaintext overwrite)", sealedStill)
+            // Encryption-configured-but-key-missing also refuses writes.
+            let cfgNoKey = ActorHistoryRepository(fileURL: file, keyProvider: { nil })
+            try? await cfgNoKey.configureEncryption(keyProvider: { nil })
+            try? await cfgNoKey.load()
+            await cfgNoKey.add(
+                HistoryStorageEntry(
+                    timestamp: Date(), text: "x", duration: 1, modelUsed: "T",
+                    sensitivityClass: "normal"))
+            check(
+                "R7 configured-but-key-missing refuses write",
+                await cfgNoKey.lastWriteError != nil)
+            try? FileManager.default.removeItem(at: dir)
+        }
+
         // ===== JOE-2263: versioned settings storage =====
         do {
             // Envelope round-trip with provenance.

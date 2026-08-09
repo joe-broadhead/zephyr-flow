@@ -17,7 +17,18 @@ final class HistoryViewModel: ObservableObject {
     private init() {}
 
     func start() {
-        Task { await reload() }
+        Task {
+            // Review R7: ensure the repository is loaded (not just reading
+            // in-memory entries); surface load errors.
+            if !(await ActorHistoryRepository.shared.isInitialized) {
+                do {
+                    try await ActorHistoryRepository.shared.load()
+                } catch {
+                    lastError = "Could not load history: \(error.localizedDescription)"
+                }
+            }
+            await reload()
+        }
     }
 
     func reload() async {

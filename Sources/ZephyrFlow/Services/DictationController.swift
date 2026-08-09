@@ -64,6 +64,10 @@ final class DictationController: ObservableObject {
     private var reviewClearTask: Task<Void, Never>?
     /// Retained for review presentation (session identity is immutable).
     private var lastSessionID: SessionID?
+    /// Review R7: true once history key config + load completed (awaited in
+    /// start()). Session admission waits for this so history writes are never
+    /// made before encryption initialization.
+    private var historyReady = false
 
     init(environment: AppEnvironment) {
         self.environment = environment
@@ -74,14 +78,22 @@ final class DictationController: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        // JOE-2262: at-rest history encryption — non-synchronizing Keychain
-        // key, AfterFirstUnlock (launch-at-login compatible). Key material
-        // never enters logs/metrics/backups/support bundles.
+        // JOE-2262 / review R7: at-rest history encryption — non-synchronizing
+        // Keychain key, AfterFirstUnlock. Key material never enters
+        // logs/metrics/backups/support bundles. Initialization is AWAITED
+        // before session admission (history writes are fail-closed until the
+        // repository is initialized), and load errors are surfaced rather than
+        // swallowed.
         Task {
             let key = HistoryKeychainStore.shared.loadOrCreate()
             await ActorHistoryRepository.shared.configureEncryption(
                 keyProvider: { key })
-            try? await ActorHistoryRepository.shared.load()
+            do {
+                try await ActorHistoryRepository.shared.load()
+            } catch {
+                ZFLog.error("History load failed: \(error.localizedDescription)")
+            }
+            self.historyReady = true
         }
         privacy.refresh()
         hotkey.configure(
@@ -221,6 +233,20 @@ final class DictationController: ObservableObject {
         guard admissionOpen, session == nil else {
             ZFLog.info("beginSession ignored — admission closed or session active")
             return
+        }
+        // Review R7: do not admit a session until history encryption init has
+        // completed (fail-closed; a Keychain failure surfaces as an error).
+        if !historyReady {
+            ZFLog.info("beginSession waiting for history initialization")
+            var waited: UInt64 = 0
+            while !historyReady, waited < 5_000_000_000 {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                waited += 50_000_000
+            }
+            if !historyReady {
+                showError("History storage could not be initialized — check Keychain access.")
+                return
+            }
         }
         // If we're actually running begin now, a prior pending reference is
         // stale (e.g. a cancelled one); clear it so a future release sees the

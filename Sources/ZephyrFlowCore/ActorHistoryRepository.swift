@@ -34,6 +34,16 @@ public actor ActorHistoryRepository: HistoryRepository {
     /// Last persistence error (surfaced to UI; review R4.1). Nil when the
     /// last write succeeded. Kept as a string (user-safe, no payload).
     public private(set) var lastWriteError: String?
+    /// Review R7: explicit initialization state. Writes are fail-closed until
+    /// the repository is initialized (key configured + load completed). Once
+    /// encryption is configured or sealed data exists, a missing key NEVER
+    /// falls back to plaintext.
+    public private(set) var isInitialized = false
+    /// Review R7: true once encryption has been configured (Keychain key).
+    public private(set) var encryptionConfigured = false
+    /// Review R7: true when sealed (encrypted) data exists on disk and the key
+    /// is unavailable — writes must be refused (never overwrite with plaintext).
+    public private(set) var sealedDataUnreadable = false
 
     public init(
         fileURL: URL? = nil,
@@ -70,6 +80,7 @@ public actor ActorHistoryRepository: HistoryRepository {
     /// uses the non-synchronizing Keychain item; tests inject fakes).
     public func configureEncryption(keyProvider: @escaping @Sendable () -> HistoryCryptoKey?) {
         self.keyProvider = keyProvider
+        self.encryptionConfigured = true
     }
 
     /// Load + migrate on first use (recoverable from corruption).
@@ -92,10 +103,14 @@ public actor ActorHistoryRepository: HistoryRepository {
                 {
                     document = decrypted
                     recoveryState = nil
+                    sealedDataUnreadable = false
                 } else {
                     document = HistoryDocument(entries: [])
                     recoveryState =
                         "history key missing or invalid — sealed content retained on disk, no plaintext exposed"
+                    // Review R7: sealed data exists but the key is unavailable —
+                    // writes MUST be refused, never overwrite with plaintext.
+                    sealedDataUnreadable = true
                 }
             } else {
                 document = try decode(data)
@@ -111,6 +126,7 @@ public actor ActorHistoryRepository: HistoryRepository {
             document = HistoryDocument(entries: [])
             throw HistoryRepositoryError.corruptionDetected
         }
+        isInitialized = true
     }
 
     private func decode(_ data: Data) throws -> HistoryDocument {
@@ -177,6 +193,18 @@ public actor ActorHistoryRepository: HistoryRepository {
 
     private func persistOrThrow() async throws {
         do {
+            // Review R7: fail-closed writes. If sealed data exists but the key
+            // is unavailable, or encryption was configured but the key is
+            // missing NOW, refuse to write plaintext (never overwrite the
+            // sealed file with plaintext).
+            if sealedDataUnreadable {
+                lastWriteError = "history key unavailable — refusing to overwrite sealed data"
+                throw HistoryRepositoryError.permissionDenied
+            }
+            if encryptionConfigured, keyProvider() == nil {
+                lastWriteError = "history encryption configured but key missing — refusing plaintext write"
+                throw HistoryRepositoryError.permissionDenied
+            }
             let data: Data
             if let key = keyProvider() {
                 usingEncryption = true
