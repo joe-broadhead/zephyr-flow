@@ -468,7 +468,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         launchAtLogin: Bool,
         listeningMode: ListeningMode,
         hasCompletedOnboarding: Bool,
-        saveHistory: Bool = true,
+        saveHistory: Bool = false,
         debugLogging: Bool = false,
         flowBackend: FlowBackend = .regex,
         insertionMode: InsertionMode = .automatic,
@@ -511,7 +511,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.launchAtLogin = try c.decode(Bool.self, forKey: .launchAtLogin)
         self.listeningMode = try c.decode(ListeningMode.self, forKey: .listeningMode)
         self.hasCompletedOnboarding = try c.decode(Bool.self, forKey: .hasCompletedOnboarding)
-        self.saveHistory = try c.decodeIfPresent(Bool.self, forKey: .saveHistory) ?? true
+        // Review REQ-5: a missing saveHistory decodes to FALSE (privacy-safe,
+        // matching the new-install default) — a migrated/partial payload must
+        // never unexpectedly enable history.
+        self.saveHistory = try c.decodeIfPresent(Bool.self, forKey: .saveHistory) ?? false
         self.debugLogging = try c.decodeIfPresent(Bool.self, forKey: .debugLogging) ?? false
         self.flowBackend = try c.decodeIfPresent(FlowBackend.self, forKey: .flowBackend) ?? .regex
         self.insertionMode = try c.decodeIfPresent(InsertionMode.self, forKey: .insertionMode) ?? .automatic

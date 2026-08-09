@@ -428,6 +428,18 @@ struct CoreTests {
             check("save history default off", !s.saveHistory)
         }
 
+        // ===== REQ-5 regression: missing saveHistory decodes privacy-safe =====
+        do {
+            // A migrated/partial settings payload WITHOUT saveHistory must NOT
+            // enable history (old decode defaulted to true).
+            let partial: [String: Any] = ["localOnlyMode": true]
+            let data = try! JSONSerialization.data(withJSONObject: partial)
+            let loaded = SettingsStorageCoordinator.load(data: data)
+            check("REQ-5 missing saveHistory decodes false", !loaded.settings.saveHistory)
+            // And the static default is history-off.
+            check("REQ-5 default history off", !AppSettings.default.saveHistory)
+        }
+
         // Download gate (model files only — independent of Local Only audio policy)
         do {
             var s = AppSettings.default
