@@ -49,7 +49,10 @@ if [[ $SC_BUILD_RC -ne 0 ]]; then
   grep -E 'error:' /tmp/zf_sc_build.log | head -20 || true
   fail "strict-concurrency build failed"
 fi
-grep 'warning:' /tmp/zf_sc_build.log || true \
+# Review B9: group the `|| true` so it applies to grep only, not the whole
+# pipeline. (Shell pipelines bind tighter than `||`; the ungrouped form made
+# WARN_LOG empty whenever warnings existed, disabling the baseline diff.)
+( grep 'warning:' /tmp/zf_sc_build.log || true ) \
   | sed -E 's/^[[:space:]]*[|`-]*[[:space:]]*//' \
   | sed -E 's/^.*\/Sources\/([^:]+):[0-9]+:[0-9]+:/\1:/' \
   | sed -E 's/^.*\/Tests\/([^:]+):[0-9]+:[0-9]+:/\1:/' \

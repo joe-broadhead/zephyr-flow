@@ -120,7 +120,6 @@ actor InsertionService: InsertionServiceProtocol {
 
             case .axSelectedText, .axValue:
                 guard AXIsProcessTrusted() else { continue }
-                let allowFallback = strategy == .axValue
                 let axOutcome = await insertViaAccessibility(
                     text,
                     validatedTargetBundle: bundle,

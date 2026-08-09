@@ -1,7 +1,7 @@
-# Pinned strict-concurrency warnings (JOE-2291, review R8.1).
-# Normalized to FILE: message (line numbers removed) so edits do not create
-# spurious 'new' warnings. Regenerate with the gate-3 pipeline from a clean
-# build; NEW warnings (file+message not in this list) fail CI.
+# Pinned strict-concurrency warnings (JOE-2291, review R8.1/B9).
+# Normalized to FILE: message (line numbers removed). Regenerate with the
+# gate-3 pipeline from a clean build; NEW warnings (file+message not in this
+# list) fail CI. Gate-3 pipeline is grouped so grep||true applies to grep only.
 `- warning: 's7' mutated after capture by sendable closure
 `- warning: add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'ApplicationServices'
 `- warning: add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'AVFAudio'
@@ -13,7 +13,6 @@
 `- warning: initialization of immutable value 'copied' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
 `- warning: initialization of immutable value 'monitor' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
 `- warning: initialization of immutable value 't0' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
-`- warning: initialization of immutable value 'total' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
 `- warning: instance method 'lock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
 `- warning: instance method 'unlock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
 `- warning: left side of nil coalescing operator '??' has non-optional type '[NSPasteboard.PasteboardType]', so the right side is never used
@@ -73,7 +72,6 @@ ZephyrFlowCoreTests/main.swift: warning: concurrently-executed local function 'k
 ZephyrFlowCoreTests/main.swift: warning: concurrently-executed local function 'manifest(_:digests:)' must be marked as '@Sendable'; this is an error in the Swift 6 language mode
 ZephyrFlowCoreTests/main.swift: warning: immutable value 'expect' was never used; consider replacing with '_' or removing it [#no-usage]
 ZephyrFlowCoreTests/main.swift: warning: initialization of immutable value 'copied' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
-ZephyrFlowCoreTests/main.swift: warning: initialization of immutable value 'total' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
 ZephyrFlowCoreTests/main.swift: warning: instance method 'lock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
 ZephyrFlowCoreTests/main.swift: warning: instance method 'unlock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
 ZephyrFlowCoreTests/main.swift: warning: mutation of captured var 'delivered' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
