@@ -246,7 +246,9 @@ public enum AxBoundedResult<Value: Sendable>: Sendable {
 
 /// Bounded runner for a single AX call. The synchronous AX call executes on a
 /// dedicated detached thread; the caller awaits up to a deadline; results that
-/// arrive after the deadline are ignored (never applied). A hung target can
+/// arrive after the deadline are ignored as RESULTS, but a synchronous side
+/// effect may have ALREADY applied — callers must treat .deadlineExceeded as
+/// 'the write may have applied'. A hung target can
 /// therefore never block the session/UI indefinitely.
 public enum AxBoundedRunner {
     /// - Parameters:
@@ -331,8 +333,11 @@ public enum AxBoundedRunner {
         if let result {
             return .completed(result)
         }
-        // Deadline hit: the late result (if any) is dropped — never applied.
-        // The detached operation may still be running; we do NOT await it.
+        // Deadline hit: the late result (if any) is dropped as a RESULT, but
+        // the detached operation may STILL BE RUNNING and its synchronous side
+        // effect may apply after we return. We do NOT await it; the caller
+        // receives .deadlineExceeded (mapped to .writeMayHaveApplied) and must
+        // verify the target before any retry.
         return .deadlineExceeded(elapsedNanos: nowNanos() &- startedAtNanos)
     }
 }

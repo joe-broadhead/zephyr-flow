@@ -47,7 +47,7 @@ if [[ $SC_BUILD_RC -ne 0 ]]; then
   grep -E 'error:' /tmp/zf_sc_build.log | head -20 || true
   fail "strict-concurrency build failed"
 fi
-grep 'warning:' /tmp/zf_sc_build.log \
+grep 'warning:' /tmp/zf_sc_build.log || true \
   | sed -E 's/^[[:space:]]*[|`-]*[[:space:]]*//' \
   | sed -E 's/^.*\/Sources\/([^:]+):[0-9]+:[0-9]+:/\1:/' \
   | sed -E 's/^.*\/Tests\/([^:]+):[0-9]+:[0-9]+:/\1:/' \

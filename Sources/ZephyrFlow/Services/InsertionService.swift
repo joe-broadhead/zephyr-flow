@@ -119,8 +119,7 @@ actor InsertionService: InsertionServiceProtocol {
                 guard AXIsProcessTrusted() else { continue }
                 let allowFallback = strategy == .axValue
                 let axOutcome = await insertViaAccessibility(
-                    text, allowValueFallback: allowFallback,
-                    validatedTargetBundle: bundle)
+                    text, validatedTargetBundle: bundle)
                 switch axOutcome {
                 case .verified:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=verified")
@@ -166,7 +165,6 @@ actor InsertionService: InsertionServiceProtocol {
 
     private func insertViaAccessibility(
         _ text: String,
-        allowValueFallback: Bool,
         validatedTargetBundle: String?
     ) async -> AXInsertResult {
         // JOE-2270: consult the deterministic write policy before ANY write.

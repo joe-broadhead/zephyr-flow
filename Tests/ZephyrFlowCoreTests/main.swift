@@ -1067,7 +1067,7 @@ struct CoreTests {
             check(
                 "channel capacity respected (memory bounded)",
                 stats.capacity == 64 && stats.enqueued == 64
-                    && ch.occupancy == 64)
+                    && ch.acceptedEnqueueCount == 64)
             // with no consumer, overflow must have dropped the excess (64 of them)
             check("overflow counted not silent", stats.overflowDropped == 936 && !seq.isDegraded)
         }
@@ -1079,12 +1079,11 @@ struct CoreTests {
             // `capacity` chunks every later chunk overflowed forever.
             let sid = SessionID(token: "r1", sequence: 1, createdAtUptimeNanos: 0)
             let ch = BoundedAudioChannel(sessionID: sid, capacity: 16)
-            let total = 500  // many multiples of capacity
             // Deterministic wave test: enqueue a wave, fully drain it (the
             // consumer releases capacity), enqueue the next wave. Across many
             // waves, nothing overflows and everything is delivered in order.
             // This is exactly the review's required scenario: many multiples of
-            // capacity through a consumer, occupancy returning to zero.
+            // capacity through a consumer, capacity released on dequeue.
             let waves = 20
             let perWave = 8  // <= capacity so a drained wave always fits
             var produced: [UInt64] = []

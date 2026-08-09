@@ -7,7 +7,9 @@ public struct AudioChunk: Sendable, Equatable {
     public let sessionID: SessionID
     /// Monotonic producer sequence; strictly increasing per session.
     public let sequence: UInt64
-    /// Absolute sample offset since capture start (16 kHz mono reference).
+    /// Absolute sample offset since capture start, in SOURCE-RATE frames
+    /// (the producer advances it by the source frame length; the converter
+    /// resamples to the engine rate — this is NOT a 16 kHz reference).
     public let startSample: UInt64
     public let sampleRate: Double
     public let channelCount: Int
@@ -134,10 +136,11 @@ public final class BoundedAudioChannel: @unchecked Sendable {
     }
 
     public var isClosed: Bool { lock.withLock { isClosedFlag } }
-    // No separate ring now: the AsyncStream buffer is the queue. `occupancy`
-    // is retained for API compatibility and reflects accepted-not-yet-known
-    // enqueues (capacity is the bound; overflow is authoritative via yield).
-    public var occupancy: Int { lock.withLock { Int(enqueued) } }
+    // Review NIT-1: the AsyncStream buffer is the queue; its live buffered
+    // count is not directly queryable, so this reports the CUMULATIVE number
+    // of chunks accepted since start (capacity is the bound; overflow is
+    // authoritative via yield). Named honestly — NOT "occupancy".
+    public var acceptedEnqueueCount: Int { lock.withLock { Int(enqueued) } }
 
     /// ANY overflow or cross-session rejection makes the capture degraded:
     /// callers must map this to a non-ordinary outcome.
