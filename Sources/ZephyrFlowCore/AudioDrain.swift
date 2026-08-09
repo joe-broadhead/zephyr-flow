@@ -153,6 +153,12 @@ public struct AudioDrainBarrier: Sendable, Equatable {
         state = .cancelled
     }
 
+    /// True once the barrier reached a terminal state (drained, timedOut,
+    /// cancelled) — used to bound the consumer wait.
+    public var isTerminal: Bool {
+        state == .drained || state == .timedOut || state == .cancelled
+    }
+
     public mutating func markTimedOut() {
         if state == .draining { state = .timedOut }
     }

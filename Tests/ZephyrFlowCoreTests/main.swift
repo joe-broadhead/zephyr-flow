@@ -1854,6 +1854,42 @@ struct CoreTests {
                 "2248 cancelled cannot double-finalize",
                 c.noteDelivered(sequence: 5, nowNanos: 100) == .cancelled)
         }
+
+        // ===== R1.3 regression: barrier terminal states + drain-before-close =====
+        do {
+            // Review R1.3: a barrier that never receives the final sequence
+            // must reach a terminal state (timedOut) rather than strand in
+            // .draining forever; isTerminal bounds the consumer wait.
+            var stranded = AudioDrainBarrier(deadlineNanosAhead: 500)
+            stranded.begin(finalSequence: 99, nowNanos: 0)
+            // Consumer never delivers sequence 99.
+            _ = stranded.noteDelivered(sequence: 5, nowNanos: 100)
+            check("R1.3 draining not yet terminal", !stranded.isTerminal)
+            _ = stranded.noteDelivered(sequence: 6, nowNanos: 700)  // past deadline
+            check("R1.3 timedOut is terminal (bounded wait)", stranded.isTerminal)
+            check("R1.3 stranded barrier timed out", stranded.state == .timedOut)
+
+            // A correctly-drained barrier is terminal AND complete.
+            var done = AudioDrainBarrier(deadlineNanosAhead: 10_000)
+            done.begin(finalSequence: 3, nowNanos: 0)
+            _ = done.noteDelivered(sequence: 1, nowNanos: 100)
+            _ = done.noteDelivered(sequence: 2, nowNanos: 200)
+            _ = done.noteDelivered(sequence: 3, nowNanos: 300)
+            check("R1.3 drained is terminal + complete", done.isTerminal && done.isComplete)
+
+            // The orchestration invariant (review R1.3): the barrier must be
+            // begun BEFORE the channel closes so the consumer's final-sequence
+            // acknowledgment is observed. The barrier primitive drains when the
+            // final sequence arrives after begin; the ProductionSessionStages
+            // fix guarantees begin happens before audio.stop() closes the
+            // channel. Verify the primitive's contract: a final sequence
+            // delivered after begin drains (complete), and the deadline bounds
+            // the wait (never hangs).
+            var ok3 = AudioDrainBarrier(deadlineNanosAhead: 10_000)
+            ok3.begin(finalSequence: 4, nowNanos: 0)
+            _ = ok3.noteDelivered(sequence: 4, nowNanos: 500)
+            check("R1.3 final sequence after begin drains", ok3.isComplete && ok3.isTerminal)
+        }
         do {
             // Channel sample accounting (content-free counts) via BoundedAudioChannel.
             let sid = SessionID(token: "drain", sequence: 1, createdAtUptimeNanos: 0)

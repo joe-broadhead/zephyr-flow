@@ -95,25 +95,33 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             self.deliveryTask = Task { [weak self] in
                 guard let self, let converter = self.converter else { return }
                 for await chunk in channel.chunks {
+                    self.lock.lock()
                     self.accounting.noteCaptured(
                         sourceSamples: UInt64(chunk.samples.count),
                         sourceRate: chunk.sampleRate)
                     if chunk.sequence < self.sequencer.nextExpected {
                         self.accounting.noteDropped(sourceSamples: UInt64(chunk.samples.count), reason: .lateAppend)
+                        self.lock.unlock()
                         continue
                     }
                     self.sequencer.accept(chunk)
+                    self.lock.unlock()
                     guard let mono = converter.convert(chunk) else {
+                        self.lock.lock()
                         self.accounting.noteDropped(
                             sourceSamples: UInt64(chunk.samples.count), reason: .converterFailure)
+                        self.lock.unlock()
                         continue
                     }
-                    self.accounting.noteConverted(engineSamples: UInt64(mono.count))
                     await engine.appendAudio(mono)
+                    self.lock.lock()
+                    self.accounting.noteConverted(engineSamples: UInt64(mono.count))
                     self.accounting.noteDelivered(engineSamples: UInt64(mono.count))
+                    let now = self.environment.clock.nowNanos()
                     _ = self.drainBarrier.noteDelivered(
                         sequence: chunk.sequence,
-                        nowNanos: self.environment.clock.nowNanos())
+                        nowNanos: now)
+                    self.lock.unlock()
                 }
             }
             try await audio.start(sessionID: sessionID, channel: channel)
@@ -156,20 +164,49 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                 reconciled: true,
                 drainState: "n/a")
         }
-        // JOE-2248: end-of-stream drain barrier at the final accepted
-        // producer sequence; the delivery task drains through it.
+        // JOE-2248 / review R1.3: end-of-stream drain barrier at the final
+        // accepted producer sequence. BEGIN the barrier BEFORE closing
+        // admission so the delivery task's final-sequence acknowledgment is
+        // observed by the barrier (beginning after close could strand it in
+        // .draining). Then stop the capture (which closes the channel).
         var channel = self.channel
         if let finalSeq = channel?.stats().lastAcceptedSequence {
             drainBarrier.begin(
                 finalSequence: finalSeq,
                 nowNanos: environment.clock.nowNanos())
         }
-        await deliveryTask?.value
+        await audio.stop()
+
+        // Bounded wait for the consumer: a stuck engine append must not hang
+        // the session forever. Wait until the barrier drains or the barrier
+        // deadline (+ grace) expires.
+        let drainDeadlineNanos = drainBarrier.deadlineNanosAhead + 1_000_000_000
+        let waitStart = environment.clock.nowNanos()
+        while !drainBarrier.isTerminal {
+            if environment.clock.nowNanos() &- waitStart >= drainDeadlineNanos {
+                drainBarrier.markTimedOut()
+                break
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        // The delivery task must be allowed to finish its current iteration;
+        // give it a short bounded window, then proceed (barrier state is the
+        // authority, not the task handle).
+        if let delivery = deliveryTask {
+            let taskStart = environment.clock.nowNanos()
+            while !delivery.isCancelled {
+                if environment.clock.nowNanos() &- taskStart >= drainDeadlineNanos { break }
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
         let channelStats = channel?.stats()
+        lock.lock()
         let seqDegraded = sequencer.isDegraded
-        let channelDegraded = channel?.isDegraded ?? false
         let barrierTimedOut = drainBarrier.state == .timedOut
+        let barrierDrained = drainBarrier.state == .drained
         let lateAppends = drainBarrier.lateAppends
+        lock.unlock()
+        let channelDegraded = channel?.isDegraded ?? false
         if let channelStats {
             if channelStats.overflowDropped > 0 {
                 accounting.noteDropped(sourceSamples: channelStats.overflowDroppedSamples, reason: .overflow)
@@ -185,7 +222,11 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         let reconciled = accounting.reconciles(
             converterRatio: ratio,
             roundingToleranceSamples: 64)
-        let degraded = seqDegraded || channelDegraded || barrierTimedOut || lateAppends > 0 || !reconciled
+        // Review R1.3: a successful capture requires the barrier to have
+        // DRAINED (final sequence acknowledged). A barrier left .draining is
+        // degraded — it never acknowledged the end-of-stream marker.
+        let notDrained = !barrierDrained
+        let degraded = seqDegraded || channelDegraded || barrierTimedOut || notDrained || lateAppends > 0 || !reconciled
         let summary = SessionAudioSummary(
             capturedSourceSamples: accounting.capturedSourceSamples,
             deliveredEngineSamples: accounting.deliveredEngineSamples,
