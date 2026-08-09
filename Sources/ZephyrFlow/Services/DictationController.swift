@@ -275,6 +275,15 @@ final class DictationController: ObservableObject {
             for await state in await s.subscribe() {
                 self.apply(state)
             }
+            // Review R1.6: the broadcaster finished -> the session reached a
+            // terminal phase. Clear this session's references exactly once
+            // (identity-checked) so a LATER session can begin; without this,
+            // session != nil forever and beginSession() rejects every
+            // subsequent attempt.
+            let sessionID = await s.sessionID
+            await MainActor.run {
+                self.sessionDidFinish(sessionID: sessionID)
+            }
         }
         ZFLog.info("Session begun (session allocated)")
     }
@@ -361,6 +370,35 @@ final class DictationController: ObservableObject {
     }
 
     // MARK: - UI state mapping (actor -> projection)
+
+    /// Review R1.6: identity-checked exactly-once completion. Clears the
+    /// completed session's references (session/task/stateTask) only if it is
+    /// still the current session, resets hotkey toggle state where needed,
+    /// then applies terminal UI dismissal policy. Called when the session's
+    /// state broadcaster finishes.
+    private func sessionDidFinish(sessionID: SessionID) {
+        // Identity check: only clear if this finished session is still the
+        // active one (a newer session may have replaced it). lastSessionID is
+        // updated at session start, so comparing it to the finished id keeps
+        // a stale completion from wiping a newer session's references.
+        let isCurrent: Bool
+        if let currentID = lastSessionID {
+            isCurrent = (currentID == sessionID)
+        } else {
+            isCurrent = true
+        }
+        guard isCurrent else {
+            ZFLog.info("Session finish ignored — a newer session is active")
+            return
+        }
+        sessionTask?.cancel()
+        sessionTask = nil
+        stateTask = nil
+        session = nil
+        ZFLog.info("Session finished and cleared (identity-checked)")
+        // Terminal UI dismissal (idempotent).
+        dismissPanelSoon()
+    }
 
     private func apply(_ state: SessionUIState) {
         switch state.phase {
