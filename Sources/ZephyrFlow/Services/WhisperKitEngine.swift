@@ -18,7 +18,14 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     private var isFinalizing = false
     /// JOE-2250: exclusive cancellable decode ownership (single-flight).
     private var decodeOwnership = DecodeOwnership()
+    /// Review R3.2: set when a native decode was still busy at cleanup — the
+    /// instance must not be reused for a new session (unsafe ownership).
+    private var isQuarantined = false
     private var currentDecodeSessionID: SessionID?
+    /// Review R3.2: samples silently-dropped by the 60s rolling-window cap.
+    private var droppedPrefixSamples: UInt64 = 0
+    /// Review R3.2: true when the window cap was hit (visible degradation).
+    private var didTruncateWindow = false
     private var startTime: Date?
     private var lastPartialText = ""
     private var partialLoopTask: Task<Void, Never>?
@@ -119,7 +126,17 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         _ = localOnly
         guard isReady, kit != nil else { throw WhisperEngineError.notReady }
         guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
+        guard !isQuarantined else {
+            throw WhisperEngineError.notReady
+        }
         currentDecodeSessionID = sessionID
+        // Review R3.2: snapshot the requested language + decode options at
+        // session start so the fixed-language contract is actually wired into
+        // WhisperKit sessions (was never assigned).
+        currentLanguage = language
+        currentDecodeOptions = decodeOptions(language: language)
+        droppedPrefixSamples = 0
+        didTruncateWindow = false
 
         self.onPartial = onPartial
         audioSamples = []
@@ -140,8 +157,15 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         guard isStreaming, !isFinalizing else { return }
         audioSamples.append(contentsOf: samples)
         if audioSamples.count > Self.maxSampleCount {
+            // Review R3.2: never silently discard audio. The rolling window is
+            // bounded at ~60s, but the discarded prefix is COUNTED and the
+            // session is marked truncated so the final result can never claim
+            // a lossless `.complete` for a longer dictation.
+            let dropped = UInt64(audioSamples.count - Self.maxSampleCount)
             audioSamples.removeFirst(audioSamples.count - Self.maxSampleCount)
-            ZFLog.debug("WhisperKit buffer capped at ~60s (keeping newest audio)")
+            droppedPrefixSamples &+= dropped
+            didTruncateWindow = true
+            ZFLog.info("WhisperKit window capped at ~60s; dropped \(dropped) prefix samples (visible degradation)")
         }
     }
 
@@ -237,26 +261,37 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         // == delivered — required for a `complete` claim.
         let captured = UInt64(samples.count)
         let delivered = UInt64(samples.count)
+        // Review R3.2: if the 60s window cap dropped a prefix, the result is
+        // degraded-with-truncation, never a lossless `.complete`, and the
+        // dropped samples are reflected in the frame accounting.
         let accounting = EngineFrameAccounting(
             capturedSourceSamples: captured,
             deliveredEngineSamples: delivered,
             decodedEngineSamples: delivered,
-            droppedSourceSamples: 0)
-        let completeness: EngineResultCompleteness = raw.isEmpty ? .partial : .complete
-        let warnings: [EngineWarning] = raw.isEmpty ? [.partialFallback] : []
+            droppedSourceSamples: droppedPrefixSamples)
+        let truncated = didTruncateWindow
+        let completeness = SpeechCompletenessPolicy.completenessWithTruncation(
+            hasFinalText: !raw.isEmpty,
+            didTruncateWindow: truncated)
+        var warnings: [EngineWarning] = SpeechCompletenessPolicy.truncationWarnings(
+            didTruncateWindow: truncated,
+            baseWarnings: raw.isEmpty ? [.partialFallback] : [])
         cleanup()
         return EngineResult(
             text: finalText,
             completeness: completeness,
             frameAccounting: accounting,
             engine: engineIdentity(),
-            languageRequested: nil, languageDetected: nil,
+            languageRequested: currentLanguage.bcp47,
+            languageDetected: currentLanguage.bcp47,
             confidence: nil, confidenceSource: nil,
             startedAtUptimeNanos: nil,
             endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
             inferenceDurationNanos: UInt64(duration * 1_000_000_000),
             warnings: warnings,
-            fallbackReason: raw.isEmpty ? "no final decode; partial used" : nil,
+            fallbackReason: raw.isEmpty
+                ? "no final decode; partial used"
+                : (truncated ? "input window truncated at 60s" : nil),
             termination: .completed)
     }
 
@@ -393,7 +428,16 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         onPartial = nil
         isStreaming = false
         isFinalizing = false
-        decodeOwnership = DecodeOwnership()
+        // Review R3.2: never reset decode ownership while a native decode may
+        // still be executing (e.g. a stuck call past the wait hard-cap). If it
+        // is still busy, QUARANTINE the engine instance so a later session
+        // cannot reuse this WhisperKit safely; otherwise a fresh ownership is
+        // fine.
+        if decodeOwnership.isBusy {
+            isQuarantined = true
+        } else {
+            decodeOwnership = DecodeOwnership()
+        }
         currentDecodeSessionID = nil
         lastPartialText = ""
         startTime = nil

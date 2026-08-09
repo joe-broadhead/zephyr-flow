@@ -2215,6 +2215,27 @@ struct CoreTests {
             check("R3.1 error-no-text is degraded", errEmpty == .degraded)
         }
 
+        // ===== R3.2 regression: window truncation is visible, never complete =====
+        do {
+            // Review R3.2: a 60s window cap that dropped audio must yield
+            // .truncated (never .complete) with a truncation warning.
+            let truncated = SpeechCompletenessPolicy.completenessWithTruncation(
+                hasFinalText: true, didTruncateWindow: true)
+            check("R3.2 truncated input never complete", truncated == .truncated)
+            let noTextTrunc = SpeechCompletenessPolicy.completenessWithTruncation(
+                hasFinalText: false, didTruncateWindow: true)
+            check("R3.2 truncated no-text is partial", noTextTrunc == .partial)
+            let normal = SpeechCompletenessPolicy.completenessWithTruncation(
+                hasFinalText: true, didTruncateWindow: false)
+            check("R3.2 untruncated with text is complete", normal == .complete)
+            let warns = SpeechCompletenessPolicy.truncationWarnings(
+                didTruncateWindow: true, baseWarnings: [])
+            check("R3.2 truncation warning appended", warns == [.truncation])
+            let noWarn = SpeechCompletenessPolicy.truncationWarnings(
+                didTruncateWindow: false, baseWarnings: [.partialFallback])
+            check("R3.2 no truncation warning when untruncated", noWarn == [.partialFallback])
+        }
+
         // ===== JOE-2253: Apple Speech tokenized callbacks + event finalization =====
         do {
             let tok = RecognitionToken(value: "t1")

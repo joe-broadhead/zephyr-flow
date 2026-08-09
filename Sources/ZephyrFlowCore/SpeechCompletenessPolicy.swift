@@ -27,4 +27,27 @@ public enum SpeechCompletenessPolicy {
         if hasText { return [.partialFallback] }
         return [.captureDegraded]
     }
+
+    /// Review R3.2: completeness when a rolling-window input cap dropped a
+    /// prefix. A truncated input is NEVER lossless `.complete` — it is
+    /// `.truncated` (with text) or `.partial` (fallback), plus a truncation
+    /// warning and the dropped-sample count in the frame accounting.
+    public static func completenessWithTruncation(
+        hasFinalText: Bool,
+        didTruncateWindow: Bool
+    ) -> EngineResultCompleteness {
+        if didTruncateWindow {
+            return hasFinalText ? .truncated : .partial
+        }
+        return hasFinalText ? .complete : .partial
+    }
+
+    public static func truncationWarnings(
+        didTruncateWindow: Bool,
+        baseWarnings: [EngineWarning]
+    ) -> [EngineWarning] {
+        var out = baseWarnings
+        if didTruncateWindow { out.append(.truncation) }
+        return out
+    }
 }
