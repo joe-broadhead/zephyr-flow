@@ -19,6 +19,10 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
     private var sequencer = AudioChunkSequencer()
     private var converter: SessionAudioConverter?
     private var deliveryTask: Task<Void, Never>?
+    /// Review R1.3 (v2): set (under the lock) when the delivery task's
+    /// consumer loop exits. stopCapture races this against the deadline —
+    /// unlike Task.isCancelled, a normally-completed task DOES set it.
+    private var deliveryFinished = false
     private var accounting = AudioFrameAccounting()
     private var drainBarrier = AudioDrainBarrier(deadlineNanosAhead: 3_000_000_000)
     private var callbackGate = CallbackGate()
@@ -92,8 +96,14 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             self.sequencer = AudioChunkSequencer()
             self.converter = SessionAudioConverter()
             let engine = self.engine
+            self.deliveryFinished = false
             self.deliveryTask = Task { [weak self] in
                 guard let self, let converter = self.converter else { return }
+                defer {
+                    // Review R1.3 (v2): mark completion under the lock so
+                    // stopCapture can wait on a real completion signal.
+                    self.lock.withLock { self.deliveryFinished = true }
+                }
                 for await chunk in channel.chunks {
                     self.lock.lock()
                     self.accounting.noteCaptured(
@@ -153,7 +163,6 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
     }
 
     func stopCapture() async -> SessionAudioSummary {
-        await audio.stop()
         guard engineKind == .whisper else {
             // Apple path: no bounded channel; no frame accounting.
             return SessionAudioSummary(
@@ -164,42 +173,45 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                 reconciled: true,
                 drainState: "n/a")
         }
-        // JOE-2248 / review R1.3: end-of-stream drain barrier at the final
-        // accepted producer sequence. BEGIN the barrier BEFORE closing
-        // admission so the delivery task's final-sequence acknowledgment is
-        // observed by the barrier (beginning after close could strand it in
-        // .draining). Then stop the capture (which closes the channel).
-        var channel = self.channel
+        // Review R1.3 (v2): ONE stop operation. Arm the drain barrier with the
+        // final accepted sequence BEFORE audio.stop() closes the channel, so
+        // the delivery task's final-sequence acknowledgment is observed by the
+        // barrier (arming after close would strand it in .draining). The
+        // duplicate early audio.stop() is removed.
+        let channel = self.channel
         if let finalSeq = channel?.stats().lastAcceptedSequence {
-            drainBarrier.begin(
-                finalSequence: finalSeq,
-                nowNanos: environment.clock.nowNanos())
+            lock.withLock {
+                drainBarrier.begin(
+                    finalSequence: finalSeq,
+                    nowNanos: environment.clock.nowNanos())
+            }
         }
+        // This single stop closes the channel (ends the consumer stream).
         await audio.stop()
 
-        // Bounded wait for the consumer: a stuck engine append must not hang
-        // the session forever. Wait until the barrier drains or the barrier
-        // deadline (+ grace) expires.
+        // Bounded wait for the consumer using a REAL completion signal:
+        // the delivery task sets deliveryFinished when its loop exits. We race
+        // barrier-terminal AND delivery-finished against the deadline. (The old
+        // `while !delivery.isCancelled` never saw a normally-completed task.)
         let drainDeadlineNanos = drainBarrier.deadlineNanosAhead + 1_000_000_000
         let waitStart = environment.clock.nowNanos()
-        while !drainBarrier.isTerminal {
+        while true {
+            let (term, finished) = lock.withLock {
+                (drainBarrier.isTerminal, deliveryFinished)
+            }
+            if term || finished { break }
             if environment.clock.nowNanos() &- waitStart >= drainDeadlineNanos {
-                drainBarrier.markTimedOut()
+                lock.withLock { drainBarrier.markTimedOut() }
                 break
             }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        // The delivery task must be allowed to finish its current iteration;
-        // give it a short bounded window, then proceed (barrier state is the
-        // authority, not the task handle).
-        if let delivery = deliveryTask {
-            let taskStart = environment.clock.nowNanos()
-            while !delivery.isCancelled {
-                if environment.clock.nowNanos() &- taskStart >= drainDeadlineNanos { break }
-                try? await Task.sleep(nanoseconds: 10_000_000)
-            }
-        }
+        // If the delivery task is still running at the deadline (stuck engine
+        // append), it may continue mutating accounting/barrier — but the
+        // barrier is now timedOut and the session degrades. We never await it
+        // further (bounded), and stopCapture reads state under the lock below.
         let channelStats = channel?.stats()
+        _ = channelStats
         let (seqDegraded, barrierTimedOut, barrierDrained, lateAppends) = lock.withLock {
             (
                 sequencer.isDegraded,
@@ -210,14 +222,16 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         }
         let channelDegraded = channel?.isDegraded ?? false
         if let channelStats {
-            if channelStats.overflowDropped > 0 {
-                accounting.noteDropped(sourceSamples: channelStats.overflowDroppedSamples, reason: .overflow)
-            }
-            if channelStats.wrongSessionRejected > 0 {
-                accounting.noteDropped(sourceSamples: channelStats.wrongSessionDroppedSamples, reason: .wrongSession)
-            }
-            if channelStats.closedDropped > 0 {
-                accounting.noteDropped(sourceSamples: channelStats.closedDroppedSamples, reason: .closedDrop)
+            lock.withLock {
+                if channelStats.overflowDropped > 0 {
+                    accounting.noteDropped(sourceSamples: channelStats.overflowDroppedSamples, reason: .overflow)
+                }
+                if channelStats.wrongSessionRejected > 0 {
+                    accounting.noteDropped(sourceSamples: channelStats.wrongSessionDroppedSamples, reason: .wrongSession)
+                }
+                if channelStats.closedDropped > 0 {
+                    accounting.noteDropped(sourceSamples: channelStats.closedDroppedSamples, reason: .closedDrop)
+                }
             }
         }
         let ratio = SessionAudioConverter.targetSampleRate / accounting.sourceSampleRate
