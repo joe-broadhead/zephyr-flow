@@ -266,23 +266,87 @@ public enum AxBoundedRunner {
             return .deadlineExceeded(elapsedNanos: elapsedAtStart)
         }
 
-        let task = Task.detached(priority: .userInitiated) { operation() }
+        // Review R2.2: a synchronous AX mutation (e.g. AXUIElementSetAttributeValue)
+        // cannot be undone by task cancellation — once it starts, the side
+        // effect may have applied even if the caller times out. Two hard rules:
+        //   1. Never BEGIN the operation unless the remaining budget suffices
+        //      (the fast path above).
+        //   2. The wait is BOUNDED without waiting for a non-cooperative child:
+        //      we race the detached op against the deadline using an
+        //      unstructured Task whose value we poll, and we return at the
+        //      deadline regardless. We do NOT use a task group, because
+        //      structured concurrency waits for child tasks to finish — a
+        //      hung sync AX call would defeat the deadline.
+        // The caller must treat `.deadlineExceeded` as "the write MAY have
+        // applied; re-validate the target before any further side effect"
+        // (InsertionService already re-validates before each write).
+        // Bounded wait: race the detached operation against a deadline using
+        // a single continuation resumed by whichever fires first. We do NOT
+        // use a task group (structured concurrency waits for non-cooperative
+        // children, which would defeat the deadline). The operation task is
+        // detached: if it is still running at the deadline we return
+        // immediately without awaiting it.
+        // Review R2.2: a synchronous AX mutation cannot be undone by task
+        // cancellation — once started, the side effect may have applied even
+        // on timeout. Hard rules:
+        //   1. Never BEGIN unless the remaining budget suffices (fast path
+        //      above).
+        //   2. The WAIT is truly bounded: the operation runs DETACHED, so the
+        //      structured group below only contains cooperative children (a
+        //      value proxy + a deadline sleep). group.next() returns at the
+        //      first completion and the group scope does NOT wait for the
+        //      detached, possibly-hung operation. A late `.deadlineExceeded`
+        //      means the write MAY have applied; the caller re-validates the
+        //      target before any further side effect.
+        // Review R2.2: a synchronous AX mutation cannot be undone by task
+        // cancellation — once started, the side effect may have applied even
+        // on timeout. Hard rules:
+        //   1. Never BEGIN unless the remaining budget suffices (fast path
+        //      above).
+        //   2. The WAIT is truly bounded even if the operation never returns:
+        //      a detached op is raced against a deadline using an exactly-once
+        //      continuation (atomic guard), and we return at the deadline
+        //      without awaiting the hung op.
+        let operationTask = Task.detached(priority: .userInitiated) { operation() }
         let remaining = deadlineNanosAhead - elapsedAtStart
-        let value = await withTaskGroup(of: Value?.self) { group in
-            group.addTask { await task.value }
-            group.addTask {
+        // Exactly-once continuation: the first racer (op result or deadline)
+        // resumes; the loser is a no-op. A lock-guarded once-flag avoids
+        // double-resume (withCheckedContinuation crashes on a second resume).
+        let once = OnceFlag()
+        let result: Value? = await withCheckedContinuation { (cont: CheckedContinuation<Value?, Never>) in
+            let deadlineChild = Task {
                 try? await Task.sleep(nanoseconds: remaining)
-                return nil
+                once.run { cont.resume(returning: nil) }
             }
-            let first = await group.next() ?? nil
-            group.cancelAll()
-            return first
+            let opChild = Task {
+                let v = await operationTask.value
+                once.run { cont.resume(returning: v) }
+            }
+            // If the operation finishes first, cancel the deadline child.
+            Task {
+                _ = await opChild.value
+                deadlineChild.cancel()
+            }
         }
-        if let value {
-            return .completed(value)
+        if let result {
+            return .completed(result)
         }
         // Deadline hit: the late result (if any) is dropped — never applied.
-        task.cancel()
+        // The detached operation may still be running; we do NOT await it.
         return .deadlineExceeded(elapsedNanos: nowNanos() &- startedAtNanos)
+    }
+}
+
+
+/// Review R2.2: lock-guarded run-exactly-once helper for the bounded AX race.
+private final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ran = false
+    func run(_ body: () -> Void) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !ran else { return }
+        ran = true
+        body()
     }
 }

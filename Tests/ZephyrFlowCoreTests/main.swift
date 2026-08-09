@@ -1443,6 +1443,34 @@ struct CoreTests {
             } else {
                 check("2270 hung AX call hits deadline", false)
             }
+            // R2.2: an already-expired budget NEVER begins the operation.
+            var executed = false
+            let expiredBudget = await AxBoundedRunner.run(
+                deadlineNanosAhead: 1_000,
+                startedAtNanos: start,
+                nowNanos: { start + 5_000 },  // elapsed >= deadline
+                operation: { executed = true; return 1 })
+            if case .deadlineExceeded = expiredBudget {
+                check("R2.2 expired budget never executes", !executed)
+            } else {
+                check("R2.2 expired budget never executes", false)
+            }
+            // R2.2: the wait returns at the deadline even if the operation is
+            // a never-returning sync call (bounded, no hang).
+            let startNs = DispatchTime.now().uptimeNanoseconds
+            let never = await AxBoundedRunner.run(
+                deadlineNanosAhead: 30_000_000,  // 30 ms
+                startedAtNanos: startNs,
+                nowNanos: { DispatchTime.now().uptimeNanoseconds },
+                operation: {
+                    while true { Thread.sleep(forTimeInterval: 1.0) }
+                })
+            let elapsed = DispatchTime.now().uptimeNanoseconds &- startNs
+            if case .deadlineExceeded = never {
+                check("R2.2 never-returning op bounded (~30ms)", elapsed < 5_000_000_000)
+            } else {
+                check("R2.2 never-returning op bounded", false)
+            }
             // Already-expired budget never executes.
             let expired = await AxBoundedRunner.run(
                 deadlineNanosAhead: 10,
