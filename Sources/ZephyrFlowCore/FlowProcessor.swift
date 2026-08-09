@@ -99,7 +99,7 @@ public actor FlowProcessor: FlowProcessorProtocol {
 
     /// Extract URLs/emails/paths/versions/abbreviations/quoted/code spans into
     /// placeholders so sentence rules never alter them; restore afterwards.
-    private func protect(_ text: String) -> (protected: String, spans: [String]) {
+    private func protect(_ text: String, startIndex: Int = 0) -> (protected: String, spans: [String]) {
         var protected = text
         var spans: [String] = []
         let patterns = [
@@ -127,11 +127,13 @@ public actor FlowProcessor: FlowProcessorProtocol {
                 lastEnd = range.location + range.length
             }
         }
-        // Apply from the end so earlier ranges stay valid.
+        // Apply from the end so earlier ranges stay valid. Tokens are offset
+        // by startIndex so spans across lines/paragraphs never collide
+        // (review R5.1): restore() maps each token to exactly one span.
         kept.sort { $0.0.location > $1.0.location }
         for (range, span) in kept {
             spans.append(span)
-            let token = "\u{0}\(spans.count - 1)\u{0}"
+            let token = "\u{0}\(startIndex + spans.count - 1)\u{0}"
             if let r = Range(NSRange(location: range.location, length: range.length), in: protected) {
                 protected.replaceSubrange(r, with: token)
             }
@@ -166,7 +168,11 @@ public actor FlowProcessor: FlowProcessorProtocol {
                 continue
             }
             blankStreak = 0
-            let (protected, spans) = protect(line)
+            let (protected, spans) = protect(line, startIndex: allSpans.count)
+            // Globally unique placeholders per line: protect() already offset
+            // this line's token indices by the running count, so tokens never
+            // collide across lines (review R5.1) and restore() maps each token
+            // to exactly one span.
             allSpans.append(contentsOf: spans)
             line = protected
             line = line.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)

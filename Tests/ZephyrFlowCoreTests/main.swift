@@ -2203,6 +2203,35 @@ struct CoreTests {
             check("2277 quoted span protected", quoted.contains("\"don\'t go\""))
         }
 
+        // ===== JOE-2277 regression (review R5.1): protected spans across =====
+        // ===== lines/paragraphs must not collide (placeholder reuse) =====
+        do {
+            // Two paragraphs, each with a DIFFERENT URL. Old bug: each line's
+            // protect() restarted placeholders at 0, so both paragraphs got
+            // token 0 and restore replaced both with the FIRST URL.
+            let twoUrls = "See https://alpha.example.com/first for details.\n\nThen https://beta.example.com/second."
+            let out = await FlowProcessor.shared.process(twoUrls, style: .clean, language: .enUS)
+            check("R5.1 first url preserved",
+                  out.contains("https://alpha.example.com/first"))
+            check("R5.1 second url preserved",
+                  out.contains("https://beta.example.com/second"))
+            check("R5.1 urls not cross-replaced",
+                  out.contains("https://alpha.example.com/first")
+                    && out.contains("https://beta.example.com/second")
+                    && !out.contains("https://alpha.example.com/second")
+                    && !out.contains("https://beta.example.com/first"))
+            // Same with emails across lines (also protected spans).
+            let twoEmails = "Mail a@one.example now.\nAnd b@two.example later."
+            let out2 = await FlowProcessor.shared.process(twoEmails, style: .clean, language: .enUS)
+            check("R5.1 first email preserved", out2.contains("a@one.example"))
+            check("R5.1 second email preserved", out2.contains("b@two.example"))
+            // And a mixed single-line case still works (sanity).
+            let single = "x@a.co and https://y.example/p"
+            let out3 = await FlowProcessor.shared.process(single, style: .clean, language: .enUS)
+            check("R5.1 single-line mixed spans preserved",
+                  out3.contains("x@a.co") && out3.contains("https://y.example/p"))
+        }
+
         // ===== JOE-2278: expanded Flow guardrails (sign/multiset/negation) =====
         do {
             func reject(_ input: String, _ output: String) -> FlowGuardrailsRejection? {
