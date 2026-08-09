@@ -46,19 +46,29 @@ were addressed; a third review is required before merge.
 - REQ-2 honest strict-concurrency labeling (Swift 5 mode): `9056558`
 - NITs (occupancy naming, comments, unused param, gate zero-warning): `bccea7a`
 
+## Updated at 39faa6a (round-3.5)
+- **B4 addressed**: AX insertion is now bound to the VALIDATED element identity
+  (PID + window + role/subrole carried in SessionInsertRequest; the AX write
+  fails closed when the re-resolved element differs).
+- **B8 addressed (honest)**: engine identity now carries the verified artifact
+  digest from the reviewed manifest (WhisperKit loads by identifier with
+  downloads disabled — exact-directory loading is a WhisperKit API constraint
+  documented in the code).
+- **REQ-1 addressed (partial)**: added production-wiring session tests
+  (exactly-one terminal after review-retry, commands-before-run, cancel during
+  processing). Controller-level XCTest remains app-target-bound.
+- **REQ-3 addressed (partial)**: stage 9 now runs rapid-control +
+  crash-recovery lanes explicitly; ci.yml installs ShellCheck/PyYAML; artifact
+  paths fixed. A GitHub Actions run at the exact SHA still needs a runner.
+
 ## NOT yet addressed (requires CI/hardware/human)
-- **B4**: a true one-use target lease passed into insertion (current: bundle
-  + secure re-check + pre-insert cancel; element identity is re-resolved, not
-  leased).
-- **B8**: loading WhisperKit from the exact promoted verified directory (engine
-  loads by identifier with downloads disabled; EngineIdentity does not yet carry
-  the verified digest).
-- **REQ-1**: production-wiring XCTest (controller-level integration tests; the
-  CLT suite tests Core). 
-- **REQ-3**: full CI lanes (rapid-control + crash/relaunch lanes run only ASan
-  locally; no GitHub Actions run at this exact SHA).
-- **REQ-7 (partial)**: human/external gates remain (real-device, credentials,
-  JOE-2314 decision, etc.) — runbooks in human-gates.md.
+- **REQ-3 remainder**: a real GitHub Actions run at the exact candidate SHA.
+- **REQ-2 remainder**: Swift 6 language mode (requires resolving ~80 baseline
+  warnings; documented as a follow-up).
+- **REQ-6 remainder**: real-time capture-callback allocation/task budget
+  measurement (needs a running app + instrumented tap).
+- **Human/external gates**: real-device qualification, credentials, JOE-2314
+  decision, etc. — runbooks in human-gates.md.
 
 ## Honest disposition
 - The 24 implementation issues reopened in Linear are In Progress with review
