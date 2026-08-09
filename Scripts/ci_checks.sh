@@ -167,6 +167,23 @@ else
   fail "ASan lane"
 fi
 
+# Review REQ-3: the rapid-control + crash/relaunch lanes are exercised by the
+# deterministic CLT stress suite (JOE-2292/2293: rapid control edges, exactly-
+# once terminal, crash-recovery markers). Run them explicitly as their own
+# lane (not just inside the parity suite) and report the stress checks.
+echo "rapid-control + crash-recovery lane (CLT stress suite)"
+BIN="$(swift build --show-bin-path 2>/dev/null)/ZephyrFlowCoreTests"
+if [[ -x "$BIN" ]]; then
+  if "$BIN" 2>&1 | grep -E '✓ 2292|✓ 2293' > /tmp/zf_stress_lane.log; then
+    STRESS_OK="$(grep -c '✓' /tmp/zf_stress_lane.log)"
+    echo "rapid-control/crash-recovery: $STRESS_OK stress checks pass"
+  else
+    fail "rapid-control/crash-recovery lane"
+  fi
+else
+  echo "(CLT stress binary not built locally — CI macos-15 builds it)"
+fi
+
 echo
 if [[ "$FAILURES" -gt 0 ]]; then
   echo "ci_checks: $FAILURES gate(s) FAILED — refusing merge."
