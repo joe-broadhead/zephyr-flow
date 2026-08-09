@@ -40,11 +40,15 @@ actor FakeSessionStages: DictationSessionStageProviding {
     var reconciled = true
     var historyCount = 0
     var cancelCount = 0
+    var insertionCount = 0
     var prepareCount = 0
     var capturedSessionIDs: [SessionID] = []
     /// Review R2/4 test hook: block stopCapture for this long so a cancel can
     /// land mid-processing deterministically.
     var stopDelayNanos: UInt64 = 0
+    /// Review B5 test hook: when true, applyFlow returns a REJECTED outcome
+    /// (protected spans not preserved, original text returned).
+    var flowRejected = false
 
     static func makeSnapshot(
         sessionID: SessionID,
@@ -122,7 +126,21 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func applyFlow(_ request: FlowRequest) async -> FlowOutcome {
-        FlowOutcome(
+        if flowRejected {
+            // Review B5: rejected outcome — original text returned, no
+            // automatic insertion allowed.
+            return FlowOutcome(
+                text: request.text, requestedStyle: request.style,
+                resolvedLossClass: .conservative, backend: .regex,
+                capabilityID: "test", capabilityVersion: 1,
+                language: request.language, changedRangeCount: 0,
+                protectedSpanCount: 1, protectedSpansPreserved: false,
+                status: .rejected, warnings: [.guardrailRejected],
+                fallbackReason: "protected spans not preserved; original text returned",
+                durationNanos: 5,
+                termination: .completed)
+        }
+        return FlowOutcome(
             text: request.text, requestedStyle: request.style,
             resolvedLossClass: .verbatim, backend: .regex,
             capabilityID: "test", capabilityVersion: 1,
@@ -133,6 +151,8 @@ actor FakeSessionStages: DictationSessionStageProviding {
             termination: .completed)
     }
 
+    func setFlowRejected(_ v: Bool) { flowRejected = v }
+
     func validateTarget() async -> SessionValidationResult {
         let next = validationOutcomes.isEmpty ? .validated : validationOutcomes.removeFirst()
         return SessionValidationResult(
@@ -141,7 +161,8 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func insert(_ request: SessionInsertRequest) async -> InsertionOutcome {
-        insertionOutcome
+        insertionCount += 1
+        return insertionOutcome
     }
 
     func recordHistory(

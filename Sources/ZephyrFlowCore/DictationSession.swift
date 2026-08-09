@@ -569,6 +569,16 @@ public actor DictationSession {
         state.outputs.flowOutcome = flowOutcome
         publish(phase: .processing, interim: state.interimText, level: state.audioLevel)
 
+        // Review B5: a rejected Flow outcome (protected spans not preserved)
+        // must NEVER be automatically inserted. The outcome's text is the
+        // original input (conservative fallback), but automatic insertion is
+        // disabled — surface the review surface so the user decides.
+        if flowOutcome.status == .rejected {
+            publish(phase: .review, interim: flowOutcome.text, level: state.audioLevel)
+            retainedText = flowOutcome.text
+            await handleReviewCommands(secureOnly: false)
+            return
+        }
         let trimmed = flowOutcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)

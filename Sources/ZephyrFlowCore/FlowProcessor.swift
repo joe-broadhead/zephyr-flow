@@ -46,17 +46,20 @@ public actor FlowProcessor: FlowProcessorProtocol {
             output: outTokens
         ).ok
         let changed = request.text != output ? 1 : 0
-        // Review R2/9: a failed protected-span comparison must NEVER return
-        // .accepted. Return the conservative fallback (the unmodified input
-        // is the safest output) with a controlled rejection reason.
-        let status: FlowOutcomeStatus = protectedSpansPreserved ? .accepted : .rejected
-        let warnings: [FlowWarning] = protectedSpansPreserved ? [] : [.guardrailRejected]
+        // Review B5: a failed protected-span comparison must NEVER return the
+        // unsafe transformed output. The TRUE conservative fallback is the
+        // unmodified INPUT text (protected spans intact) with a controlled
+        // rejection reason. (The old code returned `text: output` even when
+        // rejected — fail-open with a warning label.)
+        let preserved = protectedSpansPreserved
+        let status: FlowOutcomeStatus = preserved ? .accepted : .rejected
+        let warnings: [FlowWarning] = preserved ? [] : [.guardrailRejected]
         let fallbackReason: String? =
-            protectedSpansPreserved
+            preserved
             ? nil
-            : "protected spans not preserved; conservative output returned"
+            : "protected spans not preserved; original text returned (conservative)"
         return FlowOutcome(
-            text: output,
+            text: preserved ? output : request.text,
             requestedStyle: request.style,
             resolvedLossClass: loss,
             backend: .regex,
