@@ -813,6 +813,38 @@ struct CoreTests {
                 states.contains { $0.phase == SessionPhase.hidden })
         }
 
+        // ===== REQ-1: production-wiring session test (exactly-one terminal) =====
+        do {
+            // Drive a full session through capture -> end -> review(retry) ->
+            // success; assert EXACTLY ONE success phase and no re-entrant
+            // terminal (the R2/3 fix made retry reach .completed legally).
+            let provider = FakeSessionStages()
+            await provider.setPartials(["hello"])
+            await provider.setValidationOutcomes([.targetChanged, .validated])
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: false,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            await s.end()
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            await s.retryInsertion()  // review -> retry
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            let successCount = states.filter { $0.phase == .success }.count
+            let reviewCount = states.filter { $0.phase == .review }.count
+            check("REQ-1 retry reaches exactly one success", successCount == 1)
+            check("REQ-1 review shown before retry", reviewCount >= 1)
+            check(
+                "REQ-1 no terminal after success (exactly-once)",
+                states.last?.phase == .success)
+        }
+
         // ===== R1.5 regression: finish(category:) drives terminal outcome =====
         do {
             // Review R1.5: finishTerminal must drive the CONTROL state machine
