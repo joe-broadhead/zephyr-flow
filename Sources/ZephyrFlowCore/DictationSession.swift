@@ -634,6 +634,15 @@ public actor DictationSession {
             state.outputs.insertion = result
             switch result {
             case .verifiedInserted, .explicitlyCopiedByUser, .eventPostedUnverified:
+                // Review B2: a cancel that landed DURING insertion must not be
+                // followed by history persistence or a success terminal. Check
+                // immediately before both.
+                if cancelRequested {
+                    await provider.cancel()
+                    publish(phase: .hidden, interim: "", level: 0.05)
+                    finishTerminal(category: .cancelled)
+                    return true
+                }
                 _ = control.stage(.insertionSucceeded)
                 if settings.saveHistory,
                     HistoryStoragePolicy.allowsWrite(

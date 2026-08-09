@@ -248,18 +248,20 @@ final class DictationController: ObservableObject {
                 return
             }
         }
-        // If we're actually running begin now, a prior pending reference is
-        // stale (e.g. a cancelled one); clear it so a future release sees the
-        // real current pending task (set by the press handler).
-        pendingBeginTask = nil
+        // Review B2: DO NOT clear pendingBeginTask here — the release handler
+        // needs it set DURING model readiness/preload so it can preempt a
+        // begin that is still waiting on the engine. It is cleared only when
+        // the session actually begins (below) or the begin is cancelled.
         // App-level fail-fast permission checks (never await dialogs here).
         privacy.refresh()
         guard privacy.status.microphone else {
+            pendingBeginTask = nil
             showError("Microphone permission required")
             Task { await ensurePermissionsUpFront() }
             return
         }
         if usingAppleEngine && !privacy.status.speechRecognition {
+            pendingBeginTask = nil
             showError("Speech Recognition permission required")
             Task { await ensurePermissionsUpFront() }
             return
@@ -281,8 +283,13 @@ final class DictationController: ObservableObject {
         if !ready {
             await preloadEngine()
         }
-        // Review R1.4: a release during preload cancelled us — do NOT start.
-        if Task.isCancelled { return }
+        // Review B2: a release during preload cancelled us — do NOT start.
+        // (The release handler cancels pendingBeginTask directly; this check
+        // catches the cancel and aborts before any capture begins.)
+        if Task.isCancelled {
+            pendingBeginTask = nil
+            return
+        }
         // JOE-2283: never enter a fake listening/capturing state when the
         // selected model is not ready (missing/unverified/failed download).
         guard await activeEngine.isReady else {
