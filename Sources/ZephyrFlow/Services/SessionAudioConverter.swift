@@ -98,4 +98,31 @@ final class SessionAudioConverter {
         else { return nil }
         return Array(UnsafeBufferPointer(start: channel, count: Int(outBuf.frameLength)))
     }
+
+    /// Review REQ-6: drain any buffered tail the AVAudioConverter holds at
+    /// end-of-stream (resampling can buffer partial output across chunks).
+    /// Call ONCE after the final chunk; returns the residual 16 kHz mono
+    /// samples (possibly empty). Not idempotent — call only at EOS.
+    func flush() -> [Float] {
+        guard let converter else { return [] }
+        let capacity = AVAudioFrameCount(4096)
+        guard
+            let outBuf = AVAudioPCMBuffer(
+                pcmFormat: AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: Self.targetSampleRate,
+                    channels: 1,
+                    interleaved: false)!,
+                frameCapacity: capacity)
+        else { return [] }
+        var error: NSError?
+        let status = converter.convert(to: outBuf, error: &error) { _, outStatus in
+            outStatus.pointee = .endOfStream
+            return nil
+        }
+        guard status != .error, outBuf.frameLength > 0,
+            let channel = outBuf.floatChannelData?[0]
+        else { return [] }
+        return Array(UnsafeBufferPointer(start: channel, count: Int(outBuf.frameLength)))
+    }
 }

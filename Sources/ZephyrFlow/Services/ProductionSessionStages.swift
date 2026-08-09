@@ -210,6 +210,18 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // append), it may continue mutating accounting/barrier — but the
         // barrier is now timedOut and the session degrades. We never await it
         // further (bounded), and stopCapture reads state under the lock below.
+        // Review REQ-6: flush the converter's buffered tail at EOS so no
+        // resampled audio is lost. Appended to the engine as the final block.
+        if let converter {
+            let tail = converter.flush()
+            if !tail.isEmpty {
+                await engine.appendAudio(tail)
+                lock.withLock {
+                    accounting.noteConverted(engineSamples: UInt64(tail.count))
+                    accounting.noteDelivered(engineSamples: UInt64(tail.count))
+                }
+            }
+        }
         let channelStats = channel?.stats()
         _ = channelStats
         let (seqDegraded, barrierTimedOut, barrierDrained, lateAppends) = lock.withLock {
