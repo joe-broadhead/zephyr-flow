@@ -320,12 +320,12 @@ final class DictationController: ObservableObject {
             idFactory: sessionIDFactory)
         session = s
         pendingBeginTask = nil  // begin completed; no longer pending
+        // Review REQ-4: set the session ID authoritatively BEFORE any review
+        // or completion can run (no separate racy task). The ID is immutable
+        // and available immediately; review presentation and the completion
+        // identity check both read it.
+        self.lastSessionID = await s.sessionID
         sessionTask = Task { await s.run() }
-        // SessionID is immutable; read it for review presentation.
-        Task { [weak self] in
-            guard let self else { return }
-            self.lastSessionID = await s.sessionID
-        }
         stateTask = Task { [weak self] in
             guard let self else { return }
             for await state in await s.subscribe() {
@@ -433,10 +433,14 @@ final class DictationController: ObservableObject {
     /// then applies terminal UI dismissal policy. Called when the session's
     /// state broadcaster finishes.
     private func sessionDidFinish(sessionID: SessionID) {
+        // Review REQ-4: record this finished session's ID as the latest
+        // (the completion path awaits s.sessionID, so this is authoritative —
+        // no separate racy task).
+        lastSessionID = sessionID
         // Identity check: only clear if this finished session is still the
-        // active one (a newer session may have replaced it). lastSessionID is
-        // updated at session start, so comparing it to the finished id keeps
-        // a stale completion from wiping a newer session's references.
+        // active one (a newer session may have replaced it). Comparing the
+        // recorded ID to the finished id keeps a stale completion from
+        // wiping a newer session's references.
         let isCurrent: Bool
         if let currentID = lastSessionID {
             isCurrent = (currentID == sessionID)
@@ -452,8 +456,13 @@ final class DictationController: ObservableObject {
         stateTask = nil
         session = nil
         ZFLog.info("Session finished and cleared (identity-checked)")
-        // Terminal UI dismissal (idempotent).
-        dismissPanelSoon()
+        // Review REQ-4: do NOT unconditionally dismiss the panel. Success
+        // already dismissed itself in apply(); warning/review/error terminal
+        // states are PERSISTENT and must stay visible so the user can act.
+        // Only dismiss if the panel already resolved (success/hidden).
+        if panelState == .success || panelState == .hidden {
+            dismissPanelSoon()
+        }
     }
 
     private func apply(_ state: SessionUIState) {
