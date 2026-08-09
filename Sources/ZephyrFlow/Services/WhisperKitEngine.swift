@@ -273,7 +273,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         let completeness = SpeechCompletenessPolicy.completenessWithTruncation(
             hasFinalText: !raw.isEmpty,
             didTruncateWindow: truncated)
-        var warnings: [EngineWarning] = SpeechCompletenessPolicy.truncationWarnings(
+        let warnings: [EngineWarning] = SpeechCompletenessPolicy.truncationWarnings(
             didTruncateWindow: truncated,
             baseWarnings: raw.isEmpty ? [.partialFallback] : [])
         cleanup()

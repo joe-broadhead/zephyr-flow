@@ -703,8 +703,9 @@ struct CoreTests {
             _ = c.begin()
             _ = c.stage(.readyToCapture)
             _ = c.finish(category: .completed)
-            check("R1.5 finish(completed) drives state to completed",
-                  c.state == .completed && c.terminal == .completed)
+            check(
+                "R1.5 finish(completed) drives state to completed",
+                c.state == .completed && c.terminal == .completed)
             // Duplicate finish after terminal is a no-op; outcome unchanged.
             _ = c.finish(category: .cancelled)
             check("R1.5 duplicate finish keeps first terminal", c.terminal == .completed)
@@ -966,16 +967,17 @@ struct CoreTests {
             // This is exactly the review's required scenario: many multiples of
             // capacity through a consumer, occupancy returning to zero.
             let waves = 20
-            let perWave = 8   // <= capacity so a drained wave always fits
+            let perWave = 8  // <= capacity so a drained wave always fits
             var produced: [UInt64] = []
             var seen: [UInt64] = []
             for w in 0..<waves {
                 // Enqueue one wave.
                 for j in 0..<perWave {
                     let i = w * perWave + j
-                    _ = ch.enqueue(AudioChunk(
-                        sessionID: sid, sequence: UInt64(i), startSample: UInt64(i) * 512,
-                        sampleRate: 16000, channelCount: 1, samples: [Float(i)]))
+                    _ = ch.enqueue(
+                        AudioChunk(
+                            sessionID: sid, sequence: UInt64(i), startSample: UInt64(i) * 512,
+                            sampleRate: 16000, channelCount: 1, samples: [Float(i)]))
                     produced.append(UInt64(i))
                 }
                 // Drain exactly this wave before the next one (capacity released).
@@ -986,9 +988,12 @@ struct CoreTests {
             }
             ch.close()
             let s = ch.stats()
-            print("R1.1-probe delivered=\(seen.count) accepted=\(s.enqueued) overflow=\(s.overflowDropped) total=\(produced.count)")
-            check("R1.1 no overflow across waves with full drains",
-                  s.overflowDropped == 0)
+            print(
+                "R1.1-probe delivered=\(seen.count) accepted=\(s.enqueued) overflow=\(s.overflowDropped) total=\(produced.count)"
+            )
+            check(
+                "R1.1 no overflow across waves with full drains",
+                s.overflowDropped == 0)
             check("R1.1 all chunks enqueued", s.enqueued == UInt64(produced.count))
             check("R1.1 all sequences delivered in order", seen == produced)
         }
@@ -1262,14 +1267,16 @@ struct CoreTests {
             check("R9 automaticCopy no history", !autoCopy.permitsHistoryRetention)
             check("R9 automaticCopy uncertain (review)", autoCopy.isUncertain)
             check("R9 automaticCopy no auto-dismiss", !autoCopy.permitsAutomaticPanelDismissal)
-            check("R9 automaticCopy distinct message",
-                  autoCopy.userFacingMessage.contains("automatic"))
+            check(
+                "R9 automaticCopy distinct message",
+                autoCopy.userFacingMessage.contains("automatic"))
             // R9: policy-blocked automatic copy is also non-success, no history.
             check("R9 blocked not green", !autoBlocked.permitsGreenSuccessUI)
             check("R9 blocked no history", !autoBlocked.permitsHistoryRetention)
             check("R9 blocked uncertain (review)", autoBlocked.isUncertain)
-            check("R9 blocked distinct message",
-                  autoBlocked.userFacingMessage.contains("blocked"))
+            check(
+                "R9 blocked distinct message",
+                autoBlocked.userFacingMessage.contains("blocked"))
             // R9: automaticCopy IS a completed action (clipboard written) but
             // blocked is NOT (nothing written).
             check("R9 autoCopy completed action", autoCopy.isCompletedAction)
@@ -1277,8 +1284,9 @@ struct CoreTests {
             // R9: the ONLY green+history clipboard outcome is the explicit
             // review-panel copy.
             let copied = InsertionOutcome.explicitlyCopiedByUser
-            check("R9 explicit copy still green+history",
-                  copied.permitsGreenSuccessUI && copied.permitsHistoryRetention)
+            check(
+                "R9 explicit copy still green+history",
+                copied.permitsGreenSuccessUI && copied.permitsHistoryRetention)
         }
         // Exhaustive policy test: adding a case must fail until UI/privacy/
         // metrics policy is defined. Compile-time exhaustiveness + runtime
@@ -1445,14 +1453,19 @@ struct CoreTests {
                 check("2270 hung AX call hits deadline", false)
             }
             // R2.2: an already-expired budget NEVER begins the operation.
-            var executed = false
+            // Use a class-based flag so the detached operation does not
+            // capture+mutate a local var (Swift 6 strict-concurrency).
+            let executedFlag = ExecutedFlag()
             let expiredBudget = await AxBoundedRunner.run(
                 deadlineNanosAhead: 1_000,
                 startedAtNanos: start,
                 nowNanos: { start + 5_000 },  // elapsed >= deadline
-                operation: { executed = true; return 1 })
+                operation: {
+                    executedFlag.mark()
+                    return 1
+                })
             if case .deadlineExceeded = expiredBudget {
-                check("R2.2 expired budget never executes", !executed)
+                check("R2.2 expired budget never executes", !executedFlag.didRun)
             } else {
                 check("R2.2 expired budget never executes", false)
             }
@@ -1872,7 +1885,7 @@ struct CoreTests {
             // reconciliation even with a perfect conversion.
             var acct = AudioFrameAccounting()
             let sourceRate = 44_100.0
-            let captured = UInt64(44_100 * 10)   // 10 s of 44.1 kHz
+            let captured = UInt64(44_100 * 10)  // 10 s of 44.1 kHz
             acct.noteCaptured(sourceSamples: captured, sourceRate: sourceRate)
             // Perfect conversion to 16 kHz: 441000 * (16000/44100) = 160000.
             let converted = UInt64((Double(captured) * (16000.0 / sourceRate)).rounded())
@@ -2221,8 +2234,9 @@ struct CoreTests {
             // .partial (with a warning), never .complete.
             let erroredPartial = SpeechCompletenessPolicy.completeness(
                 sawFinal: true, error: "recognition failed", hasText: true)
-            check("R3.1 errored partial is partial, not complete",
-                  erroredPartial == .partial)
+            check(
+                "R3.1 errored partial is partial, not complete",
+                erroredPartial == .partial)
             let w = SpeechCompletenessPolicy.warnings(
                 sawFinal: true, error: "recognition failed", hasText: true)
             check("R3.1 errored partial warns partialFallback", w == [.partialFallback])
@@ -2434,12 +2448,15 @@ struct CoreTests {
             // token 0 and restore replaced both with the FIRST URL.
             let twoUrls = "See https://alpha.example.com/first for details.\n\nThen https://beta.example.com/second."
             let out = await FlowProcessor.shared.process(twoUrls, style: .clean, language: .enUS)
-            check("R5.1 first url preserved",
-                  out.contains("https://alpha.example.com/first"))
-            check("R5.1 second url preserved",
-                  out.contains("https://beta.example.com/second"))
-            check("R5.1 urls not cross-replaced",
-                  out.contains("https://alpha.example.com/first")
+            check(
+                "R5.1 first url preserved",
+                out.contains("https://alpha.example.com/first"))
+            check(
+                "R5.1 second url preserved",
+                out.contains("https://beta.example.com/second"))
+            check(
+                "R5.1 urls not cross-replaced",
+                out.contains("https://alpha.example.com/first")
                     && out.contains("https://beta.example.com/second")
                     && !out.contains("https://alpha.example.com/second")
                     && !out.contains("https://beta.example.com/first"))
@@ -2451,8 +2468,9 @@ struct CoreTests {
             // And a mixed single-line case still works (sanity).
             let single = "x@a.co and https://y.example/p"
             let out3 = await FlowProcessor.shared.process(single, style: .clean, language: .enUS)
-            check("R5.1 single-line mixed spans preserved",
-                  out3.contains("x@a.co") && out3.contains("https://y.example/p"))
+            check(
+                "R5.1 single-line mixed spans preserved",
+                out3.contains("x@a.co") && out3.contains("https://y.example/p"))
         }
 
         // ===== JOE-2278: expanded Flow guardrails (sign/multiset/negation) =====
@@ -3021,14 +3039,16 @@ struct CoreTests {
             // silently — lastWriteError is recorded so the UI can surface it.
             check("2261 failing fs exercises error path", failing.failures > 0)
             let writeErr = await failRepo.lastWriteError
-            check("R4.1 add() persistence failure surfaced (lastWriteError)",
-                  writeErr != nil && !writeErr!.isEmpty)
+            check(
+                "R4.1 add() persistence failure surfaced (lastWriteError)",
+                writeErr != nil && !writeErr!.isEmpty)
             // A successful write clears the recorded error.
             let okRepo = ActorHistoryRepository(fileURL: file)
             try? await okRepo.load()
-            await okRepo.add(HistoryStorageEntry(
-                timestamp: Date(), text: "ok", duration: 1, modelUsed: "Tiny",
-                sensitivityClass: "normal"))
+            await okRepo.add(
+                HistoryStorageEntry(
+                    timestamp: Date(), text: "ok", duration: 1, modelUsed: "Tiny",
+                    sensitivityClass: "normal"))
             let okErr = await okRepo.lastWriteError
             check("R4.1 successful write clears lastWriteError", okErr == nil)
             try? FileManager.default.removeItem(at: dir)
@@ -4477,5 +4497,22 @@ struct CoreTests {
             print("\(failed) test(s) failed.")
             exit(1)
         }
+    }
+}
+
+
+/// R2.2 test helper: thread-safe did-run flag for the expired-budget check.
+private final class ExecutedFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var ran = false
+    func mark() {
+        lock.lock()
+        defer { lock.unlock() }
+        ran = true
+    }
+    var didRun: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return ran
     }
 }

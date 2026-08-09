@@ -23,24 +23,20 @@ final class HistoryViewModel: ObservableObject {
     func reload() async {
         isLoading = true
         defer { isLoading = false }
-        do {
-            let storage = await ActorHistoryRepository.shared.entries()
-            entries = storage.map { entry in
-                HistoryEntry(
-                    id: entry.id,
-                    timestamp: entry.timestamp,
-                    originalText: entry.text,
-                    finalText: entry.text,
-                    duration: entry.duration,
-                    modelUsed: entry.modelUsed)
-            }
-            lastError = nil
-            // Surface any silent write failure from add() (review R4.1).
-            if let writeError = await ActorHistoryRepository.shared.lastWriteError {
-                lastError = "History write issue: \(writeError)"
-            }
-        } catch {
-            lastError = "Could not load history: \(error.localizedDescription)"
+        let storage = await ActorHistoryRepository.shared.entries()
+        entries = storage.map { entry in
+            HistoryEntry(
+                id: entry.id,
+                timestamp: entry.timestamp,
+                originalText: entry.text,
+                finalText: entry.text,
+                duration: entry.duration,
+                modelUsed: entry.modelUsed)
+        }
+        lastError = nil
+        // Surface any silent write failure from add() (review R4.1).
+        if let writeError = await ActorHistoryRepository.shared.lastWriteError {
+            lastError = "History write issue: \(writeError)"
         }
     }
 

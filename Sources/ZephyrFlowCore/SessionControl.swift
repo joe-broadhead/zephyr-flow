@@ -160,7 +160,7 @@ public struct SessionControlModel: Sendable, Equatable {
                 // The canonical event lands exactly on the requested terminal.
                 _ = applyTransition(next, sid: sid)
                 return state
-            case .to(let next):
+            case .to:
                 // The canonical event is legal but lands on a DIFFERENT
                 // terminal (e.g. captureFailed -> .failed while the category
                 // is .degraded). The orchestration has already decided the

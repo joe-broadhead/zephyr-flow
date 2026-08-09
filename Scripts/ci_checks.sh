@@ -49,6 +49,8 @@ if [[ $SC_BUILD_RC -ne 0 ]]; then
 fi
 grep 'warning:' /tmp/zf_sc_build.log \
   | sed -E 's/^[[:space:]]*[|`-]*[[:space:]]*//' \
+  | sed -E 's/^.*\/Sources\/([^:]+):[0-9]+:[0-9]+:/\1:/' \
+  | sed -E 's/^.*\/Tests\/([^:]+):[0-9]+:[0-9]+:/\1:/' \
   | sed -E 's/[[:space:]]+/ /g' | sort -u > "$WARN_LOG"
 BASELINE="docs/development/ci/strict-concurrency-warnings-baseline.txt"
 if [[ -f "$BASELINE" ]]; then

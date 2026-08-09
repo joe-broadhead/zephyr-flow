@@ -200,12 +200,14 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             }
         }
         let channelStats = channel?.stats()
-        lock.lock()
-        let seqDegraded = sequencer.isDegraded
-        let barrierTimedOut = drainBarrier.state == .timedOut
-        let barrierDrained = drainBarrier.state == .drained
-        let lateAppends = drainBarrier.lateAppends
-        lock.unlock()
+        let (seqDegraded, barrierTimedOut, barrierDrained, lateAppends) = lock.withLock {
+            (
+                sequencer.isDegraded,
+                drainBarrier.state == .timedOut,
+                drainBarrier.state == .drained,
+                drainBarrier.lateAppends
+            )
+        }
         let channelDegraded = channel?.isDegraded ?? false
         if let channelStats {
             if channelStats.overflowDropped > 0 {
