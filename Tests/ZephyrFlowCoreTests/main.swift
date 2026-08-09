@@ -904,6 +904,47 @@ struct CoreTests {
             // with no consumer, overflow must have dropped the excess (64 of them)
             check("overflow counted not silent", stats.overflowDropped == 936 && !seq.isDegraded)
         }
+
+        // ===== JOE-2247 regression (review R1.1): capacity released on dequeue =====
+        do {
+            // A slow-but-steady consumer must NOT lose audio once the ring
+            // releases capacity. Old bug: admission never dequeued, so after
+            // `capacity` chunks every later chunk overflowed forever.
+            let sid = SessionID(token: "r1", sequence: 1, createdAtUptimeNanos: 0)
+            let ch = BoundedAudioChannel(sessionID: sid, capacity: 16)
+            let total = 500  // many multiples of capacity
+            // Deterministic wave test: enqueue a wave, fully drain it (the
+            // consumer releases capacity), enqueue the next wave. Across many
+            // waves, nothing overflows and everything is delivered in order.
+            // This is exactly the review's required scenario: many multiples of
+            // capacity through a consumer, occupancy returning to zero.
+            let waves = 20
+            let perWave = 8   // <= capacity so a drained wave always fits
+            var produced: [UInt64] = []
+            var seen: [UInt64] = []
+            for w in 0..<waves {
+                // Enqueue one wave.
+                for j in 0..<perWave {
+                    let i = w * perWave + j
+                    _ = ch.enqueue(AudioChunk(
+                        sessionID: sid, sequence: UInt64(i), startSample: UInt64(i) * 512,
+                        sampleRate: 16000, channelCount: 1, samples: [Float(i)]))
+                    produced.append(UInt64(i))
+                }
+                // Drain exactly this wave before the next one (capacity released).
+                for await c in ch.chunks {
+                    seen.append(c.sequence)
+                    if seen.count == (w + 1) * perWave { break }
+                }
+            }
+            ch.close()
+            let s = ch.stats()
+            print("R1.1-probe delivered=\(seen.count) accepted=\(s.enqueued) overflow=\(s.overflowDropped) total=\(produced.count)")
+            check("R1.1 no overflow across waves with full drains",
+                  s.overflowDropped == 0)
+            check("R1.1 all chunks enqueued", s.enqueued == UInt64(produced.count))
+            check("R1.1 all sequences delivered in order", seen == produced)
+        }
         do {
             let a = SessionID(token: "1", sequence: 1, createdAtUptimeNanos: 0)
             let b = SessionID(token: "2", sequence: 1, createdAtUptimeNanos: 0)

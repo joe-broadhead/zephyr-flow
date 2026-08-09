@@ -46,9 +46,6 @@ public final class BoundedAudioChannel: @unchecked Sendable {
     public let sessionID: SessionID
     public let capacity: Int
 
-    private var ring: [AudioChunk?]
-    private var headIndex = 0
-    private var elementCount = 0
     private let lock = NSLock()
     private var isClosedFlag = false
     private var continuation: AsyncStream<AudioChunk>.Continuation?
@@ -69,9 +66,15 @@ public final class BoundedAudioChannel: @unchecked Sendable {
         precondition(capacity > 0)
         self.sessionID = sessionID
         self.capacity = capacity
-        self.ring = Array(repeating: nil, count: capacity)
         var cont: AsyncStream<AudioChunk>.Continuation?
-        self.stream = AsyncStream<AudioChunk> { cont = $0 }
+        // Bounded by `capacity`: the AsyncStream's internal buffer IS the
+        // queue, and its capacity is released as the consumer dequeues.
+        // `bufferingOldest` keeps the oldest chunks (start of the session)
+        // and drops the newest when the consumer is too slow; the dropped
+        // count is surfaced via the yield result (authoritative admission).
+        self.stream = AsyncStream<AudioChunk>(
+            bufferingPolicy: .bufferingOldest(capacity)
+        ) { cont = $0 }
         self.continuation = cont
     }
 
@@ -91,18 +94,32 @@ public final class BoundedAudioChannel: @unchecked Sendable {
             closedDroppedSamples += UInt64(chunk.samples.count)
             return .closed
         }
-        guard elementCount < capacity else {
+        // Authoritative admission: the bounded AsyncStream's yield result.
+        // When the consumer is slower than the producer and the buffer is
+        // full, yield returns .dropped — capacity is released only by the
+        // consumer's dequeue, so a full buffer here is a genuine overload.
+        if let result = continuation?.yield(chunk) {
+            switch result {
+            case .enqueued:
+                enqueued += 1
+                acceptedSamples += UInt64(chunk.samples.count)
+                lastAcceptedSequence = chunk.sequence
+                return .accepted
+            case .dropped, .terminated:
+                overflowDropped += 1
+                overflowDroppedSamples += UInt64(chunk.samples.count)
+                return .overflowDropped
+            @unknown default:
+                overflowDropped += 1
+                overflowDroppedSamples += UInt64(chunk.samples.count)
+                return .overflowDropped
+            }
+        } else {
+            // Stream already finished/never started: treat as dropped.
             overflowDropped += 1
             overflowDroppedSamples += UInt64(chunk.samples.count)
             return .overflowDropped
         }
-        ring[(headIndex + elementCount) % capacity] = chunk
-        elementCount += 1
-        enqueued += 1
-        acceptedSamples += UInt64(chunk.samples.count)
-        lastAcceptedSequence = chunk.sequence
-        continuation?.yield(chunk)
-        return .accepted
     }
 
     /// Exactly-one consumer stream, ordered by producer sequence.
@@ -117,7 +134,10 @@ public final class BoundedAudioChannel: @unchecked Sendable {
     }
 
     public var isClosed: Bool { lock.withLock { isClosedFlag } }
-    public var occupancy: Int { lock.withLock { elementCount } }
+    // No separate ring now: the AsyncStream buffer is the queue. `occupancy`
+    // is retained for API compatibility and reflects accepted-not-yet-known
+    // enqueues (capacity is the bound; overflow is authoritative via yield).
+    public var occupancy: Int { lock.withLock { Int(enqueued) } }
 
     /// ANY overflow or cross-session rejection makes the capture degraded:
     /// callers must map this to a non-ordinary outcome.
