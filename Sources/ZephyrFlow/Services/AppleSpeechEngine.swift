@@ -8,6 +8,7 @@ import ZephyrFlowCore
 /// Owns its own AVAudioEngine and feeds **native-format** buffers to SFSpeech
 /// (required for reliable recognition — 16 kHz converted PCM often yields empty results).
 actor AppleSpeechEngine: WhisperEngineProtocol {
+    public var isQuarantined: Bool { false }  // never quarantines
     private(set) var isReady = false
     private(set) var modelName = "Apple Speech"
 

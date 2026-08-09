@@ -605,6 +605,25 @@ final class DictationController: ObservableObject {
     /// download consent is denied; consent is independent of Local Only.
     private func preloadEngine() async {
         guard !usingAppleEngine else { return }
+        // Review R6: a quarantined engine (stuck native decode at cleanup)
+        // must be replaced with a fresh instance before reuse.
+        if await activeEngine.isQuarantined {
+            ZFLog.info("Engine quarantined — replacing with a fresh WhisperKit instance")
+            whisperEngine = WhisperKitEngine()
+            activeEngine = whisperEngine
+            currentEngineToken = EngineToken()
+            // Re-load the preferred model into the fresh instance (verified
+            // artifact path; downloads remain gated).
+            isModelLoading = true
+            do {
+                try await activeEngine.load(model: settingsStore.settings.preferredModel)
+                self.isModelLoading = false
+            } catch {
+                self.isModelLoading = false
+                ZFLog.error("Fresh engine load failed: \(error.localizedDescription)")
+            }
+            return
+        }
         let model = settingsStore.settings.preferredModel
         isModelLoading = true
         modelDownloadFraction = nil

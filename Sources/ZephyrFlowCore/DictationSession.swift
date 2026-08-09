@@ -400,6 +400,9 @@ public actor DictationSession {
                 language: settings.language)
         } catch {
             _ = control.stage(.captureFailed)
+            // Review R2/6: release any partially-acquired engine/audio
+            // resources so the next session can start cleanly.
+            await provider.cancel()
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
             finishTerminal(category: .failed)
             return
@@ -447,6 +450,7 @@ public actor DictationSession {
         // .capturing to .draining BEFORE stopCapture; drainFinished then
         // legally advances to .transcribing (review R1.5).
         if control.stage(.stop).isRejected {
+            await provider.cancel()
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
             finishTerminal(category: .failed)
             return
@@ -460,6 +464,10 @@ public actor DictationSession {
 
         if audioSummary.degraded || !audioSummary.reconciled {
             _ = control.stage(.captureFailed)
+            // Review R2/6: a degraded capture must release the engine (a
+            // streaming engine would block the NEXT session with
+            // alreadyStreaming). cancel() stops audio + engine + channel.
+            await provider.cancel()
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
             finishTerminal(category: .degraded)
             return
@@ -467,6 +475,7 @@ public actor DictationSession {
 
         // Stage 3: finalize decode -> explicit engine result.
         if control.stage(.drainFinished).isRejected {
+            await provider.cancel()
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
             finishTerminal(category: .failed)
             return

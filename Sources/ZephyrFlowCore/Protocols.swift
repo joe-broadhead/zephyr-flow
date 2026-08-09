@@ -5,6 +5,9 @@ import Foundation
 public protocol WhisperEngineProtocol: Actor {
     var isReady: Bool { get }
     var modelName: String { get }
+    /// Review R6: true when the engine instance is quarantined (a native
+    /// decode was still busy at cleanup) and must be replaced before reuse.
+    var isQuarantined: Bool { get }
     func load(model: ModelIdentifier) async throws
     /// - Parameter localOnly: When true, must not use any network path (fail closed).
     /// - Parameter sessionID: immutable session this stream belongs to

@@ -20,7 +20,8 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     private var decodeOwnership = DecodeOwnership()
     /// Review R3.2: set when a native decode was still busy at cleanup — the
     /// instance must not be reused for a new session (unsafe ownership).
-    private var isQuarantined = false
+    private var _isQuarantined = false
+    public var isQuarantined: Bool { _isQuarantined }
     private var currentDecodeSessionID: SessionID?
     /// Review R3.2: samples silently-dropped by the 60s rolling-window cap.
     private var droppedPrefixSamples: UInt64 = 0
@@ -126,7 +127,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         _ = localOnly
         guard isReady, kit != nil else { throw WhisperEngineError.notReady }
         guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
-        guard !isQuarantined else {
+        guard !_isQuarantined else {
             throw WhisperEngineError.notReady
         }
         currentDecodeSessionID = sessionID
@@ -305,8 +306,19 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         isFinalizing = true
         partialLoopTask?.cancel()
         partialLoopTask = nil
-        await waitForDecodeIdle()
-        cleanup()
+        // Review R6: cancellation must be product-bounded — never wait the
+        // full 120s decode-idle cap during app shutdown. Wait a SHORT bounded
+        // window for a cooperative native decode to end; if it is still busy,
+        // QUARANTINE immediately (cleanup() sets isQuarantined, and a fresh
+        // engine replaces it before the next session). This keeps the 3s
+        // termination handshake interruptible.
+        let cancelWaitCap: UInt64 = 2_000_000_000  // 2s
+        var waited: UInt64 = 0
+        while decodeOwnership.isBusy, waited < cancelWaitCap {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            waited += 10_000_000
+        }
+        cleanup()  // quarantines if decodeOwnership.isBusy
     }
 
     // MARK: - Single-flight decode
@@ -434,7 +446,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         // cannot reuse this WhisperKit safely; otherwise a fresh ownership is
         // fine.
         if decodeOwnership.isBusy {
-            isQuarantined = true
+            _isQuarantined = true
         } else {
             decodeOwnership = DecodeOwnership()
         }

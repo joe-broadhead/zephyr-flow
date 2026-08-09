@@ -178,7 +178,7 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // the delivery task's final-sequence acknowledgment is observed by the
         // barrier (arming after close would strand it in .draining). The
         // duplicate early audio.stop() is removed.
-        let channel = self.channel
+        var channel = self.channel
         if let finalSeq = channel?.stats().lastAcceptedSequence {
             lock.withLock {
                 drainBarrier.begin(

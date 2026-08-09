@@ -237,6 +237,7 @@ public struct EngineRegistry: Sendable {
 /// Deterministic fake engine for pipeline tests.
 public actor FakeWhisperEngine: WhisperEngineProtocol {
     public private(set) var isReady = true
+    public var isQuarantined = false
     public private(set) var modelName = "Fake"
     public private(set) var appended: [Float] = []
     private var partial: (@Sendable (PartialTranscription) -> Void)?
