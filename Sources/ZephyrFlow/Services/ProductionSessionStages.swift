@@ -227,7 +227,8 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                     accounting.noteDropped(sourceSamples: channelStats.overflowDroppedSamples, reason: .overflow)
                 }
                 if channelStats.wrongSessionRejected > 0 {
-                    accounting.noteDropped(sourceSamples: channelStats.wrongSessionDroppedSamples, reason: .wrongSession)
+                    accounting.noteDropped(
+                        sourceSamples: channelStats.wrongSessionDroppedSamples, reason: .wrongSession)
                 }
                 if channelStats.closedDropped > 0 {
                     accounting.noteDropped(sourceSamples: channelStats.closedDroppedSamples, reason: .closedDrop)

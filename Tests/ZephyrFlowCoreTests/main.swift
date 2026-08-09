@@ -3236,10 +3236,11 @@ struct CoreTests {
             let file = dir.appendingPathComponent("history.json")
             // Sealed (encrypted) data written under a key, then the key goes
             // missing: writes must be REFUSED, never overwritten with plaintext.
-            var keyStore: HistoryCryptoKey? = HistoryCryptoKey(
-                keyID: "k1", material: Data(repeating: 0xAB, count: 32))
-            let repo = ActorHistoryRepository(fileURL: file, keyProvider: { keyStore })
-            try? await repo.configureEncryption(keyProvider: { keyStore })
+            let keyHolder = KeyHolder(
+                HistoryCryptoKey(
+                    keyID: "k1", material: Data(repeating: 0xAB, count: 32)))
+            let repo = ActorHistoryRepository(fileURL: file, keyProvider: { keyHolder.key })
+            await repo.configureEncryption(keyProvider: { keyHolder.key })
             try? await repo.load()
             await repo.add(
                 HistoryStorageEntry(
@@ -3268,7 +3269,7 @@ struct CoreTests {
             check("R7 sealed file preserved (no plaintext overwrite)", sealedStill)
             // Encryption-configured-but-key-missing also refuses writes.
             let cfgNoKey = ActorHistoryRepository(fileURL: file, keyProvider: { nil })
-            try? await cfgNoKey.configureEncryption(keyProvider: { nil })
+            await cfgNoKey.configureEncryption(keyProvider: { nil })
             try? await cfgNoKey.load()
             await cfgNoKey.add(
                 HistoryStorageEntry(
@@ -4739,5 +4740,23 @@ private final class ExecutedFlag: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return ran
+    }
+}
+
+/// R7 test helper: mutable key holder (avoids captured-var warnings in the
+/// @Sendable key provider closure).
+private final class KeyHolder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: HistoryCryptoKey?
+    init(_ key: HistoryCryptoKey?) { stored = key }
+    var key: HistoryCryptoKey? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+    func set(_ k: HistoryCryptoKey?) {
+        lock.lock()
+        defer { lock.unlock() }
+        stored = k
     }
 }
