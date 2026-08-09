@@ -1204,6 +1204,35 @@ struct CoreTests {
             )
             check("2269 no strategy on copy/uncertain", copied.strategy == nil && changed.strategy == nil)
         }
+
+        // ===== R9 regression: automatic clipboard writes are never success =====
+        do {
+            let autoCopy = InsertionOutcome.automaticCopy
+            let autoBlocked = InsertionOutcome.automaticCopyBlocked
+            // R9: automatic copy (copy-only mode / fallback) must NOT be green,
+            // NOT history-eligible, and must surface review (no auto-dismiss).
+            check("R9 automaticCopy not green", !autoCopy.permitsGreenSuccessUI)
+            check("R9 automaticCopy no history", !autoCopy.permitsHistoryRetention)
+            check("R9 automaticCopy uncertain (review)", autoCopy.isUncertain)
+            check("R9 automaticCopy no auto-dismiss", !autoCopy.permitsAutomaticPanelDismissal)
+            check("R9 automaticCopy distinct message",
+                  autoCopy.userFacingMessage.contains("automatic"))
+            // R9: policy-blocked automatic copy is also non-success, no history.
+            check("R9 blocked not green", !autoBlocked.permitsGreenSuccessUI)
+            check("R9 blocked no history", !autoBlocked.permitsHistoryRetention)
+            check("R9 blocked uncertain (review)", autoBlocked.isUncertain)
+            check("R9 blocked distinct message",
+                  autoBlocked.userFacingMessage.contains("blocked"))
+            // R9: automaticCopy IS a completed action (clipboard written) but
+            // blocked is NOT (nothing written).
+            check("R9 autoCopy completed action", autoCopy.isCompletedAction)
+            check("R9 blocked not completed action", !autoBlocked.isCompletedAction)
+            // R9: the ONLY green+history clipboard outcome is the explicit
+            // review-panel copy.
+            let copied = InsertionOutcome.explicitlyCopiedByUser
+            check("R9 explicit copy still green+history",
+                  copied.permitsGreenSuccessUI && copied.permitsHistoryRetention)
+        }
         // Exhaustive policy test: adding a case must fail until UI/privacy/
         // metrics policy is defined. Compile-time exhaustiveness + runtime
         // sanity for every case.
@@ -1212,6 +1241,7 @@ struct CoreTests {
                 .verifiedInserted(strategy: .axSelectedText, evidence: .clipboardRestored, warnings: []),
                 .eventPostedUnverified(strategy: .terminalPaste, warnings: [.noPostWriteVerification]),
                 .explicitlyCopiedByUser,
+                .automaticCopy, .automaticCopyBlocked,
                 .targetChanged, .targetGone, .targetUnknown, .secureTarget, .notEditable,
                 .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
                 .deadlineExceeded, .cancelled, .failed("x"),

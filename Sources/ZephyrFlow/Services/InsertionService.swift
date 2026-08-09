@@ -40,9 +40,11 @@ actor InsertionService: InsertionServiceProtocol {
 
         let secureFocused = AXIsProcessTrusted() ? await isSecureFieldFocused() : false
         if InsertionStrategyResolver.isSecureRole(role) || secureFocused {
-            await copyToClipboard(text)
-            ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=secure")
-            return .explicitlyCopiedByUser
+            // Review R9: never write the clipboard automatically for a secure
+            // field. The user may copy explicitly from the review panel, and
+            // only THAT action may produce .explicitlyCopiedByUser.
+            ZFLog.info("insert secure target — automatic clipboard blocked bundle=\(bundle ?? "nil")")
+            return .secureTarget
         }
 
         let adapter = InsertionStrategyResolver.adapter(forBundle: bundle, role: role)
@@ -69,9 +71,12 @@ actor InsertionService: InsertionServiceProtocol {
         for strategy in strategies {
             switch strategy {
             case .copyOnly:
+                // Review R9: copy-only MODE is an automatic write, not an
+                // explicit per-action copy. Distinct outcome: non-success, no
+                // history retention, review shown so the user confirms.
                 await copyToClipboard(text)
-                ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=ok")
-                return .explicitlyCopiedByUser
+                ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=automaticCopy")
+                return .automaticCopy
 
             case .clipboardPaste, .terminalPaste:
                 let settle = adapter.settleNanos
@@ -117,8 +122,8 @@ actor InsertionService: InsertionServiceProtocol {
         }
 
         await copyToClipboard(text)
-        ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=fallback")
-        return .explicitlyCopiedByUser
+        ZFLog.info("insert all-strategies-failed bundle=\(bundle ?? "nil") result=automaticCopy")
+        return .automaticCopy
     }
 
     // MARK: - Accessibility path

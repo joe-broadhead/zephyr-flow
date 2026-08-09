@@ -610,8 +610,14 @@ public enum InsertionOutcome: Sendable, Equatable {
     case verifiedInserted(strategy: InsertionStrategy, evidence: InsertionEvidence, warnings: [InsertionWarning])
     /// Event was posted (e.g. Cmd-V) but the target never confirmed receipt.
     case eventPostedUnverified(strategy: InsertionStrategy, warnings: [InsertionWarning])
-    /// The user explicitly chose copy (review panel / copy-only adapter).
+    /// The user explicitly chose copy from the review panel.
     case explicitlyCopiedByUser
+    /// Clipboard was written automatically (copy-only mode or fallback), NOT
+    /// by an explicit review-panel action. Non-success: user must confirm.
+    case automaticCopy
+    /// A policy-blocked automatic clipboard write was refused: the clipboard
+    /// was NOT written.
+    case automaticCopyBlocked
     // --- no-side-effect uncertainty states (JOE-2268 mapping) ---
     case targetChanged
     case targetGone
@@ -646,7 +652,8 @@ public enum InsertionOutcome: Sendable, Equatable {
     /// action (copy / unverified post).
     public var isCompletedAction: Bool {
         switch self {
-        case .verifiedInserted, .explicitlyCopiedByUser, .eventPostedUnverified:
+        case .verifiedInserted, .explicitlyCopiedByUser, .eventPostedUnverified,
+            .automaticCopy:
             return true
         default:
             return false
@@ -657,7 +664,7 @@ public enum InsertionOutcome: Sendable, Equatable {
     public var permitsGreenSuccessUI: Bool {
         switch self {
         case .verifiedInserted, .explicitlyCopiedByUser: return true
-        case .eventPostedUnverified: return false
+        case .eventPostedUnverified, .automaticCopy, .automaticCopyBlocked: return false
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
             .notEditable, .clipboardNotRestoredBecauseChanged,
             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
@@ -669,7 +676,7 @@ public enum InsertionOutcome: Sendable, Equatable {
     public var permitsHistoryRetention: Bool {
         switch self {
         case .verifiedInserted, .explicitlyCopiedByUser: return true
-        case .eventPostedUnverified: return false
+        case .eventPostedUnverified, .automaticCopy, .automaticCopyBlocked: return false
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
             .notEditable, .clipboardNotRestoredBecauseChanged,
             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
@@ -683,6 +690,7 @@ public enum InsertionOutcome: Sendable, Equatable {
         case .verifiedInserted: return true
         case .explicitlyCopiedByUser: return true
         case .eventPostedUnverified: return true
+        case .automaticCopy, .automaticCopyBlocked: return false
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
             .notEditable, .clipboardNotRestoredBecauseChanged,
             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
@@ -694,6 +702,7 @@ public enum InsertionOutcome: Sendable, Equatable {
     public var permitsReliabilityMetrics: Bool {
         switch self {
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
+            .automaticCopy, .automaticCopyBlocked,
             .targetChanged, .targetGone, .targetUnknown, .secureTarget,
             .notEditable, .clipboardNotRestoredBecauseChanged,
             .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
@@ -706,7 +715,7 @@ public enum InsertionOutcome: Sendable, Equatable {
     public var isUncertain: Bool {
         switch self {
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
-            .notEditable, .deadlineExceeded:
+            .notEditable, .deadlineExceeded, .automaticCopy, .automaticCopyBlocked:
             return true
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
@@ -722,6 +731,8 @@ public enum InsertionOutcome: Sendable, Equatable {
         case .verifiedInserted: return "Inserted"
         case .eventPostedUnverified: return "Inserted — unverified"
         case .explicitlyCopiedByUser: return "Copied to clipboard"
+        case .automaticCopy: return "Copied to clipboard (automatic) — verify the destination"
+        case .automaticCopyBlocked: return "Automatic clipboard blocked — review before copying"
         case .targetChanged: return "Target changed — nothing was inserted"
         case .targetGone: return "Target closed — nothing was inserted"
         case .targetUnknown: return "Target unknown — nothing was inserted"

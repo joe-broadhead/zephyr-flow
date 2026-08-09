@@ -555,6 +555,14 @@ public actor DictationSession {
                 publish(phase: .success, interim: retainedText, level: state.audioLevel)
                 finishTerminal(category: .completed)
                 return true
+            case .automaticCopy, .automaticCopyBlocked:
+                // Review R9: automatic clipboard writes are never treated as
+                // verified completion and never history-eligible. Surface the
+                // review panel so the user can confirm or copy explicitly.
+                _ = control.stage(.insertionFailed)
+                publish(phase: .review, interim: retainedText, level: state.audioLevel)
+                await handleReviewCommands(secureOnly: false)
+                return true
             default:
                 _ = control.stage(.insertionFailed)
                 publish(phase: .review, interim: retainedText, level: state.audioLevel)

@@ -59,6 +59,10 @@ public struct InsertionReviewModel: Sendable, Equatable {
         case .secureTarget: return "Secure field detected"
         case .notEditable: return "Field is not editable"
         case .deadlineExceeded: return "Timed out waiting for the target"
+        case .automaticCopy:
+            return "Copied to clipboard automatically"
+        case .automaticCopyBlocked:
+            return "Automatic clipboard blocked"
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
             .cancelled, .failed:
@@ -81,6 +85,10 @@ public struct InsertionReviewModel: Sendable, Equatable {
             return "The field you were typing into is read-only. Nothing was inserted."
         case .deadlineExceeded:
             return "The target did not respond in time. Nothing was inserted."
+        case .automaticCopy:
+            return "The clipboard was written automatically (copy-only mode or fallback). Confirm the destination before continuing."
+        case .automaticCopyBlocked:
+            return "A secure or unknown target was detected, so the clipboard was NOT written automatically. You can copy explicitly if you choose."
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
             .cancelled, .failed:
@@ -96,6 +104,7 @@ public struct InsertionReviewModel: Sendable, Equatable {
         case .targetUnknown, .secureTarget:
             return false  // retry cannot fix missing permission or a secure field
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
+            .automaticCopy, .automaticCopyBlocked,
             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
             .cancelled, .failed:
             return false

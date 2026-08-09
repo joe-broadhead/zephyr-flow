@@ -135,6 +135,24 @@ public enum UIStatePolicy {
                 colorToken: "amber",
                 voiceOverLabel: "Paste sent, verify the destination",
                 symbol: "paperplane")
+        case .automaticCopy:
+            return PanelPresentation(
+                semantic: .review,
+                title: "Copied to clipboard (automatic) — verify",
+                message: "The clipboard was written automatically. Confirm the destination before continuing.",
+                autoDismissAfterNanos: nil,
+                colorToken: "amber",
+                voiceOverLabel: "Copied to clipboard automatically, please verify",
+                symbol: "doc.on.doc")
+        case .automaticCopyBlocked:
+            return PanelPresentation(
+                semantic: .review,
+                title: "Automatic clipboard blocked",
+                message: "A secure or unknown target was detected, so nothing was copied automatically. Review before copying.",
+                autoDismissAfterNanos: nil,
+                colorToken: "amber",
+                voiceOverLabel: "Automatic clipboard blocked, review before copying",
+                symbol: "exclamationmark.triangle")
         case .targetChanged:
             return PanelPresentation(
                 semantic: .review,
