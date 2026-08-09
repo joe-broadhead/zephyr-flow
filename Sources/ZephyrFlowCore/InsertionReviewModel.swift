@@ -59,6 +59,7 @@ public struct InsertionReviewModel: Sendable, Equatable {
         case .secureTarget: return "Secure field detected"
         case .notEditable: return "Field is not editable"
         case .deadlineExceeded: return "Timed out waiting for the target"
+        case .writeMayHaveApplied: return "Write may have applied — verify"
         case .automaticCopy:
             return "Copied to clipboard automatically"
         case .automaticCopyBlocked:
@@ -84,7 +85,9 @@ public struct InsertionReviewModel: Sendable, Equatable {
         case .notEditable:
             return "The field you were typing into is read-only. Nothing was inserted."
         case .deadlineExceeded:
-            return "The target did not respond in time. Nothing was inserted."
+            return "The target did not respond in time."
+        case .writeMayHaveApplied:
+            return "The write may have applied — the app did not confirm. Verify the destination before retrying."
         case .automaticCopy:
             return
                 "The clipboard was written automatically (copy-only mode or fallback). Confirm the destination before continuing."
@@ -103,6 +106,8 @@ public struct InsertionReviewModel: Sendable, Equatable {
         switch outcome {
         case .targetChanged, .targetGone, .notEditable, .deadlineExceeded:
             return true
+        case .writeMayHaveApplied:
+            return false  // a retry could duplicate or target a stale element
         case .targetUnknown, .secureTarget:
             return false  // retry cannot fix missing permission or a secure field
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,

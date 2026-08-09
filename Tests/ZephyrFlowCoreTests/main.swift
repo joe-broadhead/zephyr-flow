@@ -1290,6 +1290,23 @@ struct CoreTests {
                 "R9 explicit copy still green+history",
                 copied.permitsGreenSuccessUI && copied.permitsHistoryRetention)
         }
+        // ===== R2/5 regression: timed-out AX write never claims safe =====
+        do {
+            let mayHaveApplied = InsertionOutcome.writeMayHaveApplied
+            check("R2/5 writeMayHaveApplied not green", !mayHaveApplied.permitsGreenSuccessUI)
+            check("R2/5 writeMayHaveApplied no history", !mayHaveApplied.permitsHistoryRetention)
+            check("R2/5 writeMayHaveApplied uncertain", mayHaveApplied.isUncertain)
+            check(
+                "R2/5 writeMayHaveApplied no auto-dismiss",
+                !mayHaveApplied.permitsAutomaticPanelDismissal)
+            check(
+                "R2/5 writeMayHaveApplied honest message",
+                mayHaveApplied.userFacingMessage.contains("may have applied"))
+            check(
+                "R2/5 writeMayHaveApplied not completed action",
+                !mayHaveApplied.isCompletedAction)
+        }
+
         // Exhaustive policy test: adding a case must fail until UI/privacy/
         // metrics policy is defined. Compile-time exhaustiveness + runtime
         // sanity for every case.
@@ -1301,7 +1318,7 @@ struct CoreTests {
                 .automaticCopy, .automaticCopyBlocked,
                 .targetChanged, .targetGone, .targetUnknown, .secureTarget, .notEditable,
                 .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
-                .deadlineExceeded, .cancelled, .failed("x"),
+                .deadlineExceeded, .writeMayHaveApplied, .cancelled, .failed("x"),
             ]
             var policyComplete = true
             for outcome in all {

@@ -632,6 +632,11 @@ public enum InsertionOutcome: Sendable, Equatable {
     case clipboardRestoreFailed
     // --- timing / lifecycle ---
     case deadlineExceeded
+    /// A timed-out side-effecting AX write MAY have applied: the operation was
+    /// dispatched and the deadline elapsed before it was known not to have
+    /// taken effect. Never claim "nothing was inserted"; automatic retry is
+    /// disabled (a retry could duplicate or target a stale element).
+    case writeMayHaveApplied
     case cancelled
     // --- typed failure (message is a user-safe reason, never transcript) ---
     case failed(String)
@@ -670,7 +675,8 @@ public enum InsertionOutcome: Sendable, Equatable {
         case .eventPostedUnverified, .automaticCopy, .automaticCopyBlocked: return false
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
             .notEditable, .clipboardNotRestoredBecauseChanged,
-            .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            .clipboardRestoreFailed, .deadlineExceeded, .writeMayHaveApplied,
+            .cancelled, .failed:
             return false
         }
     }
@@ -682,7 +688,8 @@ public enum InsertionOutcome: Sendable, Equatable {
         case .eventPostedUnverified, .automaticCopy, .automaticCopyBlocked: return false
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
             .notEditable, .clipboardNotRestoredBecauseChanged,
-            .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            .clipboardRestoreFailed, .deadlineExceeded, .writeMayHaveApplied,
+            .cancelled, .failed:
             return false
         }
     }
@@ -696,7 +703,8 @@ public enum InsertionOutcome: Sendable, Equatable {
         case .automaticCopy, .automaticCopyBlocked: return false
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
             .notEditable, .clipboardNotRestoredBecauseChanged,
-            .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            .clipboardRestoreFailed, .deadlineExceeded, .writeMayHaveApplied,
+            .cancelled, .failed:
             return false
         }
     }
@@ -708,7 +716,8 @@ public enum InsertionOutcome: Sendable, Equatable {
             .automaticCopy, .automaticCopyBlocked,
             .targetChanged, .targetGone, .targetUnknown, .secureTarget,
             .notEditable, .clipboardNotRestoredBecauseChanged,
-            .clipboardRestoreFailed, .deadlineExceeded, .cancelled, .failed:
+            .clipboardRestoreFailed, .deadlineExceeded, .writeMayHaveApplied,
+            .cancelled, .failed:
             return true
         }
     }
@@ -718,7 +727,8 @@ public enum InsertionOutcome: Sendable, Equatable {
     public var isUncertain: Bool {
         switch self {
         case .targetChanged, .targetGone, .targetUnknown, .secureTarget,
-            .notEditable, .deadlineExceeded, .automaticCopy, .automaticCopyBlocked:
+            .notEditable, .deadlineExceeded, .writeMayHaveApplied,
+            .automaticCopy, .automaticCopyBlocked:
             return true
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
@@ -745,6 +755,7 @@ public enum InsertionOutcome: Sendable, Equatable {
             return "Clipboard was left as-is because it changed"
         case .clipboardRestoreFailed: return "Could not restore clipboard"
         case .deadlineExceeded: return "Target validation timed out"
+        case .writeMayHaveApplied: return "The write may have applied — verify the destination before retrying"
         case .cancelled: return "Cancelled"
         case .failed(let msg): return msg
         }

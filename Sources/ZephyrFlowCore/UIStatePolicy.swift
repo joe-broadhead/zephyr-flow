@@ -221,11 +221,23 @@ public enum UIStatePolicy {
             return PanelPresentation(
                 semantic: .warning,
                 title: "Timed out",
-                message: "The target did not respond in time. Nothing was inserted.",
+                message: "The target did not respond in time.",
                 autoDismissAfterNanos: nil,
                 colorToken: "amber",
                 voiceOverLabel: "Warning: timed out waiting for target",
                 symbol: "timer")
+        case .writeMayHaveApplied:
+            // Review R2/5: never claim "nothing was inserted" — the write may
+            // have applied; the user must verify the destination before any
+            // retry (auto-retry is disabled for this outcome).
+            return PanelPresentation(
+                semantic: .warning,
+                title: "Write may have applied — verify",
+                message: "The app did not confirm the write. Check the destination before retrying.",
+                autoDismissAfterNanos: nil,
+                colorToken: "amber",
+                voiceOverLabel: "Write may have applied, verify the destination",
+                symbol: "exclamationmark.triangle")
         case .cancelled:
             return PanelPresentation(
                 semantic: .neutral,

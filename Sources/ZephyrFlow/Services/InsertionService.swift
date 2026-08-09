@@ -132,8 +132,13 @@ actor InsertionService: InsertionServiceProtocol {
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=unverified")
                     return .eventPostedUnverified(strategy: strategy, warnings: [.noPostWriteVerification])
                 case .deadlineExceeded:
-                    ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=deadline")
-                    return .deadlineExceeded
+                    ZFLog.info(
+                        "insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=writeMayHaveApplied")
+                    // Review R2/5: a timed-out AX write MAY have applied — the
+                    // detached mutation was dispatched and the deadline elapsed
+                    // before we knew it did not take effect. Never claim
+                    // "nothing was inserted"; automatic retry is disabled.
+                    return .writeMayHaveApplied
                 case .failed:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=fail")
                 }
