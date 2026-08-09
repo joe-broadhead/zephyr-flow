@@ -45,6 +45,11 @@ final class DictationController: ObservableObject {
     private var currentEngineToken = EngineToken()
     /// Serializes begin/end/cancel so concurrent hotkey Tasks cannot race.
     private var sessionChain: Task<Void, Never>?
+    /// Review R1.4: a begin-session task that may still be in model preload.
+    /// A release/cancel arriving during preload cancels this task so the
+    /// session does NOT start after the user already released — control is
+    /// immediately addressable rather than queued behind long engine work.
+    private var pendingBeginTask: Task<Void, Never>?
     private var admissionOpen = true
     /// The active per-session actor (nil between sessions). Successive
     /// sessions are distinct actors + providers — no shared mutable state.
@@ -88,9 +93,22 @@ final class DictationController: ObservableObject {
             switch event {
             case .press:
                 ZFLog.info("Hotkey press")
-                self.enqueueSession { await self.beginSession() }
+                let task = Task { @MainActor in await self.beginSession() }
+                self.pendingBeginTask = task
+                self.enqueueSession { await task.value }
             case .release:
                 ZFLog.info("Hotkey release")
+                // Review R1.4: preempt a pending begin DURING model preload
+                // immediately (not through the sessionChain FIFO). Without
+                // this, a release during a slow engine load queues behind the
+                // begin and the session still starts after the user released.
+                if self.session == nil, let pending = self.pendingBeginTask,
+                    !pending.isCancelled
+                {
+                    pending.cancel()
+                    self.pendingBeginTask = nil
+                    ZFLog.info("Hotkey release preempted pending begin during model preload")
+                }
                 self.enqueueSession { await self.endSession() }
             }
         }
@@ -204,6 +222,10 @@ final class DictationController: ObservableObject {
             ZFLog.info("beginSession ignored — admission closed or session active")
             return
         }
+        // If we're actually running begin now, a prior pending reference is
+        // stale (e.g. a cancelled one); clear it so a future release sees the
+        // real current pending task (set by the press handler).
+        pendingBeginTask = nil
         // App-level fail-fast permission checks (never await dialogs here).
         privacy.refresh()
         guard privacy.status.microphone else {
@@ -233,6 +255,8 @@ final class DictationController: ObservableObject {
         if !ready {
             await preloadEngine()
         }
+        // Review R1.4: a release during preload cancelled us — do NOT start.
+        if Task.isCancelled { return }
         // JOE-2283: never enter a fake listening/capturing state when the
         // selected model is not ready (missing/unverified/failed download).
         guard await activeEngine.isReady else {
@@ -269,6 +293,7 @@ final class DictationController: ObservableObject {
             settings: settings,
             idFactory: sessionIDFactory)
         session = s
+        pendingBeginTask = nil  // begin completed; no longer pending
         sessionTask = Task { await s.run() }
         // SessionID is immutable; read it for review presentation.
         Task { [weak self] in
@@ -531,9 +556,22 @@ final class DictationController: ObservableObject {
             switch event {
             case .press:
                 ZFLog.info("Hotkey press")
-                self.enqueueSession { await self.beginSession() }
+                let task = Task { @MainActor in await self.beginSession() }
+                self.pendingBeginTask = task
+                self.enqueueSession { await task.value }
             case .release:
                 ZFLog.info("Hotkey release")
+                // Review R1.4: preempt a pending begin DURING model preload
+                // immediately (not through the sessionChain FIFO). Without
+                // this, a release during a slow engine load queues behind the
+                // begin and the session still starts after the user released.
+                if self.session == nil, let pending = self.pendingBeginTask,
+                    !pending.isCancelled
+                {
+                    pending.cancel()
+                    self.pendingBeginTask = nil
+                    ZFLog.info("Hotkey release preempted pending begin during model preload")
+                }
                 self.enqueueSession { await self.endSession() }
             }
         }
