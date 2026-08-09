@@ -4500,7 +4500,6 @@ struct CoreTests {
     }
 }
 
-
 /// R2.2 test helper: thread-safe did-run flag for the expired-budget check.
 private final class ExecutedFlag: @unchecked Sendable {
     private let lock = NSLock()

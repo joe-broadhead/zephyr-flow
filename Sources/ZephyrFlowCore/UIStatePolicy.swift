@@ -148,7 +148,8 @@ public enum UIStatePolicy {
             return PanelPresentation(
                 semantic: .review,
                 title: "Automatic clipboard blocked",
-                message: "A secure or unknown target was detected, so nothing was copied automatically. Review before copying.",
+                message:
+                    "A secure or unknown target was detected, so nothing was copied automatically. Review before copying.",
                 autoDismissAfterNanos: nil,
                 colorToken: "amber",
                 voiceOverLabel: "Automatic clipboard blocked, review before copying",

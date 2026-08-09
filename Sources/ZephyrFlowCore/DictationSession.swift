@@ -676,8 +676,9 @@ public actor DictationSession {
         // terminal state so the terminal OUTCOME (not just cleanup) is
         // recorded exactly once. A duplicate finish is a no-op because the
         // control model refuses to leave a terminal state.
-        let outcomeCategory = StageOutcomeCategory(
-            rawValue: category.rawValue) ?? .failed
+        let outcomeCategory =
+            StageOutcomeCategory(
+                rawValue: category.rawValue) ?? .failed
         _ = control.finish(category: outcomeCategory)
         captureTask?.cancel()
         levelsTask?.cancel()

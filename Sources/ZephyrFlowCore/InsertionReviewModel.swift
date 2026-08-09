@@ -86,9 +86,11 @@ public struct InsertionReviewModel: Sendable, Equatable {
         case .deadlineExceeded:
             return "The target did not respond in time. Nothing was inserted."
         case .automaticCopy:
-            return "The clipboard was written automatically (copy-only mode or fallback). Confirm the destination before continuing."
+            return
+                "The clipboard was written automatically (copy-only mode or fallback). Confirm the destination before continuing."
         case .automaticCopyBlocked:
-            return "A secure or unknown target was detected, so the clipboard was NOT written automatically. You can copy explicitly if you choose."
+            return
+                "A secure or unknown target was detected, so the clipboard was NOT written automatically. You can copy explicitly if you choose."
         case .verifiedInserted, .eventPostedUnverified, .explicitlyCopiedByUser,
             .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
             .cancelled, .failed:

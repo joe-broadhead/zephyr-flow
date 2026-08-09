@@ -337,7 +337,6 @@ public enum AxBoundedRunner {
     }
 }
 
-
 /// Review R2.2: lock-guarded run-exactly-once helper for the bounded AX race.
 private final class OnceFlag: @unchecked Sendable {
     private let lock = NSLock()
