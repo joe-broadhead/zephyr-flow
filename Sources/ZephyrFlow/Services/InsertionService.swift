@@ -21,7 +21,10 @@ actor InsertionService: InsertionServiceProtocol {
         targetBundleID: String? = nil,
         sensitivity: SessionSensitivity = .normal,
         sessionID: SessionID? = nil,
-        copyOnlyOverrides: Set<String> = []
+        copyOnlyOverrides: Set<String> = [],
+        validatedElement: TargetSnapshot.ElementIdentity? = nil,
+        validatedPid: Int32? = nil,
+        validatedWindowID: UInt32? = nil
     ) async -> InsertionOutcome {
         guard !text.isEmpty else { return .failed("Empty text") }
         // JOE-2259: domain rejection of automatic insertion for secure/unknown
@@ -119,7 +122,11 @@ actor InsertionService: InsertionServiceProtocol {
                 guard AXIsProcessTrusted() else { continue }
                 let allowFallback = strategy == .axValue
                 let axOutcome = await insertViaAccessibility(
-                    text, validatedTargetBundle: bundle)
+                    text,
+                    validatedTargetBundle: bundle,
+                    validatedElement: validatedElement,
+                    validatedPid: validatedPid,
+                    validatedWindowID: validatedWindowID)
                 switch axOutcome {
                 case .verified:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=verified")
@@ -165,7 +172,10 @@ actor InsertionService: InsertionServiceProtocol {
 
     private func insertViaAccessibility(
         _ text: String,
-        validatedTargetBundle: String?
+        validatedTargetBundle: String?,
+        validatedElement: TargetSnapshot.ElementIdentity? = nil,
+        validatedPid: Int32? = nil,
+        validatedWindowID: UInt32? = nil
     ) async -> AXInsertResult {
         // JOE-2270: consult the deterministic write policy before ANY write.
         // Re-resolve capability + selection immediately before the write, then
@@ -201,6 +211,30 @@ actor InsertionService: InsertionServiceProtocol {
         {
             ZFLog.info("AX: frontmost bundle changed after validation (\(expected) -> \(current)) — blocked")
             return .failed
+        }
+
+        // Review B4: bind the write to the VALIDATED element, not just the
+        // app. Compare process, window, role and subrole of the re-resolved
+        // element against the validated snapshot; a same-app field/window
+        // switch after validation fails closed (no insertion into a target
+        // that was not validated).
+        if let expectedPid = validatedPid {
+            var currentPid: pid_t = 0
+            AXUIElementGetPid(element, &currentPid)
+            if currentPid != expectedPid {
+                ZFLog.info("AX: PID changed after validation (\(expectedPid) -> \(currentPid)) — blocked")
+                return .failed
+            }
+        }
+        if let expected = validatedElement {
+            let currentRole = axString(element, kAXRoleAttribute)
+            let currentSubrole = axString(element, kAXSubroleAttribute)
+            if currentRole != expected.role
+                || (expected.subrole != nil && currentSubrole != expected.subrole)
+            {
+                ZFLog.info("AX: element role/subrole changed after validation — blocked")
+                return .failed
+            }
         }
 
         // Capability flags (fresh, content-free).

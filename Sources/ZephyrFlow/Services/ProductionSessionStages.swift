@@ -310,7 +310,12 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             targetBundleID: request.targetBundleID,
             sensitivity: request.sensitivity,
             sessionID: request.sessionID,
-            copyOnlyOverrides: request.copyOnlyOverrides)
+            copyOnlyOverrides: request.copyOnlyOverrides,
+            // Review B4: pass the validated element identity so the AX write
+            // binds to the exact validated target.
+            validatedElement: request.validatedElement,
+            validatedPid: request.validatedPid,
+            validatedWindowID: request.validatedWindowID)
     }
 
     func recordHistory(

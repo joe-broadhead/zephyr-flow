@@ -178,19 +178,32 @@ public struct SessionInsertRequest: Sendable, Equatable {
     public let preferPaste: Bool
     public let insertionMode: String
     public let targetBundleID: String?
+    /// Review B4: the element identity that was VALIDATED. Insertion must only
+    /// mutate this exact element; a re-resolved element that differs (same
+    /// app, different field/window) fails closed instead of inserting.
+    public let validatedElement: TargetSnapshot.ElementIdentity?
+    public let validatedPid: Int32?
+    public let validatedWindowID: UInt32?
     public let sensitivity: SessionSensitivity
     public let sessionID: SessionID
     public let copyOnlyOverrides: Set<String>
 
     public init(
         text: String, preferPaste: Bool, insertionMode: String,
-        targetBundleID: String?, sensitivity: SessionSensitivity,
+        targetBundleID: String?,
+        validatedElement: TargetSnapshot.ElementIdentity? = nil,
+        validatedPid: Int32? = nil,
+        validatedWindowID: UInt32? = nil,
+        sensitivity: SessionSensitivity,
         sessionID: SessionID, copyOnlyOverrides: Set<String>
     ) {
         self.text = text
         self.preferPaste = preferPaste
         self.insertionMode = insertionMode
         self.targetBundleID = targetBundleID
+        self.validatedElement = validatedElement
+        self.validatedPid = validatedPid
+        self.validatedWindowID = validatedWindowID
         self.sensitivity = sensitivity
         self.sessionID = sessionID
         self.copyOnlyOverrides = copyOnlyOverrides
@@ -599,6 +612,12 @@ public actor DictationSession {
                     preferPaste: true,
                     insertionMode: settings.insertionMode,
                     targetBundleID: snapshot.target.bundleID,
+                    // Review B4: bind insertion to the VALIDATED element so a
+                    // focus change after validation cannot target a different
+                    // field/window in the same app.
+                    validatedElement: snapshot.element,
+                    validatedPid: snapshot.target.pid,
+                    validatedWindowID: snapshot.target.windowID,
                     sensitivity: validation.effectiveSensitivity,
                     sessionID: sessionID,
                     copyOnlyOverrides: Set(settings.copyOnlyOverrideBundleIDs)))

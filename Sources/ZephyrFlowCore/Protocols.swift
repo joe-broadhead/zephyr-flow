@@ -63,7 +63,10 @@ public protocol InsertionServiceProtocol: Actor {
         targetBundleID: String?,
         sensitivity: SessionSensitivity,
         sessionID: SessionID?,
-        copyOnlyOverrides: Set<String>
+        copyOnlyOverrides: Set<String>,
+        validatedElement: TargetSnapshot.ElementIdentity?,
+        validatedPid: Int32?,
+        validatedWindowID: UInt32?
     ) async -> InsertionOutcome
 }
 
@@ -75,7 +78,10 @@ extension InsertionServiceProtocol {
         targetBundleID: String?,
         sensitivity: SessionSensitivity,
         sessionID: SessionID?,
-        copyOnlyOverrides: Set<String>
+        copyOnlyOverrides: Set<String>,
+        validatedElement: TargetSnapshot.ElementIdentity? = nil,
+        validatedPid: Int32? = nil,
+        validatedWindowID: UInt32? = nil
     ) async -> InsertionOutcome {
         await insert(text)
     }
