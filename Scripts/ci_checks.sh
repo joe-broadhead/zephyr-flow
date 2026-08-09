@@ -28,9 +28,11 @@ fi
 step "2/9 CLT Core runner (parity)"
 if ! swift run ZephyrFlowCoreTests 2>&1 | tail -2; then fail "swift run ZephyrFlowCoreTests"; fi
 
-# 3. Swift 6 strict concurrency at the strongest supported setting; NEW
-#    warnings fail (pinned baseline).
-step "3/9 strict concurrency (complete) vs baseline"
+# 3. Strict concurrency at the strongest setting available in Swift 5 mode
+#    (-strict-concurrency=complete). Note: the package is swift-tools 5.10, so
+#    this is NOT Swift 6 language mode; see docs/development/ci/sanitizers.md
+#    for the Swift 6 language-mode follow-up. NEW warnings fail (pinned baseline).
+step "3/9 strict concurrency (complete, Swift 5 mode) vs baseline"
 WARN_LOG="$(mktemp)"
 # Clean build so every warning is emitted (a cached build would emit none and
 # silently pass); the baseline was produced the same way. Review R8.1: the

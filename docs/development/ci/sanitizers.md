@@ -46,3 +46,14 @@
   fixtures and assert recovery rolls back to OLD (never mixed).
 - Rapid control: duplicate release edges and cancel-after-terminal are
   asserted as no-ops.
+
+
+## Swift 6 language mode (REQ-2 follow-up)
+
+The package is `swift-tools-version: 5.10` and the strict-concurrency gate runs
+`-strict-concurrency=complete` in Swift 5 mode. The warning baseline contains
+~80 diagnostics the compiler describes as errors in Swift 6 language mode
+(non-Sendable AX/AVFoundation captures, lock use from async contexts, etc.).
+Closing the Swift 6 language-mode gap is a follow-up that requires resolving
+those baseline warnings (or explicitly quarantining them) and is NOT claimed
+done here. The gate is honest about this: it is labeled 'Swift 5 mode'.
