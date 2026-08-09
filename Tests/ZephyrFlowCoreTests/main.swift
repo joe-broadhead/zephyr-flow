@@ -692,6 +692,52 @@ struct CoreTests {
             if case .rejected = c.stage(.insertionFailed) { lateRejected = true }
             check("late events rejected after terminal", lateRejected)
         }
+
+        // ===== R1.5 regression: finish(category:) drives terminal outcome =====
+        do {
+            // Review R1.5: finishTerminal must drive the CONTROL state machine
+            // to the matching terminal state (recording the outcome), not just
+            // clean up resources. Verify control.finish() does this.
+            var c = SessionControlModel()
+            _ = c.begin()
+            _ = c.stage(.readyToCapture)
+            _ = c.finish(category: .completed)
+            check("R1.5 finish(completed) drives state to completed",
+                  c.state == .completed && c.terminal == .completed)
+            // Duplicate finish after terminal is a no-op; outcome unchanged.
+            _ = c.finish(category: .cancelled)
+            check("R1.5 duplicate finish keeps first terminal", c.terminal == .completed)
+
+            // Cancel path from preparing -> cancelled via finish.
+            var c2 = SessionControlModel()
+            _ = c2.begin()
+            _ = c2.finish(category: .cancelled)
+            check("R1.5 finish(cancelled) from preparing", c2.state == .cancelled)
+
+            // A session that never left preparing can finish failed.
+            var c3 = SessionControlModel()
+            _ = c3.begin()
+            _ = c3.finish(category: .failed)
+            check("R1.5 finish(failed) from preparing", c3.state == .failed)
+
+            // finish records exactly one terminal outcome for stress paths.
+            var c4 = SessionControlModel()
+            _ = c4.begin()
+            _ = c4.stage(.readyToCapture)
+            _ = c4.finish(category: .degraded)
+            check("R1.5 finish(degraded)", c4.state == .degraded && c4.terminal == .degraded)
+        }
+        do {
+            // R1.5: readyToCapture transitions preparing -> capturing (the
+            // transition run() previously never staged).
+            var c = SessionControlModel()
+            _ = c.begin()
+            check("R1.5 begins in preparing", c.state == .preparing)
+            let r = c.stage(.readyToCapture)
+            var accepted = false
+            if case .accepted(let st) = r, st == .capturing { accepted = true }
+            check("R1.5 readyToCapture -> capturing", accepted && c.state == .capturing)
+        }
         do {
             // stale callback from session A cannot mutate session B
             var c1 = SessionControlModel()

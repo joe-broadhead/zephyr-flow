@@ -404,6 +404,15 @@ public actor DictationSession {
             finishTerminal(category: .failed)
             return
         }
+        // Review R1.5: the state machine was left in .preparing because the
+        // capture-started transition was never staged. Drive it to
+        // .capturing now that the capture is live.
+        if control.stage(.readyToCapture).isRejected {
+            await provider.cancel()
+            publish(phase: .error, interim: state.interimText, level: state.audioLevel)
+            finishTerminal(category: .failed)
+            return
+        }
         captureTask = Task { [weak self] in
             guard let self else { return }
             for await partial in handle.interim {
@@ -434,6 +443,14 @@ public actor DictationSession {
             return
         }
 
+        // Stage 2: the release edge (end) drives the state machine from
+        // .capturing to .draining BEFORE stopCapture; drainFinished then
+        // legally advances to .transcribing (review R1.5).
+        if control.stage(.stop).isRejected {
+            publish(phase: .error, interim: state.interimText, level: state.audioLevel)
+            finishTerminal(category: .failed)
+            return
+        }
         // Stage 2: stop capture + drain -> audio summary (counts only).
         captureTask?.cancel()
         levelsTask?.cancel()
@@ -449,8 +466,16 @@ public actor DictationSession {
         }
 
         // Stage 3: finalize decode -> explicit engine result.
-        _ = control.stage(.drainFinished)
-        _ = control.stage(.transcriptionFinished)
+        if control.stage(.drainFinished).isRejected {
+            publish(phase: .error, interim: state.interimText, level: state.audioLevel)
+            finishTerminal(category: .failed)
+            return
+        }
+        if control.stage(.transcriptionFinished).isRejected {
+            publish(phase: .error, interim: state.interimText, level: state.audioLevel)
+            finishTerminal(category: .failed)
+            return
+        }
         let final: EngineResult
         do {
             final = try await provider.finalize()
@@ -647,6 +672,13 @@ public actor DictationSession {
     private func finishTerminal(category: TerminalCategory) {
         guard !released else { return }
         released = true
+        // Review R1.5: drive the control state machine to the matching
+        // terminal state so the terminal OUTCOME (not just cleanup) is
+        // recorded exactly once. A duplicate finish is a no-op because the
+        // control model refuses to leave a terminal state.
+        let outcomeCategory = StageOutcomeCategory(
+            rawValue: category.rawValue) ?? .failed
+        _ = control.finish(category: outcomeCategory)
         captureTask?.cancel()
         levelsTask?.cancel()
         captureTask = nil

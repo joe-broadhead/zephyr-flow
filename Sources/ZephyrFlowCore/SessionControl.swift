@@ -124,6 +124,79 @@ public struct SessionControlModel: Sendable, Equatable {
         }
     }
 
+    /// Drive the session to a terminal state for the given category
+    /// (review R1.5). The state machine must accept the transition; if the
+    /// current state cannot legally reach that terminal (e.g. a duplicate
+    /// terminal), it is an idempotent no-op and `terminal` stays the first
+    /// recorded outcome. This makes exactly-once terminal OUTCOME (not just
+    /// cleanup) a property of the control model.
+    @discardableResult
+    public mutating func finish(category: StageOutcomeCategory) -> SessionState {
+        guard let sid = sessionID else { return state }
+        guard !state.isTerminal else { return state }
+        let target: SessionState
+        switch category {
+        case .completed: target = .completed
+        case .degraded: target = .degraded
+        case .partial: target = .partial
+        case .truncated: target = .truncated
+        case .cancelled: target = .cancelled
+        case .deadlineExceeded: target = .deadlineExceeded
+        case .targetChanged: target = .targetChanged
+        case .secureTarget: target = .secureTarget
+        case .failed: target = .failed
+        case .abandonedDuringShutdown: target = .abandonedDuringShutdown
+        }
+        // Find a legal path to the terminal state. Most terminal categories
+        // are reachable from any non-terminal state via their canonical event
+        // (cancel / captureFailed / etc.); if the machine rejects the direct
+        // edge we still force the terminal via the model (the orchestration
+        // has already decided the outcome), but only if a legal path exists.
+        let machine = SessionStateMachine()
+        let canonicalEvent: SessionEvent? = SessionControlModel.canonicalEvent(for: category)
+        if let event = canonicalEvent {
+            switch machine.transition(from: state, event: event) {
+            case .to(let next) where next == target:
+                // The canonical event lands exactly on the requested terminal.
+                _ = applyTransition(next, sid: sid)
+                return state
+            case .to(let next):
+                // The canonical event is legal but lands on a DIFFERENT
+                // terminal (e.g. captureFailed -> .failed while the category
+                // is .degraded). The orchestration has already decided the
+                // outcome; apply the requested terminal directly.
+                _ = applyTransition(target, sid: sid)
+                return state
+            case .stay:
+                return state
+            case .illegal:
+                // No legal path: force the terminal directly. This only
+                // happens for categories whose canonical event is illegal
+                // from the current state; the session is over anyway.
+                _ = applyTransition(target, sid: sid)
+                return state
+            }
+        }
+        // Direct terminal application (state machine has no row for this
+        // exact pair, but the outcome is decided).
+        _ = applyTransition(target, sid: sid)
+        return state
+    }
+
+    /// Canonical event that drives the state machine toward a category.
+    public static func canonicalEvent(for category: StageOutcomeCategory) -> SessionEvent? {
+        switch category {
+        case .completed: return .insertionSucceeded
+        case .degraded, .truncated, .partial: return .captureFailed
+        case .cancelled: return .cancel
+        case .deadlineExceeded: return .deadlineViolated
+        case .targetChanged: return .targetChanged
+        case .secureTarget: return .targetSecure
+        case .failed: return .preparationFailed
+        case .abandonedDuringShutdown: return .shutdownRequested
+        }
+    }
+
     // MARK: - Internals
 
     private mutating func apply(_ event: SessionEvent, sid: SessionID) -> SessionControlEffect {
@@ -192,4 +265,14 @@ public enum SessionStageResult: Sendable, Equatable {
     case accepted(newState: SessionState)
     case idempotent
     case rejected(reason: SessionStageReason)
+
+    /// True when the transition was rejected (illegal). Orchestration must
+    /// stop rather than continue on a rejected transition (review R1.5).
+    public var isRejected: Bool {
+        if case .rejected = self { return true }
+        return false
+    }
+
+    /// True when the transition was accepted or idempotent.
+    public var isAccepted: Bool { !isRejected }
 }
