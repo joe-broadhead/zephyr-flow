@@ -31,6 +31,9 @@ public actor ActorHistoryRepository: HistoryRepository {
     /// recovery behavior is explicit (content stays sealed on disk).
     public private(set) var recoveryState: String?
     private var usingEncryption = false
+    /// Last persistence error (surfaced to UI; review R4.1). Nil when the
+    /// last write succeeded. Kept as a string (user-safe, no payload).
+    public private(set) var lastWriteError: String?
 
     public init(
         fileURL: URL? = nil,
@@ -169,7 +172,7 @@ public actor ActorHistoryRepository: HistoryRepository {
     // MARK: Persistence
 
     private func persist() async {
-        try? await persistOrThrow()
+        await persistRecording()
     }
 
     private func persistOrThrow() async throws {
@@ -196,6 +199,17 @@ public actor ActorHistoryRepository: HistoryRepository {
                 throw HistoryRepositoryError.permissionDenied
             }
             throw HistoryRepositoryError.ioFailed
+        }
+    }
+
+    /// Non-throwing persist used by policy-gated add(): records the error so
+    /// it is never silent.
+    private func persistRecording() async {
+        do {
+            try await persistOrThrow()
+            lastWriteError = nil
+        } catch {
+            lastWriteError = "\\(error)"
         }
     }
 }

@@ -2892,9 +2892,20 @@ struct CoreTests {
             let failing = FailingHistoryFileSystem()
             let failRepo = ActorHistoryRepository(fileURL: file, fileSystem: failing)
             await failRepo.add(entry)
-            // add() swallows errors; verify the failing FS was asked and the
-            // typed error path is exercised via persistOrThrow indirectly.
+            // Review R4.1: add() no longer swallows persistence errors
+            // silently — lastWriteError is recorded so the UI can surface it.
             check("2261 failing fs exercises error path", failing.failures > 0)
+            let writeErr = await failRepo.lastWriteError
+            check("R4.1 add() persistence failure surfaced (lastWriteError)",
+                  writeErr != nil && !writeErr!.isEmpty)
+            // A successful write clears the recorded error.
+            let okRepo = ActorHistoryRepository(fileURL: file)
+            try? await okRepo.load()
+            await okRepo.add(HistoryStorageEntry(
+                timestamp: Date(), text: "ok", duration: 1, modelUsed: "Tiny",
+                sensitivityClass: "normal"))
+            let okErr = await okRepo.lastWriteError
+            check("R4.1 successful write clears lastWriteError", okErr == nil)
             try? FileManager.default.removeItem(at: dir)
         }
 

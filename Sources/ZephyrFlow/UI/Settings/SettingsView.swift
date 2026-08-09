@@ -7,7 +7,7 @@ import ZephyrFlowCore
 struct SettingsView: View {
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject private var privacy = PrivacyService.shared
-    @ObservedObject private var history = HistoryStore.shared
+    @ObservedObject private var history = HistoryViewModel.shared
     @ObservedObject private var controller = DictationController.shared
     @ObservedObject private var modelReadiness = ModelReadinessStore.shared
     @ObservedObject private var updates = UpdateChecker.shared
@@ -79,6 +79,9 @@ struct SettingsView: View {
             privacy.refresh()
             NSApp.appearance = NSAppearance(named: .darkAqua)
             copyOnlyOverridesText = settings.settings.copyOnlyOverrideBundleIDs.joined(separator: ", ")
+            // Review R4.1: load history from the actor repository (single
+            // source of truth) before the pane is shown.
+            history.start()
         }
     }
 
