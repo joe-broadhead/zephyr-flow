@@ -76,11 +76,15 @@ public struct AudioFrameAccounting: Sendable, Equatable {
     /// Any gap, overflow, drain timeout or mismatch => false (fail closed).
     public func reconciles(
         converterRatio: Double,
-        roundingToleranceSamples: UInt64
+        roundingToleranceSamples: UInt64,
+        expectedCapturedSourceSamples: UInt64? = nil
     ) -> Bool {
         guard !isDegraded else { return false }
         guard deliveredEngineSamples == convertedEngineSamples else { return false }
-        let expected = Double(capturedSourceSamples &- droppedSourceSamples) * converterRatio
+        // Review B1: use the authoritative accepted sample count when the
+        // caller provides it (channel admission), else the dequeued count.
+        let captured = expectedCapturedSourceSamples ?? capturedSourceSamples
+        let expected = Double(captured &- droppedSourceSamples) * converterRatio
         let actual = Double(convertedEngineSamples)
         let diff = UInt64(abs(expected - actual))
         return diff <= roundingToleranceSamples
@@ -108,6 +112,10 @@ public struct AudioDrainBarrier: Sendable, Equatable {
     public private(set) var startedAtNanos: UInt64?
     public private(set) var lastDeliveredSequence: UInt64?
     public private(set) var lateAppends: UInt64 = 0
+    /// Review B1: the highest sequence the consumer has delivered, tracked
+    /// even while the barrier is IDLE (so an already-delivered final sequence
+    /// can be recognized when begin() is called afterwards).
+    public private(set) var highestDeliveredWhileIdle: UInt64?
 
     public init(deadlineNanosAhead: UInt64 = 3_000_000_000) {
         self.deadlineNanosAhead = deadlineNanosAhead
@@ -120,6 +128,12 @@ public struct AudioDrainBarrier: Sendable, Equatable {
         state = .draining
         self.finalSequence = finalSequence
         startedAtNanos = nowNanos
+        // Review B1: if the consumer already delivered this sequence (or
+        // beyond) while the barrier was idle — e.g. the final chunk arrived
+        // before arming — the barrier is already drained.
+        if let highest = highestDeliveredWhileIdle, highest >= finalSequence {
+            state = .drained
+        }
     }
 
     public func expired(nowNanos: UInt64) -> Bool {
@@ -130,6 +144,11 @@ public struct AudioDrainBarrier: Sendable, Equatable {
     /// One delivered chunk/sequence tick. Returns the barrier state.
     @discardableResult
     public mutating func noteDelivered(sequence: UInt64, nowNanos: UInt64) -> AudioDrainState {
+        // Review B1: always track the highest delivered sequence, even while
+        // idle, so a final sequence delivered before begin() is recognized.
+        if highestDeliveredWhileIdle.map({ sequence > $0 }) ?? true {
+            highestDeliveredWhileIdle = sequence
+        }
         // A late append after the drain acknowledgment is counted even when
         // the barrier already drained — never silently cleared.
         if let final = finalSequence, sequence > final {

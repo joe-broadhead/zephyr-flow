@@ -2133,6 +2133,32 @@ struct CoreTests {
                 c.noteDelivered(sequence: 5, nowNanos: 100) == .cancelled)
         }
 
+        // ===== B1 regression: barrier recognizes already-delivered final =====
+        do {
+            // Review B1: if the consumer delivered the final sequence BEFORE
+            // begin() (the old arm-after-close race), the barrier must drain
+            // immediately instead of stranding .draining.
+            var b = AudioDrainBarrier(deadlineNanosAhead: 10_000)
+            // Consumer delivers seq 5 while idle.
+            _ = b.noteDelivered(sequence: 5, nowNanos: 100)
+            // Now arm with final=5: must drain immediately.
+            b.begin(finalSequence: 5, nowNanos: 200)
+            check(
+                "B1 final delivered while idle -> drained immediately",
+                b.state == .drained && b.isComplete)
+            // And a final BEYOND what was delivered stays draining until the
+            // missing chunk arrives (or times out).
+            var b2 = AudioDrainBarrier(deadlineNanosAhead: 10_000)
+            _ = b2.noteDelivered(sequence: 3, nowNanos: 100)
+            b2.begin(finalSequence: 5, nowNanos: 200)
+            check("B1 final beyond delivered stays draining", b2.state == .draining)
+            _ = b2.noteDelivered(sequence: 4, nowNanos: 300)
+            _ = b2.noteDelivered(sequence: 5, nowNanos: 400)
+            check("B1 drains when remaining chunks delivered", b2.state == .drained)
+            // Highest-delivered-while-idle is tracked for the next session too.
+            check("B1 idle tracking retained", b2.highestDeliveredWhileIdle == 5)
+        }
+
         // ===== R1.3 regression: barrier terminal states + drain-before-close =====
         do {
             // Review R1.3: a barrier that never receives the final sequence

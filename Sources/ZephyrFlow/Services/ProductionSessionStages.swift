@@ -173,12 +173,16 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                 reconciled: true,
                 drainState: "n/a")
         }
-        // Review R1.3 (v2): ONE stop operation. Arm the drain barrier with the
-        // final accepted sequence BEFORE audio.stop() closes the channel, so
-        // the delivery task's final-sequence acknowledgment is observed by the
-        // barrier (arming after close would strand it in .draining). The
-        // duplicate early audio.stop() is removed.
-        var channel = self.channel
+        // Review B1: atomic producer shutdown. FIRST close the channel (the
+        // producer's enqueue returns .closed for anything after — counted, not
+        // lost), THEN snapshot the immutable final accepted sequence, THEN arm
+        // the barrier. The barrier tracks highest-delivered-while-idle, so a
+        // final sequence already delivered before arming drains immediately.
+        // No tap callback can enqueue between snapshot and stop because the
+        // channel is already closed when we snapshot.
+        let channel = self.channel
+        await audio.stop()  // closes the channel (ends producer admission)
+        let acceptedSamples = channel?.stats().acceptedSamples ?? 0
         if let finalSeq = channel?.stats().lastAcceptedSequence {
             lock.withLock {
                 drainBarrier.begin(
@@ -186,8 +190,6 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                     nowNanos: environment.clock.nowNanos())
             }
         }
-        // This single stop closes the channel (ends the consumer stream).
-        await audio.stop()
 
         // Bounded wait for the consumer using a REAL completion signal:
         // the delivery task sets deliveryFinished when its loop exits. We race
@@ -195,11 +197,15 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // `while !delivery.isCancelled` never saw a normally-completed task.)
         let drainDeadlineNanos = drainBarrier.deadlineNanosAhead + 1_000_000_000
         let waitStart = environment.clock.nowNanos()
+        var deliveryDone = false
         while true {
             let (term, finished) = lock.withLock {
                 (drainBarrier.isTerminal, deliveryFinished)
             }
-            if term || finished { break }
+            if term || finished {
+                deliveryDone = finished
+                break
+            }
             if environment.clock.nowNanos() &- waitStart >= drainDeadlineNanos {
                 lock.withLock { drainBarrier.markTimedOut() }
                 break
@@ -210,15 +216,25 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // append), it may continue mutating accounting/barrier — but the
         // barrier is now timedOut and the session degrades. We never await it
         // further (bounded), and stopCapture reads state under the lock below.
-        // Review REQ-6: flush the converter's buffered tail at EOS so no
-        // resampled audio is lost. Appended to the engine as the final block.
-        if let converter {
-            let tail = converter.flush()
-            if !tail.isEmpty {
-                await engine.appendAudio(tail)
-                lock.withLock {
-                    accounting.noteConverted(engineSamples: UInt64(tail.count))
-                    accounting.noteDelivered(engineSamples: UInt64(tail.count))
+        // Review B1: the converter is owned by the delivery task. ONLY flush
+        // it when that task actually finished (deliveryDone); a timed-out task
+        // may still be using the converter, so touching it would race. Cancel
+        // the abandoned task and skip the flush (the summary is degraded).
+        if !deliveryDone {
+            deliveryTask?.cancel()
+            deliveryTask = nil
+        } else {
+            // Review REQ-6: flush the converter's buffered tail at EOS so no
+            // resampled audio is lost. Appended to the engine as the final
+            // block — safe now because the delivery task has exited.
+            if let converter {
+                let tail = converter.flush()
+                if !tail.isEmpty {
+                    await engine.appendAudio(tail)
+                    lock.withLock {
+                        accounting.noteConverted(engineSamples: UInt64(tail.count))
+                        accounting.noteDelivered(engineSamples: UInt64(tail.count))
+                    }
                 }
             }
         }
@@ -247,10 +263,15 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                 }
             }
         }
+        // Review B1: reconcile against the channel's ACCEPTED sample count
+        // (authoritative admission), not only the samples the consumer
+        // dequeued — accepted-but-not-yet-delivered chunks must be counted.
+        let expectedCaptured = max(acceptedSamples, accounting.capturedSourceSamples)
         let ratio = SessionAudioConverter.targetSampleRate / accounting.sourceSampleRate
         let reconciled = accounting.reconciles(
             converterRatio: ratio,
-            roundingToleranceSamples: 64)
+            roundingToleranceSamples: 64,
+            expectedCapturedSourceSamples: expectedCaptured)
         // Review R1.3: a successful capture requires the barrier to have
         // DRAINED (final sequence acknowledged). A barrier left .draining is
         // degraded — it never acknowledged the end-of-stream marker.
