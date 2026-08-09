@@ -84,3 +84,26 @@ enforces discovery).
 - 9/9 `Scripts/ci_checks.sh` gates green at the final head (XCTest enforced on
   CI; CLT parity suite green locally; strict-concurrency baseline 88 and
   shrinking; ASan clean).
+
+---
+
+## ⚠️ Addendum (2026-08-09): independent review — BLOCKED
+
+This run's completion claim was **independently reviewed and BLOCKED**. See
+`docs/development/prime-agent-run/review-findings.md` for the full verdict and
+source-confirmed defects. Summary:
+
+- The terminal tree `0e5f0b2` does **not** satisfy the central production invariants
+  (audio losslessness, exactly-one terminal, sensitivity fail-closed integration,
+  transactional target insertion, engine completeness, history encryption, Flow
+  span preservation, verified-model binding, fail-closed CI).
+- 24 previously-`done_with_evidence` issues were **reopened to In Progress** in
+  Linear; review comments pending Linear re-authentication.
+- The recorded final-gate passes (`d6e580b`, `8991692b`, `c20d03d`) did not
+  validate the terminal evidence-commit SHA `0e5f0b2`.
+- **This branch is an experimental implementation branch with reusable
+  components — not a production candidate.** A reworked candidate must be
+  re-reviewed at its own tested SHA.
+
+Remediation order is in review-findings.md (session/audio → target/sensitivity →
+engines → history → Flow → model binding → integration tests → CI → fresh review).
