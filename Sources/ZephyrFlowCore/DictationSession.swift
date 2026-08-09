@@ -512,7 +512,8 @@ public actor DictationSession {
             let conservative = await provider.applyFlow(
                 FlowRequest(
                     sessionID: sessionID, text: final.text, style: .clean,
-                    language: settings.language, sensitivity: .unknown))
+                    language: settings.language,
+                    sensitivity: targetSnapshot?.sensitivity.sensitivity ?? .unknown))
             state.outputs.flowOutcome = conservative
             let reviewText = conservative.text.trimmingCharacters(in: .whitespacesAndNewlines)
             retainedText = reviewText
@@ -525,7 +526,8 @@ public actor DictationSession {
         let flowOutcome = await provider.applyFlow(
             FlowRequest(
                 sessionID: sessionID, text: final.text, style: settings.defaultFlowStyle,
-                language: settings.language, sensitivity: .unknown))
+                language: settings.language,
+                sensitivity: targetSnapshot?.sensitivity.sensitivity ?? .unknown))
         state.outputs.flowOutcome = flowOutcome
         publish(phase: .processing, interim: state.interimText, level: state.audioLevel)
 
