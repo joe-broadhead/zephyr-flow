@@ -2002,19 +2002,23 @@ struct CoreTests {
             check(
                 "2271 default distinguishes unverified paste",
                 def.verification == .none && def.strategies.contains(.clipboardPaste))
-            check("2271 default explicit copy last", def.strategies.last == .copyOnly)
+            // Review B4v2: automatic cascades never end in copyOnly.
+            check(
+                "2271 default cascade has no automatic copyOnly",
+                !def.strategies.contains(.copyOnly))
 
             // Strategy ordering + cascade semantics.
             let editor = reg.adapter(
                 forBundle: "com.apple.dt.Xcode", role: nil,
                 appVersion: nil, macOSVersion: nil)
+            // Review B4v2: no automatic copyOnly fallback in editor cascade.
             check(
                 "2271 editor strategy order",
-                editor.strategies == [.clipboardPaste, .axSelectedText, .axValue, .copyOnly])
+                editor.strategies == [.clipboardPaste, .axSelectedText, .axValue])
             check(
                 "2271 cascade to next permitted",
                 editor.nextStrategy(after: .clipboardPaste) == .axSelectedText
-                    && editor.nextStrategy(after: .axValue) == .copyOnly)
+                    && editor.nextStrategy(after: .axValue) == nil)
             // A cascade-disallowed adapter stops after first failure.
             let strict = InsertionAdapter(
                 id: "strict.v1", bundleIDs: ["com.strict.app"],
@@ -2071,20 +2075,22 @@ struct CoreTests {
                     macOSVersion: "13.5"))
 
             // Resolver uses registry + copy-only overrides (no AppKit).
+            // Review B4v2: resolver default cascade has no copyOnly fallback.
             check(
                 "2271 resolver default strategies",
                 InsertionStrategyResolver.strategies(
                     bundleID: "com.google.Chrome", role: "AXTextField", mode: .automatic)
-                    == [.clipboardPaste, .axSelectedText, .copyOnly])
+                    == [.clipboardPaste, .axSelectedText])
             check(
                 "2271 resolver editor includes axValue",
                 InsertionStrategyResolver.strategies(
                     bundleID: "com.microsoft.VSCode", role: "AXTextField", mode: .automatic)
-                    == [.clipboardPaste, .axSelectedText, .axValue, .copyOnly])
+                    == [.clipboardPaste, .axSelectedText, .axValue])
             check(
+                // Review B4v2: unknown-app default cascade has no copyOnly fallback.
                 "2271 resolver unknown => default",
                 InsertionStrategyResolver.strategies(bundleID: "com.example.x", role: "AXTextField", mode: .automatic)
-                    == [.clipboardPaste, .axSelectedText, .copyOnly])
+                    == [.clipboardPaste, .axSelectedText])
             check(
                 "2271 local copy-only override",
                 InsertionStrategyResolver.strategies(
@@ -3454,6 +3460,67 @@ struct CoreTests {
             check(
                 "R7 configured-but-key-missing refuses write",
                 await cfgNoKey.lastWriteError != nil)
+            try? FileManager.default.removeItem(at: dir)
+        }
+
+        // ===== B5 regression: plaintext->encrypted migration (production order) =====
+        do {
+            // Review B5v2: production ordering — configure encryption, load a
+            // LEGACY PLAINTEXT file, verify it is re-encrypted, relaunch, and
+            // decrypt the same entries. (Old bug: the migration persist ran
+            // before isInitialized, failed the init guard, and the valid
+            // history was quarantined as corruption.)
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("zf-history-b5-\(UUID().uuidString)", isDirectory: true)
+            let file = dir.appendingPathComponent("history.json")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            // Write a legacy plaintext document.
+            let legacy = HistoryDocument(
+                schemaVersion: 1,
+                entries: [
+                    HistoryStorageEntry(
+                        timestamp: Date(), text: "legacy-entry", duration: 1.0,
+                        modelUsed: "Tiny", sensitivityClass: "normal")
+                ])
+            let plainEnc = JSONEncoder()
+            plainEnc.dateEncodingStrategy = .iso8601
+            let plain = try! plainEnc.encode(legacy)
+            try! plain.write(to: file)
+
+            // Configure encryption + load (production order).
+            let key = HistoryCryptoKey(keyID: "k", material: Data(repeating: 0xCD, count: 32))
+            let repo = ActorHistoryRepository(fileURL: file, keyProvider: { key })
+            await repo.configureEncryption(keyProvider: { key })
+            // Load with explicit error capture: a migration failure must not
+            // surface as corruption/quarantine.
+            var loadError: Error?
+            do {
+                try await repo.load()
+            } catch {
+                loadError = error
+            }
+            check("B5 load has no corruption error", loadError == nil)
+            // The legacy entry is retained (NOT quarantined).
+            let entries = await repo.entries()
+            print(
+                "B5-DIAG entries=\(entries.count) texts=\(entries.map{$0.text}) exists=\(FileManager.default.fileExists(atPath: file.path)) recovery=\(await repo.recoveryState ?? "nil")"
+            )
+            check(
+                "B5 legacy plaintext migrated, entry retained", entries.count == 1 && entries[0].text == "legacy-entry")
+            check(
+                "B5 migration did not quarantine (no recovery error)",
+                await repo.recoveryState == nil)
+            // The on-disk file is now ENCRYPTED.
+            let disk = try! Data(contentsOf: file)
+            let encryptedOnDisk = (try? JSONDecoder().decode(EncryptedHistoryDocument.self, from: disk)) != nil
+            check("B5 file re-encrypted after migration", encryptedOnDisk)
+            // Relaunch: a fresh repo with the SAME key decrypts the entries.
+            let relaunched = ActorHistoryRepository(fileURL: file, keyProvider: { key })
+            try? await relaunched.load()
+            let reEntries = await relaunched.entries()
+            check(
+                "B5 relaunch decrypts same entries",
+                reEntries.count == 1 && reEntries[0].text == "legacy-entry")
             try? FileManager.default.removeItem(at: dir)
         }
 

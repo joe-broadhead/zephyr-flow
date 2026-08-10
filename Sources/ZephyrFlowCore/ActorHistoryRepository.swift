@@ -117,11 +117,27 @@ public actor ActorHistoryRepository: HistoryRepository {
                 }
             } else {
                 document = try decode(data)
+                // Review B5v2: the repository is logically initialized once a
+                // valid document is decoded — set the flag BEFORE the
+                // migration persist so the init guard in persistOrThrow passes
+                // (otherwise every configured plaintext migration failed and
+                // was quarantined as corruption).
+                isInitialized = true
                 // Review B8: a plaintext legacy document loaded while
                 // encryption is configured is immediately re-encrypted so
                 // existing history does not remain plaintext indefinitely.
                 if encryptionConfigured, keyProvider() != nil {
-                    try await persistOrThrow()
+                    do {
+                        try await persistOrThrow()
+                    } catch {
+                        // Review B5v2: a MIGRATION failure (key/disk/init) must
+                        // NOT quarantine valid history. Keep the decoded
+                        // document in memory, record the error, and continue —
+                        // the data is safe (still plaintext on disk) and will
+                        // be migrated on a later successful load.
+                        lastWriteError = "history migration failed: \(String(describing: error))"
+                        recoveryState = "plaintext history could not be encrypted yet — retry on next launch"
+                    }
                 }
             }
             document.entries = HistoryStoragePolicy.trimmed(
@@ -129,7 +145,9 @@ public actor ActorHistoryRepository: HistoryRepository {
                 policy: retention,
                 now: Date())
         } catch {
-            // Corruption: quarantine the file and start clean (recoverable).
+            // Genuine CORRUPTION (unreadable/undecodable data): quarantine the
+            // file and start clean (recoverable). Migration/key/disk errors are
+            // handled above and do NOT reach here.
             let quarantine = fileURL.appendingPathExtension("quarantined")
             try? fileSystem.move(fileURL, to: quarantine)
             document = HistoryDocument(entries: [])
