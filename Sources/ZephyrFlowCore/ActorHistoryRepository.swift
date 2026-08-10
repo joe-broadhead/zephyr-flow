@@ -89,6 +89,9 @@ public actor ActorHistoryRepository: HistoryRepository {
         try fileSystem.setPermissions(fileURL.deletingLastPathComponent(), mode: 0o700)
         guard fileSystem.fileExists(fileURL) else {
             document = HistoryDocument(entries: [])
+            // Review B8: a fresh install (no file) is still INITIALIZED (empty
+            // but writable) — previously this returned without setting the flag.
+            isInitialized = true
             return
         }
         do {
@@ -114,6 +117,12 @@ public actor ActorHistoryRepository: HistoryRepository {
                 }
             } else {
                 document = try decode(data)
+                // Review B8: a plaintext legacy document loaded while
+                // encryption is configured is immediately re-encrypted so
+                // existing history does not remain plaintext indefinitely.
+                if encryptionConfigured, keyProvider() != nil {
+                    try await persistOrThrow()
+                }
             }
             document.entries = HistoryStoragePolicy.trimmed(
                 document.entries,
@@ -159,24 +168,43 @@ public actor ActorHistoryRepository: HistoryRepository {
 
     /// Policy-gated add: only normal-sensitivity, outcome-permitted writes.
     public func add(_ entry: HistoryStorageEntry) async {
-        document.entries.insert(entry, at: 0)
-        document.entries = HistoryStoragePolicy.trimmed(
-            document.entries,
+        // Review B8: transactional commit — build the new document, persist it
+        // durably, and only on success assign it to `document`. A failed write
+        // leaves both the in-memory and on-disk state consistent (entry not
+        // added) and records the error.
+        var candidate = document
+        candidate.entries.insert(entry, at: 0)
+        candidate.entries = HistoryStoragePolicy.trimmed(
+            candidate.entries,
             policy: retention,
             now: Date())
-        await persist()
+        do {
+            try await persistOrThrow(candidate)
+            document = candidate
+            lastWriteError = nil
+        } catch {
+            // On failure record the error and keep the old in-memory document
+            // (state consistent with disk).
+            lastWriteError = String(describing: error)
+        }
     }
 
     public func entries() async -> [HistoryStorageEntry] { document.entries }
 
     public func clear() async throws {
-        document = HistoryDocument(entries: [])
-        try await persistOrThrow()
+        // Review B8: transactional — persist the cleared candidate first, then
+        // commit; a failed write leaves both states consistent.
+        let candidate = HistoryDocument(entries: [])
+        try await persistOrThrow(candidate)
+        document = candidate
     }
 
     public func delete(_ id: UUID) async throws {
-        document.entries.removeAll { $0.id == id }
-        try await persistOrThrow()
+        // Review B8: transactional delete.
+        var candidate = document
+        candidate.entries.removeAll { $0.id == id }
+        try await persistOrThrow(candidate)
+        document = candidate
     }
 
     /// True when a write would be allowed by policy (used by callers to skip
@@ -191,8 +219,15 @@ public actor ActorHistoryRepository: HistoryRepository {
         await persistRecording()
     }
 
-    private func persistOrThrow() async throws {
+    private func persistOrThrow(_ doc: HistoryDocument? = nil) async throws {
+        let toWrite = doc ?? document
         do {
+            // Review B8: writes fail closed until the repository is
+            // initialized (load completed), matching the declared contract.
+            guard isInitialized else {
+                lastWriteError = "history repository not initialized"
+                throw HistoryRepositoryError.ioFailed
+            }
             // Review R7: fail-closed writes. If sealed data exists but the key
             // is unavailable, or encryption was configured but the key is
             // missing NOW, refuse to write plaintext (never overwrite the
@@ -209,10 +244,10 @@ public actor ActorHistoryRepository: HistoryRepository {
             if let key = keyProvider() {
                 usingEncryption = true
                 let encrypted = try HistoryEncryptionMigration.encrypt(
-                    document: document, key: key, engine: cipher)
+                    document: toWrite, key: key, engine: cipher)
                 data = try encoder.encode(encrypted)
             } else {
-                data = try encoder.encode(document)
+                data = try encoder.encode(toWrite)
             }
             try fileSystem.writeAtomic(data: data, to: fileURL)
         } catch let error as NSError {
@@ -237,7 +272,7 @@ public actor ActorHistoryRepository: HistoryRepository {
             try await persistOrThrow()
             lastWriteError = nil
         } catch {
-            lastWriteError = "\\(error)"
+            lastWriteError = String(describing: error)
         }
     }
 }

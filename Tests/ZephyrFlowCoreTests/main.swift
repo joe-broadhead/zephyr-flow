@@ -3375,6 +3375,7 @@ struct CoreTests {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let failing = FailingHistoryFileSystem()
             let failRepo = ActorHistoryRepository(fileURL: file, fileSystem: failing)
+            try? await failRepo.load()  // initialize so writes reach the FS
             await failRepo.add(entry)
             // Review R4.1: add() no longer swallows persistence errors
             // silently — lastWriteError is recorded so the UI can surface it.

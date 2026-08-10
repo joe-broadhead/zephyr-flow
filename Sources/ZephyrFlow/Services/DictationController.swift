@@ -94,10 +94,15 @@ final class DictationController: ObservableObject {
                 keyProvider: { key })
             do {
                 try await ActorHistoryRepository.shared.load()
+                // Review B8: historyReady is only true when initialization
+                // SUCCEEDED (a Keychain failure or load error keeps it false,
+                // so session admission errors out instead of writing).
+                self.historyReady = true
             } catch {
                 ZFLog.error("History load failed: \(error.localizedDescription)")
+                // historyReady stays false — beginSession will surface the
+                // initialization error and refuse to admit a session.
             }
-            self.historyReady = true
         }
         privacy.refresh()
         hotkey.configure(
