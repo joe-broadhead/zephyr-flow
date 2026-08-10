@@ -369,7 +369,9 @@ public actor DictationSession {
         self.control = control
         self.sessionID = sid
         self.broadcaster = SessionStateBroadcaster<SessionUIState>(initial: SessionUIState())
-        self.terminalGuard = TerminalGuard(sessionID: SessionTelemetryID(sid.token))
+        // Review B3v2: unique telemetry id per session (not token, which is
+        // 'zf' for every session).
+        self.terminalGuard = TerminalGuard(sessionID: SessionTelemetryID())
         // Review R2/4: create a DURABLE command mailbox at init so control
         // events (end/cancel/retry/discard) are never lost before run()
         // installs the consumer. Buffering keeps commands sent during setup
@@ -811,12 +813,33 @@ public actor DictationSession {
         let outcomeCategory =
             StageOutcomeCategory(
                 rawValue: category.rawValue) ?? .failed
-        _ = control.finish(category: outcomeCategory)
+        let reachedState = control.finish(category: outcomeCategory)
+        // Review B3v2: the emitted terminal category must match the AUTHORITATIVE
+        // control state. If the requested category was not legal from the
+        // current state (e.g. .degraded from .draining), the state machine
+        // reached a different terminal (or stayed nonterminal). Emit the
+        // ACTUAL state's category so control state, telemetry and UI agree.
+        let emittedCategory: TerminalCategory
+        if reachedState.isTerminal {
+            emittedCategory =
+                TerminalCategory(
+                    rawValue: SessionControlModel.terminalOutcome(for: reachedState)?.rawValue
+                        ?? category.rawValue) ?? category
+        } else {
+            // The state machine could not reach a terminal from the current
+            // state — the orchestration and control model are out of sync.
+            // Record failed (the session is ending) and surface a controlled
+            // mismatch so it is not a silent success.
+            ZFLogPlaceholder.error(
+                "terminal state mismatch: requested \(category.rawValue), control stayed \(reachedState.rawValue)")
+            emittedCategory = .failed
+        }
         // Review B3: emit the versioned terminal event exactly once through
         // the TerminalGuard (a second finish is refused). Content-free.
         let now = nowNanos()
         if let event = terminalGuard.finalize(
-            terminal: category, durationNanos: startTime.map { now &- $0 } ?? 0,
+            terminal: emittedCategory,
+            durationNanos: startTime.map { now &- $0 } ?? 0,
             atNanos: now)
         {
             telemetrySink.record(event)
@@ -824,9 +847,9 @@ public actor DictationSession {
         if let counts = state.outputs.audioSummary {
             telemetrySink.record(
                 TelemetryEvent(
-                    sessionID: SessionTelemetryID(sessionID.token),
+                    sessionID: SessionTelemetryID(),
                     kind: .captureAccounting,
-                    terminal: category,
+                    terminal: emittedCategory,
                     frameCounts: FrameCountSnapshot(
                         captured: counts.capturedSourceSamples,
                         delivered: counts.deliveredEngineSamples,

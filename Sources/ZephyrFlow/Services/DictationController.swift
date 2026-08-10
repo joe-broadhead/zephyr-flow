@@ -482,6 +482,25 @@ final class DictationController: ObservableObject {
         // Authoritative: this finished session IS (or was) the current one.
         lastSessionID = sessionID
         currentSessionID = nil
+        // Review B3v2: forward the session's terminal telemetry to the
+        // production metrics sink (the session's private sink would otherwise
+        // become unreachable when the session is released).
+        if let session {
+            Task {
+                let events = await session.drainTelemetry()
+                for event in events where event.kind == .terminal {
+                    let kind: MetricsEventKind
+                    switch event.terminal {
+                    case .completed: kind = .sessionCompleted
+                    case .degraded: kind = .sessionDegraded
+                    case .cancelled: kind = .sessionCompleted
+                    default: kind = .sessionCompleted
+                    }
+                    await self.environment.metrics.record(
+                        MetricsEvent(kind: kind, value: event.durationNanos ?? 0, atNanos: event.atNanos))
+                }
+            }
+        }
         sessionTask?.cancel()
         sessionTask = nil
         stateTask = nil
