@@ -446,11 +446,13 @@ actor InsertionService: InsertionServiceProtocol {
                     let wpos = w[kCGWindowBounds as String] as? [String: CGFloat]
                 {
                     // Bounds match: same origin (within tolerance) + same size.
-                    let originX = wpos["X"] ?? 0, originY = wpos["Y"] ?? 0
-                    let w = wpos["Width"] ?? 0, h = wpos["Height"] ?? 0
+                    let originX = wpos["X"] ?? 0
+                    let originY = wpos["Y"] ?? 0
+                    let winW = wpos["Width"] ?? 0
+                    let winH = wpos["Height"] ?? 0
                     let matches =
                         abs(originX - pos.x) < 2 && abs(originY - pos.y) < 2
-                        && abs(w - size.width) < 2 && abs(h - size.height) < 2
+                        && abs(winW - size.width) < 2 && abs(winH - size.height) < 2
                     if matches { return windowNumber }
                 } else {
                     // No AX bounds available: the first window of the PID is
