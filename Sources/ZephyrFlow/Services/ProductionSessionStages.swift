@@ -101,7 +101,9 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                 guard let self, let converter = self.converter else { return }
                 defer {
                     // Review R1.3 (v2): mark completion under the lock so
-                    // stopCapture can wait on a real completion signal.
+                    // stopCapture can wait on a real completion signal. The
+                    // EOS converter flush + tail append happen in the post-loop
+                    // block BELOW (awaited) BEFORE this defer runs.
                     self.lock.withLock { self.deliveryFinished = true }
                 }
                 for await chunk in channel.chunks {
@@ -132,6 +134,19 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                         sequence: chunk.sequence,
                         nowNanos: now)
                     self.lock.unlock()
+                }
+                // Review B1v2: flush the converter's EOS tail INSIDE the
+                // consumer (after the loop, before completion), append it to
+                // the engine, and account it — then the defer sets
+                // deliveryFinished. This guarantees the tail is never omitted
+                // by a scheduling window where the barrier drained but the
+                // consumer had not finished.
+                if let tail = converter.flush(), !tail.isEmpty {
+                    await engine.appendAudio(tail)
+                    self.lock.withLock {
+                        self.accounting.noteConverted(engineSamples: UInt64(tail.count))
+                        self.accounting.noteDelivered(engineSamples: UInt64(tail.count))
+                    }
                 }
             }
             try await audio.start(sessionID: sessionID, channel: channel)
@@ -195,48 +210,28 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // the delivery task sets deliveryFinished when its loop exits. We race
         // barrier-terminal AND delivery-finished against the deadline. (The old
         // `while !delivery.isCancelled` never saw a normally-completed task.)
+        // Review B1v2: SUCCESS requires BOTH the barrier drained AND the
+        // consumer task COMPLETED (the converter flush happens inside the
+        // consumer's defer before deliveryFinished). Wait for deliveryFinished
+        // (bounded); if the consumer never completes, degrade.
         let drainDeadlineNanos = drainBarrier.deadlineNanosAhead + 1_000_000_000
         let waitStart = environment.clock.nowNanos()
-        var deliveryDone = false
         while true {
-            let (term, finished) = lock.withLock {
-                (drainBarrier.isTerminal, deliveryFinished)
-            }
-            if term || finished {
-                deliveryDone = finished
-                break
-            }
+            let finished = lock.withLock { deliveryFinished }
+            if finished { break }
             if environment.clock.nowNanos() &- waitStart >= drainDeadlineNanos {
                 lock.withLock { drainBarrier.markTimedOut() }
                 break
             }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        // If the delivery task is still running at the deadline (stuck engine
-        // append), it may continue mutating accounting/barrier — but the
-        // barrier is now timedOut and the session degrades. We never await it
-        // further (bounded), and stopCapture reads state under the lock below.
-        // Review B1: the converter is owned by the delivery task. ONLY flush
-        // it when that task actually finished (deliveryDone); a timed-out task
-        // may still be using the converter, so touching it would race. Cancel
-        // the abandoned task and skip the flush (the summary is degraded).
-        if !deliveryDone {
-            deliveryTask?.cancel()
-            deliveryTask = nil
-        } else {
-            // Review REQ-6: flush the converter's buffered tail at EOS so no
-            // resampled audio is lost. Appended to the engine as the final
-            // block — safe now because the delivery task has exited.
-            if let converter {
-                let tail = converter.flush()
-                if !tail.isEmpty {
-                    await engine.appendAudio(tail)
-                    lock.withLock {
-                        accounting.noteConverted(engineSamples: UInt64(tail.count))
-                        accounting.noteDelivered(engineSamples: UInt64(tail.count))
-                    }
-                }
-            }
+        // If the consumer still hasn't completed at the deadline, it may be
+        // suspended in engine.appendAudio and could mutate accounting later.
+        // We do NOT await it further (bounded); the barrier is timedOut so the
+        // summary degrades, and we retain the task handle (no discard that
+        // lets it mutate unseen state after we read it).
+        if !(lock.withLock { deliveryFinished }) {
+            ZFLog.info("Audio consumer did not complete in time — degraded")
         }
         let channelStats = channel?.stats()
         _ = channelStats
