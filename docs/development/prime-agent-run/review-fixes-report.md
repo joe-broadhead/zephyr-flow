@@ -1,86 +1,56 @@
-# Review-Fixes Candidate Report — branch agent/zephyr-review-fixes @ 9056558
+# Review-Fixes Candidate Report — branch agent/zephyr-review-fixes @ ef59e81
 
-**Status:** remediation candidate (NOT yet re-approved). Two independent reviews
-were addressed; a third review is required before merge.
+**Status:** remediation candidate (NOT re-approved). Three review rounds were
+addressed; a fourth review is required before merge. This file is regenerated
+from the candidate head ef59e81.
 
 ## History
-- `0e5f0b2` (production-run head): first review → **BLOCKED** (15 blockers).
-- `0adb5f1` (round-1 fixes): second review → **STILL BLOCKED** (9 blockers +
-  required-before-merge + nits).
-- `9056558` (current): rounds 1-3 fixes applied. See below.
+- `0e5f0b2` (original): review 1 → BLOCKED (15 blockers).
+- `0adb5f1` (round 1 fixes): review 2 → STILL BLOCKED (9 blockers + REQ + nits).
+- `85fe010` (round 2 fixes): review 3 → STILL BLOCKED (9 blockers + REQ + nits).
+- `ef59e81` (round 3 fixes): this head. See below.
 
-## What changed since the reviewed head (`0e5f0b2`)
-- **34 commits**, 48 files changed, 2085 insertions(+), 331 deletions(-)
-- **1091 test checks pass, 0 failures** on the CLT suite (Core + stress).
-- **All 9 CI gates pass** on this branch (XCTest/CLT parity, strict-concurrency
-  (Swift 5 mode) vs pinned baseline, swift-format, shell+YAML, docs, drift,
-  coverage line>=70, sanitizer/ASan).
+## What changed vs the original reviewed head
+- **48 commits**, 51 files changed, 2795 insertions(+), 370 deletions(-)
+- **1108 test checks pass, 0 failures** (CLT suite).
+- **All 9 CI gates pass** (including fail-closed strict-concurrency with the
+  grouped pipeline, recursive shellcheck, required PyYAML, drift clean,
+  coverage >=70, ASan + explicit rapid-control/crash lane).
 
-## BLOCKERS addressed (rounds 1-3)
-| # | Blocker | Commit(s) |
+## Round-3 blockers addressed (review 3 → this head)
+| Blocker | Fix | Commit |
 |---|---|---|
-| 1 | Audio channel never dequeues | R1.1 `28d1061` |
-| 2 | Audio format/reconcile | R1.2 `1cd86cd` |
-| 3 | Drain race + unbounded wait | R1.3 `b7ba09d` + R1.3v2 `9564221` |
-| 4 | Release/cancel behind preload | R1.4 `3e53fb1` + R2/4 `8e0a95c` |
-| 5 | State machine not wired / terminal-after-review | R1.5 `837d5c9` + R2/3 `710cf09` |
-| 6 | Session never cleared | R1.6 `ce59613` |
-| 7 | Validate/insert TOCTOU | R2.1 `5e04f50` (bundle re-check + pre-paste secure check) |
-| 8 | AX timeout unsafe | R2.2 `0650a51` + R2/5 `dcbfe3b` (writeMayHaveApplied) |
-| 9 | Auto clipboard → explicit | R9 `d2eb97b` + R2/5 |
-| 10 | Apple Speech partial→complete | R3.1 `5d7d512` |
-| 11 | Whisper truncation/ownership/language | R3.2 `37b08e5` |
-| 12 | Dual history stores | R4.1 `2e6fe77` |
-| 13 | Flow span collision | R5.1 `d5e5fd5` |
-| 14 | Model preload before consent | R6.1 `b87719e` |
-| 15 | CI gate fail-closed | R8.x `51416c1` + `ebdfc8f` |
-| + | Engine cleanup / bounded cancel / quarantine | R6 `25138b1` |
-| + | Fail-closed encrypted history init | R7 `ba428cf` |
-| + | Flow never fails open + real sensitivity | R2/9 `74d4cd7` |
-| + | Durable control mailbox + cancel at every stage | R2/4 `8e0a95c` |
+| B1 drain final-seq race + accepted-sample reconciliation | close-first atomic stop; barrier tracks highest-delivered-while-idle; accepted-sample reconcile; flush only when delivery done | `be1fa50` |
+| B2 release during preload still queued; cancel not propagated | pendingBeginTask kept through preload; final cancel checks before history/success | `94f5d95` |
+| B3 stage ordering + authoritative finish + terminal telemetry | drainFinished→finalize→transcriptionFinished; transformationFinished after Flow; no terminal-before-review; finish() no force-apply; TerminalGuard emits terminal event | `f1d9c03` |
+| B4 exact target lease | windowID + resolution-token enforcement; nil-bundle fail-closed; paste revalidates at event time; no auto-clipboard on failed targets | `ef59e81` |
+| B5 Flow returns unsafe text | rejected outcome returns ORIGINAL input; session enters review (no auto-insert) | `ae28262` |
+| B6 quarantine not reached | isReady = _isReady && !quarantined; replacement verifies readiness + records digest | `d819eef` |
+| B8 history init | isInitialized on fresh install; persist checks init; historyReady only on success; legacy re-encrypted; transactional add/clear/delete; lastWriteError fixed | `4107bca` |
+| B9 shell pipeline precedence | grouped grep||true; baseline regenerated | `a4c71b4` |
 
-## Required-before-merge addressed
-- REQ-4 truthful terminal UI + lastSessionID race: `a619025`
-- REQ-5 saveHistory migration privacy-safe: `6843e51`
-- REQ-6 converter EOS tail flush: `942ecb8`
-- REQ-2 honest strict-concurrency labeling (Swift 5 mode): `9056558`
-- NITs (occupancy naming, comments, unused param, gate zero-warning): `bccea7a`
+## Round-3 required-before-merge addressed
+- REQ-5 completion identity (no tautological check): `d819eef`
+- NITs 1,2,5,6 (local channel clear, allowFallback, find-based recursion,
+  missing-binary fail): `d819eef`, `bccea7a`, this head.
 
-## Updated at 39faa6a (round-3.5)
-- **B4 addressed**: AX insertion is now bound to the VALIDATED element identity
-  (PID + window + role/subrole carried in SessionInsertRequest; the AX write
-  fails closed when the re-resolved element differs).
-- **B8 addressed (honest)**: engine identity now carries the verified artifact
-  digest from the reviewed manifest (WhisperKit loads by identifier with
-  downloads disabled — exact-directory loading is a WhisperKit API constraint
-  documented in the code).
-- **REQ-1 addressed (partial)**: added production-wiring session tests
-  (exactly-one terminal after review-retry, commands-before-run, cancel during
-  processing). Controller-level XCTest remains app-target-bound.
-- **REQ-3 addressed (partial)**: stage 9 now runs rapid-control +
-  crash-recovery lanes explicitly; ci.yml installs ShellCheck/PyYAML; artifact
-  paths fixed. A GitHub Actions run at the exact SHA still needs a runner.
-
-## NOT yet addressed (requires CI/hardware/human)
-- **REQ-3 remainder**: a real GitHub Actions run at the exact candidate SHA.
-- **REQ-2 remainder**: Swift 6 language mode (requires resolving ~80 baseline
-  warnings; documented as a follow-up).
-- **REQ-6 remainder**: real-time capture-callback allocation/task budget
-  measurement (needs a running app + instrumented tap).
+## STILL NOT addressed (external / requires CI + hardware + human)
+- **REQ-2**: Swift 6 language mode (package is tools 5.10; ~80 baseline
+  warnings — documented follow-up).
+- **REQ-3 remainder**: a real GitHub Actions run at the exact candidate SHA
+  (workflow ready + Actions pinned; requires a runner + push/PR).
+- **REQ-1 remainder**: controller-level XCTest (app target bound; CLT
+  production-wiring tests added).
 - **Human/external gates**: real-device qualification, credentials, JOE-2314
-  decision, etc. — runbooks in human-gates.md.
-
-## Honest disposition
-- The 24 implementation issues reopened in Linear are In Progress with review
-  comments; fix evidence is committed on this branch per issue (R-fix commits).
-- The original 47 done-with-evidence claims on the production-run branch were
-  withdrawn; this branch is the remediation candidate, not a completion claim.
-- Human/external gates are NOT claimed done (unchanged).
+  decision, etc. (runbooks in human-gates.md).
+- **B8-remaining (review-3)**: cryptographic binding of WhisperKit to the
+  verified bytes (API limitation, documented; digest recorded, not proof of
+  loaded bytes).
 
 ## Verification
 ```bash
 git fetch origin && git checkout agent/zephyr-review-fixes
 bash Scripts/ci_checks.sh      # 9 gates
-swift run ZephyrFlowCoreTests  # 1091 checks
+swift run ZephyrFlowCoreTests  # 1108 checks
 git diff --check 0e5f0b2..HEAD
 ```

@@ -82,13 +82,16 @@ fi
 step "5/9 shell + YAML lint"
 # Review R8.1: shellcheck covers ALL Scripts subdirectories (recursive),
 # not just Scripts/*.sh, and its absence is a FAILURE (not a silent skip).
-for sh in Scripts/*.sh Scripts/**/*.sh; do
-  [[ -f "$sh" ]] || continue
+# Review NIT-5: recursive script discovery via find (globstar-independent).
+mapfile -d '' ALL_SCRIPTS < <(find Scripts -name '*.sh' -print0)
+if [[ ${#ALL_SCRIPTS[@]} -eq 0 ]]; then
+  fail "no shell scripts found under Scripts/"
+fi
+for sh in "${ALL_SCRIPTS[@]}"; do
   bash -n "$sh" || fail "bash -n $sh"
 done
 if command -v shellcheck >/dev/null 2>&1; then
-  for sh in Scripts/*.sh Scripts/**/*.sh; do
-    [[ -f "$sh" ]] || continue
+  for sh in "${ALL_SCRIPTS[@]}"; do
     # --severity=warning: real defects (warnings/errors) fail the gate;
     # info-level notes (e.g. SC1091 follow-sourcing, SC2086 quoting) do not.
     shellcheck --severity=warning -x "$sh" || fail "shellcheck $sh"
@@ -184,7 +187,9 @@ if [[ -x "$BIN" ]]; then
     fail "rapid-control/crash-recovery lane"
   fi
 else
-  echo "(CLT stress binary not built locally — CI macos-15 builds it)"
+  # Review NIT-6: a missing stress binary means the rapid-control/crash
+  # lane did not run — fail closed (do not report the lane as green).
+  fail "rapid-control/crash-recovery lane: CLT stress binary not found"
 fi
 
 echo
