@@ -337,11 +337,15 @@ public actor DictationSession {
     private var captureTask: Task<Void, Never>?
     private var levelsTask: Task<Void, Never>?
     private var state = SessionUIState()
+    private var startTime: UInt64?
     private var retainedText = ""
     private var released = false
     /// Review R2/4: set when cancel() is called, so cancellation is observed
     /// at every stage even without an active command consumer.
     private var cancelRequested = false
+    /// Review B3: exactly-one terminal emission via TerminalGuard + sink.
+    private var terminalGuard: TerminalGuard
+    private let telemetrySink = BoundedEventSink(capacity: 64)
 
     public init(
         provider: any DictationSessionStageProviding,
@@ -365,6 +369,7 @@ public actor DictationSession {
         self.control = control
         self.sessionID = sid
         self.broadcaster = SessionStateBroadcaster<SessionUIState>(initial: SessionUIState())
+        self.terminalGuard = TerminalGuard(sessionID: SessionTelemetryID(sid.token))
         // Review R2/4: create a DURABLE command mailbox at init so control
         // events (end/cancel/retry/discard) are never lost before run()
         // installs the consumer. Buffering keeps commands sent during setup
@@ -379,6 +384,11 @@ public actor DictationSession {
 
     public func subscribe() -> AsyncStream<SessionUIState> {
         broadcaster.subscribe()
+    }
+
+    /// Review B3: drain the emitted terminal telemetry (host reads once).
+    public func drainTelemetry() -> [TelemetryEvent] {
+        telemetrySink.drain()
     }
 
     // MARK: - Control events (hotkey/app path)
@@ -409,6 +419,7 @@ public actor DictationSession {
 
     public func run() async {
         guard !released else { return }
+        startTime = nowNanos()
         publish(phase: .listening, interim: "", level: 0.05)
 
         guard let commands = commandStream else { return }
@@ -506,13 +517,14 @@ public actor DictationSession {
         // Review R2/4: cancel before final decode.
         if await checkCancellation() { return }
         // Stage 3: finalize decode -> explicit engine result.
+        // Review B3: stage transitions must FOLLOW the work they describe.
+        // drainFinished -> finalize -> transcriptionFinished (only after the
+        // engine result exists). Staging transcriptionFinished before
+        // finalize moved the state to .transforming while the engine was
+        // still transcribing; a finalize failure then attempted
+        // .captureFailed from the wrong state.
         if control.stage(.drainFinished).isRejected {
             await provider.cancel()
-            publish(phase: .error, interim: state.interimText, level: state.audioLevel)
-            finishTerminal(category: .failed)
-            return
-        }
-        if control.stage(.transcriptionFinished).isRejected {
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
             finishTerminal(category: .failed)
             return
@@ -521,12 +533,20 @@ public actor DictationSession {
         do {
             final = try await provider.finalize()
         } catch {
+            // Finalize failed: still in .transcribing — .captureFailed is
+            // legal here.
             _ = control.stage(.captureFailed)
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
             finishTerminal(category: .failed)
             return
         }
         state.outputs.engineResult = final
+        // Transcription actually finished (finalize returned): stage it now.
+        if control.stage(.transcriptionFinished).isRejected {
+            publish(phase: .error, interim: state.interimText, level: state.audioLevel)
+            finishTerminal(category: .failed)
+            return
+        }
         publish(phase: .processing, interim: state.interimText, level: state.audioLevel)
 
         if final.completeness != .complete {
@@ -541,15 +561,13 @@ public actor DictationSession {
         if !sessionAllowsAutomaticSideEffects {
             // Review R2/4: cancel before the sensitive review/Flow path.
             if await checkCancellation() { return }
-            _ = control.stage(.transformationFinished)
-            // Review R2/3: don't force terminal here — review is shown and the
-            // session is still alive (retry/discard/cancel legal). The control
-            // model stays nonterminal; terminal is set on actual session end.
+            // Review B3: stage transformationFinished AFTER applyFlow runs.
             let conservative = await provider.applyFlow(
                 FlowRequest(
                     sessionID: sessionID, text: final.text, style: .clean,
                     language: settings.language,
                     sensitivity: targetSnapshot?.sensitivity.sensitivity ?? .unknown))
+            _ = control.stage(.transformationFinished)
             state.outputs.flowOutcome = conservative
             let reviewText = conservative.text.trimmingCharacters(in: .whitespacesAndNewlines)
             retainedText = reviewText
@@ -558,7 +576,6 @@ public actor DictationSession {
             return
         }
 
-        _ = control.stage(.transformationFinished)
         // Review R2/4: cancel before Flow transformation.
         if await checkCancellation() { return }
         let flowOutcome = await provider.applyFlow(
@@ -566,6 +583,12 @@ public actor DictationSession {
                 sessionID: sessionID, text: final.text, style: settings.defaultFlowStyle,
                 language: settings.language,
                 sensitivity: targetSnapshot?.sensitivity.sensitivity ?? .unknown))
+        // Review B3: stage transformationFinished AFTER applyFlow returns.
+        if control.stage(.transformationFinished).isRejected {
+            publish(phase: .error, interim: state.interimText, level: state.audioLevel)
+            finishTerminal(category: .failed)
+            return
+        }
         state.outputs.flowOutcome = flowOutcome
         publish(phase: .processing, interim: state.interimText, level: state.audioLevel)
 
@@ -574,6 +597,7 @@ public actor DictationSession {
         // original input (conservative fallback), but automatic insertion is
         // disabled — surface the review surface so the user decides.
         if flowOutcome.status == .rejected {
+            print("B5-SESSION-DEBUG: rejected flow -> review; retained=\(flowOutcome.text.count)")
             publish(phase: .review, interim: flowOutcome.text, level: state.audioLevel)
             retainedText = flowOutcome.text
             await handleReviewCommands(secureOnly: false)
@@ -659,15 +683,16 @@ public actor DictationSession {
                 finishTerminal(category: .completed)
                 return true
             case .automaticCopy, .automaticCopyBlocked:
-                // Review R9: automatic clipboard writes are never treated as
-                // verified completion and never history-eligible. Surface the
-                // review panel so the user can confirm or copy explicitly.
-                _ = control.stage(.insertionFailed)
+                // Review R9 + B3: automatic clipboard writes are never treated
+                // as verified completion and never history-eligible. Surface
+                // the review panel. Do NOT stage .insertionFailed (which is
+                // terminal) — the control model stays in .inserting so
+                // retry/discard/cancel remain legal; terminal is set only on
+                // actual session end.
                 publish(phase: .review, interim: retainedText, level: state.audioLevel)
                 await handleReviewCommands(secureOnly: false)
                 return true
             default:
-                _ = control.stage(.insertionFailed)
                 publish(phase: .review, interim: retainedText, level: state.audioLevel)
                 await handleReviewCommands(secureOnly: false)
                 return true
@@ -771,6 +796,28 @@ public actor DictationSession {
             StageOutcomeCategory(
                 rawValue: category.rawValue) ?? .failed
         _ = control.finish(category: outcomeCategory)
+        // Review B3: emit the versioned terminal event exactly once through
+        // the TerminalGuard (a second finish is refused). Content-free.
+        let now = nowNanos()
+        if let event = terminalGuard.finalize(
+            terminal: category, durationNanos: startTime.map { now &- $0 } ?? 0,
+            atNanos: now)
+        {
+            telemetrySink.record(event)
+        }
+        if let counts = state.outputs.audioSummary {
+            telemetrySink.record(
+                TelemetryEvent(
+                    sessionID: SessionTelemetryID(sessionID.token),
+                    kind: .captureAccounting,
+                    terminal: category,
+                    frameCounts: FrameCountSnapshot(
+                        captured: counts.capturedSourceSamples,
+                        delivered: counts.deliveredEngineSamples,
+                        dropped: counts.droppedSamples,
+                        decoded: counts.deliveredEngineSamples),
+                    atNanos: now))
+        }
         captureTask?.cancel()
         levelsTask?.cancel()
         captureTask = nil

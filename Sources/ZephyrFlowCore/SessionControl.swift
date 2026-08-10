@@ -147,39 +147,30 @@ public struct SessionControlModel: Sendable, Equatable {
         case .failed: target = .failed
         case .abandonedDuringShutdown: target = .abandonedDuringShutdown
         }
-        // Find a legal path to the terminal state. Most terminal categories
-        // are reachable from any non-terminal state via their canonical event
-        // (cancel / captureFailed / etc.); if the machine rejects the direct
-        // edge we still force the terminal via the model (the orchestration
-        // has already decided the outcome), but only if a legal path exists.
+        // Review B3: the state machine is AUTHORITATIVE — never force-apply a
+        // terminal that the machine declares illegal. If the canonical event
+        // is illegal from the current state, the orchestration is out of sync
+        // with the control model: leave the state unchanged and let the
+        // caller's cleanup (finishTerminal) proceed. The session is still
+        // cleaned up exactly once; the terminal STATE simply records what the
+        // machine actually allows.
         let machine = SessionStateMachine()
         let canonicalEvent: SessionEvent? = SessionControlModel.canonicalEvent(for: category)
         if let event = canonicalEvent {
             switch machine.transition(from: state, event: event) {
-            case .to(let next) where next == target:
-                // The canonical event lands exactly on the requested terminal.
+            case .to(let next):
+                // Legal transition (lands on the category's canonical
+                // terminal; the machine maps captureFailed -> .failed etc.).
                 _ = applyTransition(next, sid: sid)
-                return state
-            case .to:
-                // The canonical event is legal but lands on a DIFFERENT
-                // terminal (e.g. captureFailed -> .failed while the category
-                // is .degraded). The orchestration has already decided the
-                // outcome; apply the requested terminal directly.
-                _ = applyTransition(target, sid: sid)
                 return state
             case .stay:
                 return state
             case .illegal:
-                // No legal path: force the terminal directly. This only
-                // happens for categories whose canonical event is illegal
-                // from the current state; the session is over anyway.
-                _ = applyTransition(target, sid: sid)
+                // No legal path: leave state unchanged (no force-apply).
                 return state
             }
         }
-        // Direct terminal application (state machine has no row for this
-        // exact pair, but the outcome is decided).
-        _ = applyTransition(target, sid: sid)
+        // No canonical event: leave state unchanged (no force-apply).
         return state
     }
 

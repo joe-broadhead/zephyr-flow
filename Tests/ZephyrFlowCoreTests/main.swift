@@ -834,6 +834,77 @@ struct CoreTests {
                 states.contains { $0.phase == SessionPhase.hidden })
         }
 
+        // ===== B3 regression: exactly-one terminal telemetry emission =====
+        do {
+            // Review B3: the TerminalGuard emits a versioned terminal event
+            // exactly once, with the correct category and duration.
+            var tg = TerminalGuard(sessionID: SessionTelemetryID("s1"))
+            let e1 = tg.finalize(
+                terminal: .completed, durationNanos: 1_000_000, atNanos: 5_000)
+            check("B3 tg emits one terminal event", e1?.kind == .terminal)
+            check("B3 tg category completed", e1?.terminal == .completed)
+            check("B3 tg duration retained", e1?.durationNanos == 1_000_000)
+            // Second finalize is refused (exactly once).
+            let e2 = tg.finalize(
+                terminal: .cancelled, durationNanos: 1, atNanos: 6_000)
+            check("B3 tg refuses second terminal", e2 == nil)
+            // Abandon on an unfinished guard emits a controlled abandoned event.
+            var g2 = TerminalGuard(sessionID: SessionTelemetryID("s2"))
+            let abandoned = g2.abandon(atNanos: 7_000)
+            check("B3 abandoned guard emits abandoned event", abandoned?.kind == .abandoned)
+            // Session-level: a completed session's drainTelemetry carries one
+            // terminal event (no lifecycle hang — the session is collected
+            // normally in prior tests; here we verify the sink path directly).
+            let sink = BoundedEventSink(capacity: 8)
+            sink.record(
+                TelemetryEvent(
+                    sessionID: SessionTelemetryID("s3"), kind: .terminal,
+                    terminal: .completed, durationNanos: 10, atNanos: 20))
+            let drained = sink.drain()
+            check("B3 sink drains terminal event", drained.count == 1 && drained[0].terminal == .completed)
+        }
+
+        print("B5-MARKER: after B3 block, before B5")
+        // ===== B5 regression: rejected Flow never auto-inserts =====
+        do {
+            print("B5-DEBUG: test start")
+            // Review B5: when Flow returns a REJECTED outcome (protected spans
+            // not preserved), the session must enter REVIEW without automatic
+            // insertion — the unsafe output must never reach validate/insert.
+            let provider = FakeSessionStages()
+            await provider.setPartials(["hello"])
+            await provider.setFlowRejected(true)
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            await s.end()
+            // Rejected Flow shows the review surface; the review loop stays
+            // alive until the user acts — send discard to end it deterministically.
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            print("B5-DEBUG sending discard")
+            await s.discard()
+            print("B5-DEBUG discard sent")
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            check(
+                "B5 rejected Flow enters review (not success)",
+                states.contains { $0.phase == .review }
+                    && !states.contains { $0.phase == .success })
+            check(
+                "B5 rejected Flow no history written",
+                await provider.historyCount == 0)
+            check(
+                "B5 rejected Flow no insertion",
+                await provider.insertionCount == 0)
+        }
+
         // ===== REQ-1: production-wiring session test (exactly-one terminal) =====
         do {
             // Drive a full session through capture -> end -> review(retry) ->
@@ -868,12 +939,24 @@ struct CoreTests {
 
         // ===== R1.5 regression: finish(category:) drives terminal outcome =====
         do {
-            // Review R1.5: finishTerminal must drive the CONTROL state machine
-            // to the matching terminal state (recording the outcome), not just
-            // clean up resources. Verify control.finish() does this.
+            // Review R1.5/B3: finishTerminal drives the CONTROL state machine
+            // to the matching terminal state (recording the outcome). The
+            // state machine is AUTHORITATIVE: an illegal finish (e.g. claiming
+            // .completed from .capturing) is a no-op, never a force-apply.
             var c = SessionControlModel()
             _ = c.begin()
             _ = c.stage(.readyToCapture)
+            // Illegal finish from .capturing: state unchanged (no force-apply).
+            _ = c.finish(category: .completed)
+            check(
+                "B3 finish(completed) from capturing is no-op (not forced)",
+                c.state == .capturing && c.terminal == nil)
+            // Drive the session to .inserting, then finish completes legally.
+            _ = c.stage(.stop)
+            _ = c.stage(.drainFinished)
+            _ = c.stage(.transcriptionFinished)
+            _ = c.stage(.transformationFinished)
+            _ = c.stage(.targetValidationSucceeded)
             _ = c.finish(category: .completed)
             check(
                 "R1.5 finish(completed) drives state to completed",
@@ -882,24 +965,29 @@ struct CoreTests {
             _ = c.finish(category: .cancelled)
             check("R1.5 duplicate finish keeps first terminal", c.terminal == .completed)
 
-            // Cancel path from preparing -> cancelled via finish.
+            // Cancel path from preparing -> cancelled via finish (legal).
             var c2 = SessionControlModel()
             _ = c2.begin()
             _ = c2.finish(category: .cancelled)
             check("R1.5 finish(cancelled) from preparing", c2.state == .cancelled)
 
-            // A session that never left preparing can finish failed.
+            // A session that never left preparing can finish failed
+            // (preparationFailed is legal from preparing).
             var c3 = SessionControlModel()
             _ = c3.begin()
             _ = c3.finish(category: .failed)
             check("R1.5 finish(failed) from preparing", c3.state == .failed)
 
-            // finish records exactly one terminal outcome for stress paths.
+            // finish from .capturing with .degraded maps to the legal terminal:
+            // captureFailed -> .failed (the machine has no direct .degraded
+            // edge). No force-apply to .degraded.
             var c4 = SessionControlModel()
             _ = c4.begin()
             _ = c4.stage(.readyToCapture)
             _ = c4.finish(category: .degraded)
-            check("R1.5 finish(degraded)", c4.state == .degraded && c4.terminal == .degraded)
+            check(
+                "B3 finish(degraded) from capturing -> failed (machine legal)",
+                c4.state == .failed && c4.terminal == .failed)
         }
         do {
             // R1.5: readyToCapture transitions preparing -> capturing (the
