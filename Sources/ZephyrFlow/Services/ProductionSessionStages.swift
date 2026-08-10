@@ -141,7 +141,8 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                 // deliveryFinished. This guarantees the tail is never omitted
                 // by a scheduling window where the barrier drained but the
                 // consumer had not finished.
-                if let tail = converter.flush(), !tail.isEmpty {
+                let tail = converter.flush()
+                if !tail.isEmpty {
                     await engine.appendAudio(tail)
                     self.lock.withLock {
                         self.accounting.noteConverted(engineSamples: UInt64(tail.count))

@@ -397,11 +397,13 @@ public actor DictationSession {
         commandContinuation?.yield(.end)
     }
 
-    public func cancel() {
-        // Review R2/4: set a durable flag so cancel is observed even when no
-        // command consumer is active (e.g. during drain/finalize/Flow); also
-        // yield to the stream for review-phase command handling.
+    public func cancel() async {
+        // Review B2v2: set the durable flag AND actively invoke the provider's
+        // cancel so an in-flight finalize/streaming is interrupted, not merely
+        // flagged for a later stage boundary. Also yield to the stream for
+        // review-phase command handling.
         cancelRequested = true
+        await provider.cancel()
         commandContinuation?.yield(.cancel)
     }
 
@@ -426,9 +428,16 @@ public actor DictationSession {
         // commandStream was created at init (durable mailbox); the consumer
         // drains buffered control events in order.
 
+        // Review B2v2: a cancel buffered before/at start must prevent
+        // preparation and microphone activation, not just be observed later.
+        if await checkCancellation() { return }
+
         // Session-scoped preparation: AX target snapshot + engine binding.
         await provider.prepare(sessionID: sessionID)
         targetSnapshot = await provider.capturedTargetSnapshot()
+
+        // Review B2v2: cancel during preparation must prevent capture start.
+        if await checkCancellation() { return }
 
         // Stage 1: capture + engine streaming starts immediately (begin edge).
         let handle: SessionCaptureHandle
@@ -678,6 +687,13 @@ public actor DictationSession {
                         finalText: retainedText,
                         duration: TimeInterval(final.inferenceDurationNanos ?? 0) / 1_000_000_000,
                         modelName: final.engine.modelName)
+                }
+                // Review B2v2: a cancel that arrived during history persistence
+                // must not be followed by a success terminal.
+                if cancelRequested {
+                    publish(phase: .hidden, interim: "", level: 0.05)
+                    finishTerminal(category: .cancelled)
+                    return true
                 }
                 publish(phase: .success, interim: retainedText, level: state.audioLevel)
                 finishTerminal(category: .completed)

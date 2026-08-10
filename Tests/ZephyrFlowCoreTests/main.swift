@@ -40,6 +40,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
     var reconciled = true
     var historyCount = 0
     var cancelCount = 0
+    var cancelled = false
     var insertionCount = 0
     var prepareCount = 0
     var capturedSessionIDs: [SessionID] = []
@@ -172,7 +173,15 @@ actor FakeSessionStages: DictationSessionStageProviding {
         historyCount += 1
     }
 
-    func cancel() async { cancelCount += 1 }
+    func cancel() async {
+        // Idempotent: count only the first cancellation (matches real provider
+        // semantics — cancel() may be called by both the control path and the
+        // stage gate).
+        if !cancelled {
+            cancelled = true
+            cancelCount += 1
+        }
+    }
 }
 
 // ===== JOE-2255: in-memory fault-injecting model filesystem =====

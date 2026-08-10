@@ -114,9 +114,15 @@ final class DictationController: ObservableObject {
             switch event {
             case .press:
                 ZFLog.info("Hotkey press")
-                let task = Task { @MainActor in await self.beginSession() }
-                self.pendingBeginTask = task
-                self.enqueueSession { await task.value }
+                // Review B2v2: begin runs INSIDE the sessionChain (serialized),
+                // so overlapping presses cannot create concurrent begins.
+                // pendingBeginTask is set inside the chain to the running
+                // begin so a release/cancel can preempt it during preload.
+                self.enqueueSession {
+                    let beginTask = Task { @MainActor in await self.beginSession() }
+                    self.pendingBeginTask = beginTask
+                    await beginTask.value
+                }
             case .release:
                 ZFLog.info("Hotkey release")
                 // Review R1.4: preempt a pending begin DURING model preload
@@ -372,6 +378,15 @@ final class DictationController: ObservableObject {
     }
 
     func cancelSession() {
+        // Review B2v2: a cancel during model preload must preempt the pending
+        // begin directly (session is nil then), not queue behind it.
+        if self.session == nil, let pending = self.pendingBeginTask,
+            !pending.isCancelled
+        {
+            pending.cancel()
+            self.pendingBeginTask = nil
+            ZFLog.info("cancelSession preempted pending begin during preload")
+        }
         enqueueSession {
             await self.session?.cancel()
         }
@@ -607,9 +622,15 @@ final class DictationController: ObservableObject {
             switch event {
             case .press:
                 ZFLog.info("Hotkey press")
-                let task = Task { @MainActor in await self.beginSession() }
-                self.pendingBeginTask = task
-                self.enqueueSession { await task.value }
+                // Review B2v2: begin runs INSIDE the sessionChain (serialized),
+                // so overlapping presses cannot create concurrent begins.
+                // pendingBeginTask is set inside the chain to the running
+                // begin so a release/cancel can preempt it during preload.
+                self.enqueueSession {
+                    let beginTask = Task { @MainActor in await self.beginSession() }
+                    self.pendingBeginTask = beginTask
+                    await beginTask.value
+                }
             case .release:
                 ZFLog.info("Hotkey release")
                 // Review R1.4: preempt a pending begin DURING model preload
