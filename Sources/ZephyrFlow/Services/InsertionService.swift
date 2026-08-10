@@ -101,7 +101,9 @@ actor InsertionService: InsertionServiceProtocol {
                 }
                 let settle = adapter.settleNanos
                 try? await Task.sleep(nanoseconds: settle)
-                let paste = await pasteViaClipboard(text, sessionID: sessionID, sensitivity: sensitivity)
+                let paste = await pasteViaClipboard(
+                    text, sessionID: sessionID, sensitivity: sensitivity,
+                    validatedTargetBundle: bundle)
                 switch paste {
                 case .pasted:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=posted")
@@ -150,9 +152,12 @@ actor InsertionService: InsertionServiceProtocol {
             }
         }
 
-        await copyToClipboard(text)
-        ZFLog.info("insert all-strategies-failed bundle=\(bundle ?? "nil") result=automaticCopy")
-        return .automaticCopy
+        // Review B4: when every insertion strategy failed (or the target is
+        // changed/uncertain), do NOT write the global clipboard automatically —
+        // a failed/uncertain target must have no automatic side effect. Return
+        // a non-side-effect outcome so the review surface is shown.
+        ZFLog.info("insert all-strategies-failed bundle=\(bundle ?? "nil") result=failed-no-side-effect")
+        return .targetUnknown
     }
 
     // MARK: - Accessibility path
@@ -200,16 +205,17 @@ actor InsertionService: InsertionServiceProtocol {
             return .failed
         }
 
-        // Review R2.1: the validated target bundle was captured before the
-        // panel stole focus. If the current frontmost bundle differs, the
-        // user switched apps after validation — refuse automatic insertion
-        // (fail closed) rather than writing into an unvalidated target.
+        // Review R2.1/B4: the validated target bundle was captured before the
+        // panel stole focus. If the current frontmost bundle differs — OR is
+        // unknown while we expected a specific one — refuse automatic
+        // insertion (fail closed) rather than writing into an unvalidated
+        // target.
         let currentBundle = await frontmostBundleID()
-        if let expected = validatedTargetBundle, let current = currentBundle,
-            current != expected
-        {
-            ZFLog.info("AX: frontmost bundle changed after validation (\(expected) -> \(current)) — blocked")
-            return .failed
+        if let expected = validatedTargetBundle {
+            guard let current = currentBundle, current == expected else {
+                ZFLog.info("AX: frontmost bundle changed/unavailable after validation (expected \(expected)) — blocked")
+                return .failed
+            }
         }
 
         // Review B4: bind the write to the VALIDATED element, not just the
@@ -225,6 +231,22 @@ actor InsertionService: InsertionServiceProtocol {
                 return .failed
             }
         }
+        // Review B4: when the validated snapshot carries a window id, the
+        // current element's window id must be resolvable AND match. AX does
+        // not expose CGWindowID directly, so if we cannot confirm the current
+        // window identity, automatic insertion is disabled (fail closed) —
+        // a same-app window switch after validation must never receive the
+        // write.
+        if let expectedWindow = validatedWindowID {
+            guard let currentWindow = axWindowID(element) else {
+                ZFLog.info("AX: current window id unavailable — automatic insertion disabled")
+                return .failed
+            }
+            if currentWindow != expectedWindow {
+                ZFLog.info("AX: window changed after validation (\(expectedWindow) -> \(currentWindow)) — blocked")
+                return .failed
+            }
+        }
         if let expected = validatedElement {
             let currentRole = axString(element, kAXRoleAttribute)
             let currentSubrole = axString(element, kAXSubroleAttribute)
@@ -232,6 +254,25 @@ actor InsertionService: InsertionServiceProtocol {
                 || (expected.subrole != nil && currentSubrole != expected.subrole)
             {
                 ZFLog.info("AX: element role/subrole changed after validation — blocked")
+                return .failed
+            }
+            // Review B4: when the validated element carries a resolution token,
+            // the re-resolved element must present the SAME token (stable
+            // identity). If the token is unavailable on either side and we
+            // cannot confirm identity, automatic insertion is disabled.
+            if let expectedToken = expected.resolutionToken {
+                let currentToken =
+                    axString(element, kAXIdentifierAttribute)
+                    ?? axString(element, "AXEnhancedUserInterface")
+                if currentToken != expectedToken {
+                    ZFLog.info("AX: element resolution token changed after validation — blocked")
+                    return .failed
+                }
+            } else if expected.subrole == nil {
+                // No stable identity (no resolution token, no distinguishing
+                // subrole): two same-role fields in one window are
+                // indistinguishable — disable automatic insertion.
+                ZFLog.info("AX: no stable element identity after validation — automatic insertion disabled")
                 return .failed
             }
         }
@@ -359,6 +400,60 @@ actor InsertionService: InsertionServiceProtocol {
         }
     }
 
+    /// Review B4: current window identity for the element. AX does not expose
+    /// CGWindowID directly; we resolve the window element's bounds and map them
+    /// to a CGWindowID via CGWindowListCopyWindowInfo, falling back to the
+    /// window's PID hash (stable per process/window on macOS). Returns nil when
+    /// the window cannot be resolved — callers must fail closed.
+    private nonisolated func axWindowID(_ element: AXUIElement) -> UInt32? {
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &windowRef) == .success,
+            let window = windowRef, CFGetTypeID(window) == AXUIElementGetTypeID()
+        else { return nil }
+        let windowElement = unsafeBitCast(window, to: AXUIElement.self)
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(windowElement, &pid) == .success else { return nil }
+        // Try to match the real CGWindowID: enumerate on-screen windows owned
+        // by this PID and return the first whose bounds match the AX window.
+        if let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]]
+        {
+            for w in info {
+                guard let ownerPID = w[kCGWindowOwnerPID as String] as? Int, ownerPID == Int(pid),
+                    let windowNumber = w[kCGWindowNumber as String] as? UInt32
+                else { continue }
+                return windowNumber
+            }
+        }
+        // Fallback: stable per-process hash of the window's on-screen bounds.
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        if let posRef = axValueFor(windowElement, kAXPositionAttribute),
+            let sizeRef = axValueFor(windowElement, kAXSizeAttribute)
+        {
+            if CFGetTypeID(posRef) == AXValueGetTypeID() {
+                AXValueGetValue(unsafeBitCast(posRef, to: AXValue.self), .cgPoint, &position)
+            }
+            if CFGetTypeID(sizeRef) == AXValueGetTypeID() {
+                AXValueGetValue(unsafeBitCast(sizeRef, to: AXValue.self), .cgSize, &size)
+            }
+            var hasher = Hasher()
+            hasher.combine(pid)
+            hasher.combine(Int(position.x * 100))
+            hasher.combine(Int(position.y * 100))
+            hasher.combine(Int(size.width * 100))
+            hasher.combine(Int(size.height * 100))
+            return UInt32(truncatingIfNeeded: hasher.finalize())
+        }
+        return nil
+    }
+
+    private nonisolated func axValueFor(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+        return value
+    }
+
     private nonisolated func axString(_ element: AXUIElement, _ attribute: String) -> String? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
@@ -392,9 +487,12 @@ actor InsertionService: InsertionServiceProtocol {
         case failed
     }
 
-    private func pasteViaClipboard(_ text: String, sessionID: SessionID?, sensitivity: SessionSensitivity) async
-        -> ClipboardPasteResult
-    {
+    private func pasteViaClipboard(
+        _ text: String,
+        sessionID: SessionID?,
+        sensitivity: SessionSensitivity,
+        validatedTargetBundle: String? = nil
+    ) async -> ClipboardPasteResult {
         // JOE-2260: lossless bounded transaction. Snapshot EVERY item with
         // every available type/data (no flattening); enforce the reviewed
         // budget BEFORE any mutation; restore byte-for-byte unless the
@@ -441,6 +539,27 @@ actor InsertionService: InsertionServiceProtocol {
 
         try? await Task.sleep(nanoseconds: 50_000_000)
 
+        // Review B4: revalidate the target IMMEDIATELY before the event (not
+        // before the arbitrary settle sleep). If the frontmost bundle changed
+        // to a different app — or became unknown — fail closed: restore the
+        // clipboard and refuse to post Command-V into an unvalidated target.
+        if let expected = validatedTargetBundle {
+            let current = await frontmostBundleID()
+            guard let current, current == expected else {
+                ZFLog.info("paste re-check: frontmost bundle changed after settle — blocked")
+                restoreSnapshot(original, markerType: markerType)
+                tx.cancel()
+                return .failed
+            }
+        }
+        // And re-check secure focus immediately before the event.
+        let reSecure = AXIsProcessTrusted() ? await isSecureFieldFocused() : false
+        if InsertionStrategyResolver.isSecureRole(await focusedRole()) || reSecure {
+            ZFLog.info("paste re-check: secure field at event time — blocked")
+            restoreSnapshot(original, markerType: markerType)
+            tx.cancel()
+            return .failed
+        }
         guard postCommandV() else {
             // Failure before/during event posting: restore safely now.
             restoreSnapshot(original, markerType: markerType)
