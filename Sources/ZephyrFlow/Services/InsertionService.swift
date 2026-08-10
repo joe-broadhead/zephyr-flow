@@ -261,9 +261,7 @@ actor InsertionService: InsertionServiceProtocol {
             // identity). If the token is unavailable on either side and we
             // cannot confirm identity, automatic insertion is disabled.
             if let expectedToken = expected.resolutionToken {
-                let currentToken =
-                    axString(element, kAXIdentifierAttribute)
-                    ?? axString(element, "AXEnhancedUserInterface")
+                let currentToken = axString(element, kAXIdentifierAttribute)
                 if currentToken != expectedToken {
                     ZFLog.info("AX: element resolution token changed after validation — blocked")
                     return .failed

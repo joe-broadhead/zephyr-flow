@@ -82,20 +82,22 @@ fi
 step "5/9 shell + YAML lint"
 # Review R8.1: shellcheck covers ALL Scripts subdirectories (recursive),
 # not just Scripts/*.sh, and its absence is a FAILURE (not a silent skip).
-# Review NIT-5: recursive script discovery via find (globstar-independent).
-mapfile -d '' ALL_SCRIPTS < <(find Scripts -name '*.sh' -print0)
-if [[ ${#ALL_SCRIPTS[@]} -eq 0 ]]; then
+# Review NIT-5: recursive script discovery via find (globstar-independent;
+# portable to macOS bash 3.2 — no mapfile).
+FOUND_SH=0
+while IFS= read -r sh; do
+  FOUND_SH=1
+  bash -n "$sh" || fail "bash -n $sh"
+done < <(find Scripts -name '*.sh')
+if [[ "$FOUND_SH" -eq 0 ]]; then
   fail "no shell scripts found under Scripts/"
 fi
-for sh in "${ALL_SCRIPTS[@]}"; do
-  bash -n "$sh" || fail "bash -n $sh"
-done
 if command -v shellcheck >/dev/null 2>&1; then
-  for sh in "${ALL_SCRIPTS[@]}"; do
+  while IFS= read -r sh; do
     # --severity=warning: real defects (warnings/errors) fail the gate;
     # info-level notes (e.g. SC1091 follow-sourcing, SC2086 quoting) do not.
     shellcheck --severity=warning -x "$sh" || fail "shellcheck $sh"
-  done
+  done < <(find Scripts -name '*.sh')
 else
   fail "shellcheck not installed (required by the gate)"
 fi

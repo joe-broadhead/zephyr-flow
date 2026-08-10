@@ -134,19 +134,6 @@ public struct SessionControlModel: Sendable, Equatable {
     public mutating func finish(category: StageOutcomeCategory) -> SessionState {
         guard let sid = sessionID else { return state }
         guard !state.isTerminal else { return state }
-        let target: SessionState
-        switch category {
-        case .completed: target = .completed
-        case .degraded: target = .degraded
-        case .partial: target = .partial
-        case .truncated: target = .truncated
-        case .cancelled: target = .cancelled
-        case .deadlineExceeded: target = .deadlineExceeded
-        case .targetChanged: target = .targetChanged
-        case .secureTarget: target = .secureTarget
-        case .failed: target = .failed
-        case .abandonedDuringShutdown: target = .abandonedDuringShutdown
-        }
         // Review B3: the state machine is AUTHORITATIVE — never force-apply a
         // terminal that the machine declares illegal. If the canonical event
         // is illegal from the current state, the orchestration is out of sync
