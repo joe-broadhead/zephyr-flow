@@ -64,6 +64,10 @@ final class DictationController: ObservableObject {
     private var reviewClearTask: Task<Void, Never>?
     /// Retained for review presentation (session identity is immutable).
     private var lastSessionID: SessionID?
+    /// Review REQ-5: the CURRENT session's immutable ID (set at beginSession,
+    /// used by sessionDidFinish for a real identity check — NOT overwritten
+    /// before the comparison).
+    private var currentSessionID: SessionID?
     /// Review R7: true once history key config + load completed (awaited in
     /// start()). Session admission waits for this so history writes are never
     /// made before encryption initialization.
@@ -332,6 +336,7 @@ final class DictationController: ObservableObject {
         // and available immediately; review presentation and the completion
         // identity check both read it.
         self.lastSessionID = await s.sessionID
+        self.currentSessionID = await s.sessionID
         sessionTask = Task { await s.run() }
         stateTask = Task { [weak self] in
             guard let self else { return }
@@ -440,16 +445,12 @@ final class DictationController: ObservableObject {
     /// then applies terminal UI dismissal policy. Called when the session's
     /// state broadcaster finishes.
     private func sessionDidFinish(sessionID: SessionID) {
-        // Review REQ-4: record this finished session's ID as the latest
-        // (the completion path awaits s.sessionID, so this is authoritative —
-        // no separate racy task).
-        lastSessionID = sessionID
-        // Identity check: only clear if this finished session is still the
-        // active one (a newer session may have replaced it). Comparing the
-        // recorded ID to the finished id keeps a stale completion from
-        // wiping a newer session's references.
+        // Review REQ-5: compare the finishing ID against the CURRENT session's
+        // ID (set at beginSession). Do NOT overwrite lastSessionID first —
+        // that made the identity check tautologically true and could not
+        // detect a stale completion from an older session.
         let isCurrent: Bool
-        if let currentID = lastSessionID {
+        if let currentID = currentSessionID {
             isCurrent = (currentID == sessionID)
         } else {
             isCurrent = true
@@ -458,6 +459,9 @@ final class DictationController: ObservableObject {
             ZFLog.info("Session finish ignored — a newer session is active")
             return
         }
+        // Authoritative: this finished session IS (or was) the current one.
+        lastSessionID = sessionID
+        currentSessionID = nil
         sessionTask?.cancel()
         sessionTask = nil
         stateTask = nil
@@ -654,11 +658,21 @@ final class DictationController: ObservableObject {
             whisperEngine = WhisperKitEngine()
             activeEngine = whisperEngine
             currentEngineToken = EngineToken()
-            // Re-load the preferred model into the fresh instance (verified
-            // artifact path; downloads remain gated).
+            // Review B6: load the fresh engine ONLY if the verified artifact is
+            // ready (no unverified load), and record the verified digest so the
+            // engine identity binds to the verified artifact.
+            let store = ModelReadinessStore.shared
+            let model = settingsStore.settings.preferredModel
+            let verified = await store.verifiedReadiness(for: model)
+            guard verified.state.isReady else {
+                self.isModelLoading = false
+                ZFLog.info("Fresh engine not loaded — verified artifact not ready")
+                return
+            }
             isModelLoading = true
             do {
-                try await activeEngine.load(model: settingsStore.settings.preferredModel)
+                try await activeEngine.load(model: model)
+                await activeEngine.recordVerifiedDigest(store.verifiedDigest(for: model))
                 self.isModelLoading = false
             } catch {
                 self.isModelLoading = false

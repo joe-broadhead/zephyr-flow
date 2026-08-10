@@ -8,7 +8,11 @@ import ZephyrFlowCore
 /// Live partials use a **single-flight** rolling-window decode loop so we never
 /// run concurrent `transcribe` calls (WhisperKit/NSProgress races → SIGSEGV).
 actor WhisperKitEngine: WhisperEngineProtocol {
-    private(set) var isReady = false
+    private var _isReady = false
+    /// Review B6: admission readiness is `_isReady && !isQuarantined`. A
+    /// quarantined engine (native decode still busy at cleanup) must NOT be
+    /// reused — the controller replaces it before the next session.
+    public var isReady: Bool { _isReady && !_isQuarantined }
     private(set) var modelName = "WhisperKit"
 
     private var kit: WhisperKit?
@@ -94,7 +98,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
             throw WhisperEngineError.modelLoadFailed("Not a WhisperKit model: \(model.rawValue)")
         }
 
-        isReady = false
+        _isReady = false
         ZFLog.info("WhisperKit load model=\(model.rawValue) allowDownload=\(allowDownload)")
 
         do {
@@ -108,7 +112,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
             )
             self.kit = pipe
             self.modelName = "WhisperKit (\(model.displayName))"
-            self.isReady = true
+            self._isReady = true
         } catch {
             let hint =
                 allowDownload

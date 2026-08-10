@@ -285,8 +285,9 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             reconciled: reconciled,
             drainState: drainBarrier.state.rawValue)
         deliveryTask = nil
-        channel = nil
         converter = nil
+        // Note: `channel` is a local copy (let) from self.channel; the shared
+        // self.channel is cleared in cancel()/deinit. No local clear needed.
         return summary
     }
 
