@@ -41,7 +41,13 @@ actor InsertionService: InsertionServiceProtocol {
             "Insert request len=\(text.count) ax=\(AXIsProcessTrusted()) mode=\(mode.rawValue) bundle=\(bundle ?? "nil") role=\(role ?? "nil")"
         )
 
-        let secureFocused = AXIsProcessTrusted() ? await isSecureFieldFocused() : false
+        // Review B4v2: when AX is revoked we cannot establish sensitivity or
+        // exact identity — fail closed (unknown) rather than proceed.
+        guard AXIsProcessTrusted() else {
+            ZFLog.info("insert blocked — Accessibility revoked (sensitivity unknown)")
+            return .targetUnknown
+        }
+        let secureFocused = await isSecureFieldFocused()
         if InsertionStrategyResolver.isSecureRole(role) || secureFocused {
             // Review R9: never write the clipboard automatically for a secure
             // field. The user may copy explicitly from the review panel, and
@@ -528,7 +534,30 @@ actor InsertionService: InsertionServiceProtocol {
             return .failed
         }
 
-        // Apply temporary content (text + unique marker type).
+        // Review B4v2: validate the target BEFORE any clipboard mutation.
+        // A changed/unknown/secure target must never see the transcript on the
+        // global pasteboard (even transiently), so the checks run first.
+        if let expected = validatedTargetBundle {
+            let current = await frontmostBundleID()
+            guard let current, current == expected else {
+                ZFLog.info("paste pre-check: frontmost bundle changed/unknown — blocked before mutation")
+                return .failed
+            }
+        }
+        // Review B4v2: AX revoked at paste time -> cannot establish
+        // sensitivity/identity — fail closed.
+        guard AXIsProcessTrusted() else {
+            ZFLog.info("paste pre-check: Accessibility revoked — blocked")
+            return .failed
+        }
+        let reSecure = await isSecureFieldFocused()
+        if InsertionStrategyResolver.isSecureRole(await focusedRole()) || reSecure {
+            ZFLog.info("paste pre-check: secure field — blocked before mutation")
+            return .failed
+        }
+
+        // Apply temporary content (text + unique marker type) only after the
+        // target checks passed.
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
         pasteboard.setString(marker.value, forType: markerType)
@@ -537,23 +566,26 @@ actor InsertionService: InsertionServiceProtocol {
 
         try? await Task.sleep(nanoseconds: 50_000_000)
 
-        // Review B4: revalidate the target IMMEDIATELY before the event (not
-        // before the arbitrary settle sleep). If the frontmost bundle changed
-        // to a different app — or became unknown — fail closed: restore the
-        // clipboard and refuse to post Command-V into an unvalidated target.
+        // Re-check immediately before the event too (focus can change during
+        // the settle); if it did, restore the clipboard and fail closed.
         if let expected = validatedTargetBundle {
             let current = await frontmostBundleID()
             guard let current, current == expected else {
-                ZFLog.info("paste re-check: frontmost bundle changed after settle — blocked")
+                ZFLog.info("paste event-time: frontmost bundle changed — restore + blocked")
                 restoreSnapshot(original, markerType: markerType)
                 tx.cancel()
                 return .failed
             }
         }
-        // And re-check secure focus immediately before the event.
-        let reSecure = AXIsProcessTrusted() ? await isSecureFieldFocused() : false
-        if InsertionStrategyResolver.isSecureRole(await focusedRole()) || reSecure {
-            ZFLog.info("paste re-check: secure field at event time — blocked")
+        guard AXIsProcessTrusted() else {
+            ZFLog.info("paste event-time: Accessibility revoked — restore + blocked")
+            restoreSnapshot(original, markerType: markerType)
+            tx.cancel()
+            return .failed
+        }
+        let reSecure2 = await isSecureFieldFocused()
+        if InsertionStrategyResolver.isSecureRole(await focusedRole()) || reSecure2 {
+            ZFLog.info("paste event-time: secure field — restore + blocked")
             restoreSnapshot(original, markerType: markerType)
             tx.cancel()
             return .failed

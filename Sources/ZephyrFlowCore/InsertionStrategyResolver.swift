@@ -18,7 +18,8 @@ public enum InsertionStrategyResolver: Sendable {
         case .alwaysCopy:
             return [.copyOnly]
         case .alwaysPaste:
-            return [.clipboardPaste, .copyOnly]
+            // Review B4v2: paste mode never falls back to an automatic copy.
+            return [.clipboardPaste]
         case .automatic:
             break
         }
