@@ -716,7 +716,11 @@ final class DictationController: ObservableObject {
             }
             isModelLoading = true
             do {
-                try await activeEngine.load(model: model)
+                // Review B6v2: load from the verified/promoted directory (not
+                // WhisperKit's own cache) when the artifact is verified.
+                try await activeEngine.load(
+                    model: model,
+                    verifiedFolder: store.verifiedURL(for: model)?.path)
                 await activeEngine.recordVerifiedDigest(store.verifiedDigest(for: model))
                 self.isModelLoading = false
             } catch {
@@ -739,9 +743,12 @@ final class DictationController: ObservableObject {
 
         let verified = await store.verifiedReadiness(for: model)
         if verified.state.isReady {
-            // Verified cache hit: load directly.
+            // Verified cache hit: load directly from the verified directory
+            // (Review B6v2: NOT WhisperKit's own cache).
             do {
-                try await activeEngine.load(model: model)
+                try await activeEngine.load(
+                    model: model,
+                    verifiedFolder: store.verifiedURL(for: model)?.path)
                 // Review B8: record the verified artifact digest (from the
                 // reviewed manifest) so session evidence ties the loaded
                 // engine to the verified artifact.
@@ -785,7 +792,11 @@ final class DictationController: ObservableObject {
             return
         }
         do {
-            try await activeEngine.load(model: model)
+            // Review B6v2: the just-acquired artifact was promoted to the
+            // verified cache — load from that directory.
+            try await activeEngine.load(
+                model: model,
+                verifiedFolder: store.verifiedURL(for: model)?.path)
             // Review B8: record the verified digest of the just-acquired
             // artifact so the engine identity carries it.
             await activeEngine.recordVerifiedDigest(store.verifiedDigest(for: model))

@@ -247,7 +247,7 @@ public actor FakeWhisperEngine: WhisperEngineProtocol {
 
     public init() {}
 
-    public func load(model: ModelIdentifier) async throws {}
+    public func load(model: ModelIdentifier, verifiedFolder: String? = nil) async throws {}
     public func startStreaming(
         sessionID: SessionID, localOnly: Bool,
         language: SupportedLanguage,

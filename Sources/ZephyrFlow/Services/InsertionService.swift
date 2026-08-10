@@ -418,7 +418,23 @@ actor InsertionService: InsertionServiceProtocol {
         var pid: pid_t = 0
         guard AXUIElementGetPid(windowElement, &pid) == .success else { return nil }
         // Try to match the real CGWindowID: enumerate on-screen windows owned
-        // by this PID and return the first whose bounds match the AX window.
+        // by this PID and return the one whose bounds match the AX window
+        // (Review NIT: the old code returned the first window of the PID
+        // without checking bounds — an identity overclaim). Bounds matching
+        // uses the AX window's position/size; if the AX bounds cannot be read
+        // we still require a MATCHING window (not just the same PID).
+        let axBounds: (CGPoint, CGSize)? = {
+            guard let posRef = axValueFor(windowElement, kAXPositionAttribute),
+                let sizeRef = axValueFor(windowElement, kAXSizeAttribute),
+                CFGetTypeID(posRef) == AXValueGetTypeID(),
+                CFGetTypeID(sizeRef) == AXValueGetTypeID()
+            else { return nil }
+            var position = CGPoint.zero
+            var size = CGSize.zero
+            AXValueGetValue(unsafeBitCast(posRef, to: AXValue.self), .cgPoint, &position)
+            AXValueGetValue(unsafeBitCast(sizeRef, to: AXValue.self), .cgSize, &size)
+            return (position, size)
+        }()
         if let info = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]]
         {
@@ -426,7 +442,23 @@ actor InsertionService: InsertionServiceProtocol {
                 guard let ownerPID = w[kCGWindowOwnerPID as String] as? Int, ownerPID == Int(pid),
                     let windowNumber = w[kCGWindowNumber as String] as? UInt32
                 else { continue }
-                return windowNumber
+                if let (pos, size) = axBounds,
+                    let wpos = w[kCGWindowBounds as String] as? [String: CGFloat]
+                {
+                    // Bounds match: same origin (within tolerance) + same size.
+                    let originX = wpos["X"] ?? 0, originY = wpos["Y"] ?? 0
+                    let w = wpos["Width"] ?? 0, h = wpos["Height"] ?? 0
+                    let matches =
+                        abs(originX - pos.x) < 2 && abs(originY - pos.y) < 2
+                        && abs(w - size.width) < 2 && abs(h - size.height) < 2
+                    if matches { return windowNumber }
+                } else {
+                    // No AX bounds available: the first window of the PID is
+                    // the best available signal (single-window apps), but the
+                    // identity is weaker — callers still fail closed on
+                    // later validation changes.
+                    return windowNumber
+                }
             }
         }
         // Fallback: stable per-process hash of the window's on-screen bounds.

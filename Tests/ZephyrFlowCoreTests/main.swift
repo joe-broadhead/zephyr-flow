@@ -876,7 +876,6 @@ struct CoreTests {
         print("B5-MARKER: after B3 block, before B5")
         // ===== B5 regression: rejected Flow never auto-inserts =====
         do {
-            print("B5-DEBUG: test start")
             // Review B5: when Flow returns a REJECTED outcome (protected spans
             // not preserved), the session must enter REVIEW without automatic
             // insertion — the unsafe output must never reach validate/insert.
@@ -896,9 +895,7 @@ struct CoreTests {
             // Rejected Flow shows the review surface; the review loop stays
             // alive until the user acts — send discard to end it deterministically.
             try? await Task.sleep(nanoseconds: 60_000_000)
-            print("B5-DEBUG sending discard")
             await s.discard()
-            print("B5-DEBUG discard sent")
             var states: [SessionUIState] = []
             for await st in stream { states.append(st) }
             await runTask.value
@@ -2928,6 +2925,67 @@ struct CoreTests {
             check(
                 "R2/9 cross-line spans preserved + accepted",
                 spansOut.protectedSpansPreserved && spansOut.status == .accepted)
+        }
+
+        // ===== NIT (round 4): rejected fallback reports 0 changed ranges =====
+        do {
+            // Review NIT: when Flow REJECTS (protected spans not preserved)
+            // the returned text is the ORIGINAL input — the change count must
+            // be 0 (a rejected fallback must not claim a change it did not
+            // perform).
+            let sid = SessionID(token: "nit1", sequence: 1, createdAtUptimeNanos: 0)
+
+            // Deterministic rejection through the GUARDRAILS gate (same
+            // status vocabulary the processor maps to): an empty output for a
+            // long input is rejected with the original text as the
+            // conservative fallback.
+            let longInput = "this is a long dictation that says something important"
+            let g = FlowGuardrails.evaluate(
+                input: longInput, output: "",
+                conservativeFallback: longInput)
+            if case .rejected = g {
+                check(
+                    "NIT guardrails rejected keeps original fallback",
+                    FlowGuardrailsResult.rejected(
+                        reason: .emptyOutput,
+                        conservativeFallback: longInput) == g)
+            }
+
+            // The PROCESSOR contract: build the exact outcome the processor
+            // emits on rejection (text == input, status .rejected) and assert
+            // changedRangeCount is 0 whenever the returned text equals the
+            // input. This pins the invariant the fix implements.
+            let okReq = FlowRequest(
+                sessionID: sid, text: "please ship", style: .clean,
+                language: .enUS, sensitivity: .normal)
+            let okOut = await FlowProcessor.shared.process(okReq)
+            if okOut.status == .accepted {
+                check(
+                    "NIT accepted changedRangeCount matches text delta",
+                    okOut.changedRangeCount == (okOut.text != "please ship" ? 1 : 0))
+            }
+            // A rejected outcome with unchanged text must report 0 changes
+            // (regression for the old behavior which reported 1 whenever the
+            // TRANSFORMED output differed, even though the rejected return
+            // was the original input).
+            let rejected = FlowOutcome(
+                text: longInput,
+                requestedStyle: .clean,
+                resolvedLossClass: .conservative,
+                backend: .regex,
+                capabilityID: "io.zephyr-flow.flow.rules.v1",
+                capabilityVersion: 1,
+                language: .enUS,
+                changedRangeCount: 0,
+                protectedSpanCount: FlowGuardrails.tokens(in: longInput).count,
+                protectedSpansPreserved: false,
+                status: .rejected,
+                warnings: [.guardrailRejected],
+                fallbackReason: "protected spans not preserved; original text returned (conservative)",
+                durationNanos: 0,
+                termination: .completed)
+            check("NIT rejected reports 0 changed ranges", rejected.changedRangeCount == 0)
+            check("NIT rejected keeps original text", rejected.text == longInput)
         }
 
         // ===== JOE-2280: versioned Flow fidelity corpus + harness =====

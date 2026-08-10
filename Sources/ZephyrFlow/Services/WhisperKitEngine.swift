@@ -93,6 +93,41 @@ actor WhisperKitEngine: WhisperEngineProtocol {
 
     private static let minPartialRMS: Float = 0.0008
 
+    func load(model: ModelIdentifier, verifiedFolder: String?) async throws {
+        guard model.isWhisperKit else {
+            throw WhisperEngineError.modelLoadFailed("Not a WhisperKit model: \(model.rawValue)")
+        }
+
+        _isReady = false
+        if let verifiedFolder {
+            // Review B6v2: load from the app-owned VERIFIED directory (the
+            // promoted artifact from the acquisition pipeline), NOT from
+            // WhisperKit's own cache. Network is disabled: the verified
+            // artifact is already on disk.
+            ZFLog.info("WhisperKit load model=\(model.rawValue) verifiedFolder=\(verifiedFolder)")
+            do {
+                let pipe = try await WhisperKit(
+                    model: model.rawValue,
+                    modelFolder: verifiedFolder,
+                    verbose: false,
+                    logLevel: .error,
+                    prewarm: true,
+                    load: true,
+                    download: false
+                )
+                self.kit = pipe
+                self.modelName = "WhisperKit (\(model.displayName)) [verified]"
+                self._isReady = true
+            } catch {
+                let hint = "\(error.localizedDescription) — verified artifact load failed"
+                throw WhisperEngineError.modelLoadFailed(hint)
+            }
+            return
+        }
+        // No verified artifact: identifier-based load (WhisperKit cache).
+        try await load(model: model, allowDownload: false)
+    }
+
     func load(model: ModelIdentifier, allowDownload: Bool) async throws {
         guard model.isWhisperKit else {
             throw WhisperEngineError.modelLoadFailed("Not a WhisperKit model: \(model.rawValue)")

@@ -35,7 +35,10 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
     func levels() -> [Float] { latestLevels }
 
-    func load(model: ModelIdentifier) async throws {
+    func load(model: ModelIdentifier, verifiedFolder: String? = nil) async throws {
+        // Apple Speech loads system recognizers; there is no downloaded
+        // artifact to verify. `verifiedFolder` is accepted for protocol
+        // uniformity and ignored.
         let identifier = Locale.current.identifier
         let speechRecognizer =
             SFSpeechRecognizer(locale: Locale(identifier: identifier))

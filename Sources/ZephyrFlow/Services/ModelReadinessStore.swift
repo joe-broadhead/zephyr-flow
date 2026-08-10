@@ -52,6 +52,13 @@ final class ModelReadinessStore: ObservableObject {
         await acquisition.verifiedDigest(for: model)
     }
 
+    /// Review B6v2: the promoted, verified artifact directory (nil when no
+    /// verified artifact is on disk). The engine must load from here, not
+    /// from WhisperKit's own cache.
+    func verifiedURL(for model: ModelIdentifier) async -> URL? {
+        await acquisition.verifiedURL(for: model)
+    }
+
     func refreshAll() {
         refreshTask?.cancel()
         refreshTask = Task { [weak self] in

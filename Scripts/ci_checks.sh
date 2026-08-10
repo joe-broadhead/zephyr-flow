@@ -52,10 +52,16 @@ fi
 # Review B9: group the `|| true` so it applies to grep only, not the whole
 # pipeline. (Shell pipelines bind tighter than `||`; the ungrouped form made
 # WARN_LOG empty whenever warnings existed, disabling the baseline diff.)
+# Review NIT (round 4): canonicalize to UNIQUE MESSAGE only. The old form kept
+# both 'File.swift: warning: X' (primary line) and '`- warning: X' (Swift's
+# diagnostic-tree secondary line) for the SAME warning — duplicated entries in
+# two formats, fragile to compiler tree rendering and paths. Message-only is
+# line-stable and deduplicates identical diagnostics from any file.
 ( grep 'warning:' /tmp/zf_sc_build.log || true ) \
-  | sed -E 's/^[[:space:]]*[|`-]*[[:space:]]*//' \
-  | sed -E 's/^.*\/Sources\/([^:]+):[0-9]+:[0-9]+:/\1:/' \
-  | sed -E 's/^.*\/Tests\/([^:]+):[0-9]+:[0-9]+:/\1:/' \
+  | sed -E 's/^[[:space:]|`-]+//' \
+  | sed -E 's/^.*\/Sources\/[^:]+:[0-9]+:[0-9]+: warning: //' \
+  | sed -E 's/^.*\/Tests\/[^:]+:[0-9]+:[0-9]+: warning: //' \
+  | sed -E 's/^warning: //' \
   | sed -E 's/[[:space:]]+/ /g' | sort -u > "$WARN_LOG"
 BASELINE="docs/development/ci/strict-concurrency-warnings-baseline.txt"
 if [[ -f "$BASELINE" ]]; then
@@ -84,20 +90,22 @@ step "5/9 shell + YAML lint"
 # not just Scripts/*.sh, and its absence is a FAILURE (not a silent skip).
 # Review NIT-5: recursive script discovery via find (globstar-independent;
 # portable to macOS bash 3.2 — no mapfile).
+# Review NIT (round 4): -print0 + read -d '' so paths with spaces/newlines
+# are handled correctly (not split on IFS).
 FOUND_SH=0
-while IFS= read -r sh; do
+while IFS= read -r -d '' sh; do
   FOUND_SH=1
   bash -n "$sh" || fail "bash -n $sh"
-done < <(find Scripts -name '*.sh')
+done < <(find Scripts -name '*.sh' -print0)
 if [[ "$FOUND_SH" -eq 0 ]]; then
   fail "no shell scripts found under Scripts/"
 fi
 if command -v shellcheck >/dev/null 2>&1; then
-  while IFS= read -r sh; do
+  while IFS= read -r -d '' sh; do
     # --severity=warning: real defects (warnings/errors) fail the gate;
     # info-level notes (e.g. SC1091 follow-sourcing, SC2086 quoting) do not.
     shellcheck --severity=warning -x "$sh" || fail "shellcheck $sh"
-  done < <(find Scripts -name '*.sh')
+  done < <(find Scripts -name '*.sh' -print0)
 else
   fail "shellcheck not installed (required by the gate)"
 fi

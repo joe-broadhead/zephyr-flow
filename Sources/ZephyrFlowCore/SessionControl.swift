@@ -127,9 +127,13 @@ public struct SessionControlModel: Sendable, Equatable {
     /// Drive the session to a terminal state for the given category
     /// (review R1.5). The state machine must accept the transition; if the
     /// current state cannot legally reach that terminal (e.g. a duplicate
-    /// terminal), it is an idempotent no-op and `terminal` stays the first
-    /// recorded outcome. This makes exactly-once terminal OUTCOME (not just
-    /// cleanup) a property of the control model.
+    /// terminal or an illegal event for the current stage), it is an
+    /// idempotent no-op: the state is left unchanged (no force-apply) and the
+    /// returned SessionState reports exactly what the machine actually
+    /// allowed. Callers MUST inspect the returned state and emit telemetry
+    /// that matches it (the state machine is authoritative; see B3v2). This
+    /// makes exactly-once terminal OUTCOME (not just cleanup) a property of
+    /// the control model.
     @discardableResult
     public mutating func finish(category: StageOutcomeCategory) -> SessionState {
         guard let sid = sessionID else { return state }

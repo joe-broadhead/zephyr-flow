@@ -45,12 +45,10 @@ public actor FlowProcessor: FlowProcessorProtocol {
             input: FlowGuardrails.tokens(in: request.text),
             output: outTokens
         ).ok
-        let changed = request.text != output ? 1 : 0
-        // Review B5: a failed protected-span comparison must NEVER return the
-        // unsafe transformed output. The TRUE conservative fallback is the
-        // unmodified INPUT text (protected spans intact) with a controlled
-        // rejection reason. (The old code returned `text: output` even when
-        // rejected — fail-open with a warning label.)
+        // Review NIT: changedRangeCount must describe the text actually
+        // returned. When the outcome is REJECTED the returned text IS the
+        // original input, so the reported change count must be 0 — a rejected
+        // fallback must not claim a change it did not perform.
         let preserved = protectedSpansPreserved
         let status: FlowOutcomeStatus = preserved ? .accepted : .rejected
         let warnings: [FlowWarning] = preserved ? [] : [.guardrailRejected]
@@ -58,6 +56,7 @@ public actor FlowProcessor: FlowProcessorProtocol {
             preserved
             ? nil
             : "protected spans not preserved; original text returned (conservative)"
+        let changed = (preserved && request.text != output) ? 1 : 0
         return FlowOutcome(
             text: preserved ? output : request.text,
             requestedStyle: request.style,

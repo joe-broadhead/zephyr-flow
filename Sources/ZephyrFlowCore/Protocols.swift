@@ -14,7 +14,11 @@ public protocol WhisperEngineProtocol: Actor {
     var verifiedDigest: String? { get }
     /// Review B8: record the verified artifact digest for the loaded model.
     func recordVerifiedDigest(_ digest: String?)
-    func load(model: ModelIdentifier) async throws
+    /// - Parameter verifiedFolder: the promoted, verified artifact directory
+    ///   (from the acquisition pipeline). When non-nil the engine MUST load
+    ///   from that directory (Review B6v2: not WhisperKit's own cache) and
+    ///   must not use the network.
+    func load(model: ModelIdentifier, verifiedFolder: String?) async throws
     /// - Parameter localOnly: When true, must not use any network path (fail closed).
     /// - Parameter sessionID: immutable session this stream belongs to
     ///   (JOE-2249/2250: session-scoped callbacks and decode ownership).
