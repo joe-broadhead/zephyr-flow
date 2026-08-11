@@ -41,7 +41,7 @@ steps: `./Scripts/build_app.sh debug && open Dist/ZephyrFlow.app`.
 3. Comment the decision.
 
 ### JOE-2305 — freeze one exact candidate + run the complete production audit
-1. Freeze a commit on `agent/zephyr-production-run-20260808T103416Z`
+1. Freeze a commit on `agent/zephyr-review-fixes`
    (head in final-report.md).
 2. Run `bash Scripts/ci_checks.sh` on the frozen commit (all 9 gates; CI
    macos-15 executes XCTest, gate 1).
