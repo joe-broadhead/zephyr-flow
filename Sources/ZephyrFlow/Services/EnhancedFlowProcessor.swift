@@ -30,10 +30,15 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
 
     /// JOE-2279: typed outcome — guardrail rejection/fallback is visible to
     /// UI/metrics without payload text.
+    /// Round-5 REQ-6: the enhanced transformation is run ONCE (via
+    /// enhancedRaw) and guarded ONCE here; the outcome preserves the ACTUAL
+    /// backend, the original rejection reason, the fallback backend and the
+    /// requested-vs-delivered loss class. (Old code called the string path,
+    /// which already guarded, then guarded the guarded output a second time
+    /// and could report a fallback as an accepted enhanced result.)
     func process(_ request: FlowRequest) async -> FlowOutcome {
-        let t0 = DispatchTime.now().uptimeNanoseconds
         let started = Date()
-        let output = await process(
+        let output = await enhancedRaw(
             request.text, style: request.style,
             language: request.language)
         let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
@@ -48,6 +53,10 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
             conservativeFallback: fallback)
         {
         case .approved(let out):
+            // Round-5 REQ-6: when the enhanced backend delivered the text the
+            // resolved loss class is the requested class; a regex path that
+            // happened to approve reports its own class. (Enhanced approved
+            // output is genuinely enhanced here.)
             return FlowOutcome(
                 text: out,
                 requestedStyle: request.style,
@@ -68,15 +77,18 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
                 durationNanos: duration,
                 termination: .completed)
         case .rejected(let reason, let conservative):
+            // Round-5 REQ-6: the outcome preserves the ORIGINAL rejection,
+            // the fallback backend (.regex) and the requested-vs-delivered
+            // loss class (the delivered text is the conservative fallback).
             return FlowOutcome(
                 text: conservative,
                 requestedStyle: request.style,
-                resolvedLossClass: loss,
+                resolvedLossClass: .conservative,
                 backend: .regex,
                 capabilityID: "io.zephyr-flow.flow.rules.v1",
                 capabilityVersion: 1,
                 language: request.language,
-                changedRangeCount: 1,
+                changedRangeCount: request.text != conservative ? 1 : 0,
                 protectedSpanCount: protectedSpanCount,
                 protectedSpansPreserved: true,
                 status: .rejected,
@@ -101,15 +113,26 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
         switch style {
         case .clean, .raw:
             return await regex.process(text, style: style, language: language)
+        default:
+            let enhanced = await enhancedRaw(text, style: style, language: language)
+            return await guardrail(text, enhanced, style: style, language: language)
+        }
+    }
+
+    /// Round-5 REQ-6: the enhanced transformation, run ONCE (no internal
+    /// guardrail). The caller guards the result exactly once.
+    private func enhancedRaw(
+        _ text: String, style: FlowStyle, language: SupportedLanguage
+    ) async -> String {
+        switch style {
         case .professional:
-            let enhanced = await enhancedProfessional(text, language: language)
-            return await guardrail(text, enhanced, style: style, language: language)
+            return await enhancedProfessional(text, language: language)
         case .bullets:
-            let enhanced = await enhancedBullets(text, language: language)
-            return await guardrail(text, enhanced, style: style, language: language)
+            return await enhancedBullets(text, language: language)
         case .summary:
-            let enhanced = await enhancedSummary(text, language: language)
-            return await guardrail(text, enhanced, style: style, language: language)
+            return await enhancedSummary(text, language: language)
+        case .clean, .raw:
+            return await regex.process(text, style: style, language: language)
         }
     }
 

@@ -944,7 +944,9 @@ public actor DictationSession {
                         captured: counts.capturedSourceSamples,
                         delivered: counts.deliveredEngineSamples,
                         dropped: counts.droppedSamples,
-                        decoded: counts.deliveredEngineSamples),
+                        // Round-5 NIT 5: delivered INPUT is not evidence of
+                        // decoded OUTPUT — decoded is unknown at capture time.
+                        decoded: 0),
                     atNanos: now))
         }
         captureTask?.cancel()

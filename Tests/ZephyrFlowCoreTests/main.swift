@@ -188,6 +188,23 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 }
 
+/// Round-5 REQ-5: filesystem whose readData always throws (permission/I/O
+/// failure) — distinct from corruption.
+private struct UnreadableHistoryFileSystem: HistoryFileSystem {
+    let real = RealHistoryFileSystem()
+    func fileExists(_ url: URL) -> Bool { real.fileExists(url) }
+    func createDirectory(_ url: URL) throws { try real.createDirectory(url) }
+    func readData(_ url: URL) throws -> Data {
+        throw NSError(
+            domain: NSCocoaErrorDomain, code: NSFileReadNoPermissionError,
+            userInfo: [NSFilePathErrorKey: url.path])
+    }
+    func writeAtomic(data: Data, to url: URL) throws { try real.writeAtomic(data: data, to: url) }
+    func move(_ from: URL, to: URL) throws { try real.move(from, to: to) }
+    func remove(_ url: URL) throws { try real.remove(url) }
+    func setPermissions(_ url: URL, mode: Int) throws { try real.setPermissions(url, mode: mode) }
+}
+
 // ===== JOE-2255: in-memory fault-injecting model filesystem =====
 final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     struct Node {
@@ -247,16 +264,37 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     ) async throws {
         if downloadDelayNanos > 0 { try? await Task.sleep(nanoseconds: downloadDelayNanos) }
         if failDownload { throw URLError(.cannotConnectToHost) }
-        // Write artifact payloads into staging.
+        // Write artifact payloads into staging. Round-5 B5: the default
+        // manifest enumerates EVERY WhisperKit-loaded component, so the fake
+        // writes all of them (config + each CoreML bundle + tokenizer).
         let config = Data(repeating: 0xAB, count: 10_000)
         var modelData = Data(repeating: 0xCD, count: Int(downloadBytes))
         if truncateArtifact { modelData = Data(repeating: 0xCD, count: 500) }
         try createDirectory(stagingURL, permissions: 0o700)
-        let cfgURL = stagingURL.appendingPathComponent("config.json")
-        let modelURL = stagingURL.appendingPathComponent("model.mlmodelc")
+        let names = [
+            "config.json",
+            "MelSpectrogram.mlmodelc",
+            "AudioEncoder.mlmodelc",
+            "TextDecoder.mlmodelc",
+            "TextDecoderContextPrefill.mlmodelc",
+            "tokenizer.json",
+        ]
         lock.lock()
-        nodes[key(cfgURL)] = Node(isDir: false, data: config, size: UInt64(config.count))
-        nodes[key(modelURL)] = Node(isDir: false, data: modelData, size: UInt64(modelData.count))
+        for (i, name) in names.enumerated() {
+            let artifactURL = stagingURL.appendingPathComponent(name)
+            // Distinct payload per component so digests differ.
+            var payload =
+                i == 0
+                ? config
+                : Data(repeating: UInt8(0x10 + i), count: Int(downloadBytes) / max(names.count - 1, 1))
+            // Round-5 B5: truncateArtifact truncates a non-config component
+            // (below the manifest minBytes) to force quarantine.
+            if truncateArtifact, i == 2 {
+                payload = Data(repeating: UInt8(0x10 + i), count: 500)
+            }
+            nodes[key(artifactURL)] = Node(
+                isDir: false, data: payload, size: UInt64(payload.count))
+        }
         lock.unlock()
         onProgress(
             ModelDownloadProgress(
@@ -294,6 +332,13 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
         let children = nodes.filter { $0.key.hasPrefix(fromKey + "/") }
         for (k, _) in children { nodes.removeValue(forKey: k) }
         nodes.removeValue(forKey: fromKey)
+    }
+
+    /// Test helper: overwrite an artifact's bytes directly (tamper).
+    func writeRaw(_ url: URL, data: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        nodes[key(url)] = Node(isDir: false, data: data, size: UInt64(data.count))
     }
     func readManifest(for model: ModelIdentifier) -> ModelManifest? {
         let url = verifiedCacheRoot().appendingPathComponent(model.rawValue)
@@ -3940,6 +3985,82 @@ struct CoreTests {
             try? FileManager.default.removeItem(at: dir)
         }
 
+        // ===== REQ-5 round-5: explicit history storage states =====
+        do {
+            let dir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("zf-history-req5-\(UUID().uuidString)", isDirectory: true)
+            let file = dir.appendingPathComponent("history.json")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+            // Fresh install + encryption configured + key -> readyEncrypted.
+            let key = HistoryCryptoKey(keyID: "k", material: Data(repeating: 0x21, count: 32))
+            let fresh = ActorHistoryRepository(fileURL: file, keyProvider: { key })
+            await fresh.configureEncryption(keyProvider: { key })
+            try? await fresh.load()
+            check(
+                "REQ5 fresh+encrypted -> readyEncrypted",
+                await fresh.storageState == .readyEncrypted)
+
+            // Fresh install + no encryption -> readyPlaintext.
+            let file2 = dir.appendingPathComponent("history2.json")
+            let plain = ActorHistoryRepository(fileURL: file2)
+            try? await plain.load()
+            check(
+                "REQ5 fresh no-encryption -> readyPlaintext",
+                await plain.storageState == .readyPlaintext)
+
+            // Sealed data + missing key -> sealedKeyUnavailable (never empty
+            // in-memory admission).
+            let keyHolder = KeyHolder(key)
+            let sealed = ActorHistoryRepository(fileURL: file2, keyProvider: { keyHolder.key })
+            await sealed.configureEncryption(keyProvider: { keyHolder.key })
+            try? await sealed.load()
+            await sealed.add(
+                HistoryStorageEntry(
+                    timestamp: Date(), text: "s", duration: 1, modelUsed: "T",
+                    sensitivityClass: "normal"))
+            keyHolder.set(nil)
+            let noKey = ActorHistoryRepository(fileURL: file2, keyProvider: { nil })
+            await noKey.configureEncryption(keyProvider: { nil })
+            try? await noKey.load()
+            check(
+                "REQ5 sealed + missing key -> sealedKeyUnavailable",
+                await noKey.storageState == .sealedKeyUnavailable)
+
+            // Storage read failure -> storageReadFailure (NOT corruption).
+            let file3 = dir.appendingPathComponent("history3.json")
+            try? Data("{\"schemaVersion\":2,\"entries\":[]}".utf8).write(to: file3)
+            let badFS = UnreadableHistoryFileSystem()
+            let readFail = ActorHistoryRepository(fileURL: file3, fileSystem: badFS)
+            try? await readFail.load()
+            check(
+                "REQ5 unreadable file -> storageReadFailure (not corruption)",
+                await readFail.storageState == .storageReadFailure)
+            check(
+                "REQ5 unreadable file not quarantined",
+                !FileManager.default.fileExists(atPath: file3.path + ".quarantined"))
+
+            // Genuine corruption -> corruptQuarantined + quarantined file.
+            let file4 = dir.appendingPathComponent("history4.json")
+            try? Data("garbage-not-json".utf8).write(to: file4)
+            let corrupt = ActorHistoryRepository(fileURL: file4)
+            try? await corrupt.load()
+            check(
+                "REQ5 corruption -> corruptQuarantined",
+                await corrupt.storageState == .corruptQuarantined)
+            check(
+                "REQ5 corruption quarantined file",
+                FileManager.default.fileExists(atPath: file4.path + ".quarantined"))
+
+            // markHistoryDisabled -> historyDisabled.
+            await plain.markHistoryDisabled()
+            check(
+                "REQ5 markHistoryDisabled",
+                await plain.storageState == .historyDisabled)
+
+            try? FileManager.default.removeItem(at: dir)
+        }
+
         // ===== B5 regression: plaintext->encrypted migration (production order) =====
         do {
             // Review B5v2: production ordering — configure encryption, load a
@@ -4359,11 +4480,32 @@ struct CoreTests {
                 _ model: ModelIdentifier,
                 digests: [String: String] = [:]
             ) -> ModelManifest {
-                ModelAcquisitionController.makeManifest(
+                // Round-5 B5: digests are REQUIRED for every artifact. When a
+                // caller supplies any digest, fill ALL components with their
+                // deterministic fake payload digests (unless explicitly set).
+                var allDigests = digests
+                let names = [
+                    "config.json",
+                    "MelSpectrogram.mlmodelc",
+                    "AudioEncoder.mlmodelc",
+                    "TextDecoder.mlmodelc",
+                    "TextDecoderContextPrefill.mlmodelc",
+                    "tokenizer.json",
+                ]
+                for (i, name) in names.enumerated() {
+                    if allDigests[name] == nil {
+                        let payload =
+                            i == 0
+                            ? Data(repeating: 0xAB, count: 10_000)
+                            : Data(repeating: UInt8(0x10 + i), count: 400_000)
+                        allDigests[name] = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+                    }
+                }
+                return ModelAcquisitionController.makeManifest(
                     for: model, createdAtUptimeNanos: 1,
                     minArtifactBytes: 1_000,
                     minTotalBytes: 1_000_000, maxTotalBytes: 100_000_000,
-                    digests: digests)
+                    digests: allDigests)
             }
 
             // 1. Happy path: download -> verify -> promote -> ready; verified
@@ -4505,6 +4647,73 @@ struct CoreTests {
             check(
                 "2255 empty/manifest-less dir not ready",
                 await acq11.verifiedReadiness(for: .whisperTiny).state != .ready)
+        }
+
+        // ===== B5 round-5: verified model = all loaded bytes verified =====
+        do {
+            // Review B5 (round 5): a "verified" model means EVERY artifact
+            // WhisperKit loads (config + MelSpectrogram + AudioEncoder +
+            // TextDecoder + TextDecoderContextPrefill + tokenizer) is
+            // enumerated in the manifest AND digest-verified. The default
+            // production manifest must enumerate all of them.
+            let defaultManifest = ModelAcquisitionController.makeManifest(
+                for: .whisperTiny, createdAtUptimeNanos: 0)
+            let names = Set(defaultManifest.artifacts.map { $0.name })
+            for expected in [
+                "config.json",
+                "MelSpectrogram.mlmodelc",
+                "AudioEncoder.mlmodelc",
+                "TextDecoder.mlmodelc",
+                "TextDecoderContextPrefill.mlmodelc",
+                "tokenizer.json",
+            ] {
+                check("B5r5 default manifest includes \(expected)", names.contains(expected))
+            }
+            // Every artifact in the default manifest is digest-required after
+            // promotion (the controller writes a digest-COMPLETE manifest).
+            let fs = FakeModelFS()
+            let acq = ModelAcquisitionController(fs: fs)
+            let r = await acq.acquire(model: .whisperTiny, consent: true)
+            check("B5r5 happy path ready with all components", r.state == .ready)
+            // Atomic artifact: folder + manifest version + aggregate digest.
+            let artifact = await acq.verifiedArtifact(for: .whisperTiny)
+            check("B5r5 atomic artifact present", artifact != nil)
+            if let a = artifact {
+                check("B5r5 artifact folder is verified cache", a.folder.path.contains("verified"))
+                check("B5r5 artifact manifest version", a.manifestVersion == ModelManifest.schemaVersion)
+                check("B5r5 aggregate digest non-empty", a.aggregateDigest.contains(":"))
+            }
+            // Changing ANY component after promotion invalidates readiness
+            // (re-verification hashes every artifact).
+            let fs2 = FakeModelFS()
+            let acq2 = ModelAcquisitionController(fs: fs2)
+            _ = await acq2.acquire(model: .whisperTiny, consent: true)
+            let verifiedURL = await acq2.verifiedURL(for: .whisperTiny)
+            check("B5r5 verified before tamper", verifiedURL != nil)
+            // Tamper: overwrite TextDecoder.mlmodelc with different bytes.
+            if let url = verifiedURL {
+                let tampered = url.appendingPathComponent("TextDecoder.mlmodelc")
+                try? fs2.remove(tampered)
+                try? fs2.writeRaw(
+                    tampered, data: Data(repeating: 0xEE, count: 500_000))
+                let after = await acq2.verifiedArtifact(for: .whisperTiny)
+                check("B5r5 tampered component invalidates readiness", after == nil)
+                check("B5r5 tampered component -> verifiedURL nil", await acq2.verifiedURL(for: .whisperTiny) == nil)
+            }
+            // Hash failure: a digest-COMPLETE manifest whose stored artifact
+            // no longer matches (tampered after promotion) invalidates.
+            let fs3 = FakeModelFS()
+            let acq3 = ModelAcquisitionController(fs: fs3)
+            _ = await acq3.acquire(model: .whisperTiny, consent: true)
+            if let url = await acq3.verifiedURL(for: .whisperTiny) {
+                // Tamper with the config (the manifest carries its digest).
+                let cfg = url.appendingPathComponent("config.json")
+                try? fs3.remove(cfg)
+                try? fs3.writeRaw(cfg, data: Data(repeating: 0x77, count: 9_000))
+                check(
+                    "B5r5 tampered config invalidates readiness",
+                    await acq3.verifiedArtifact(for: .whisperTiny) == nil)
+            }
         }
 
         // ===== JOE-2262: at-rest history encryption =====

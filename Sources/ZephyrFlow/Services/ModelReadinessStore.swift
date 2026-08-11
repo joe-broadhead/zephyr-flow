@@ -55,8 +55,15 @@ final class ModelReadinessStore: ObservableObject {
     /// Review B6v2: the promoted, verified artifact directory (nil when no
     /// verified artifact is on disk). The engine must load from here, not
     /// from WhisperKit's own cache.
+    /// Round-5 B5: atomic VerifiedModelArtifact — the folder, manifest version
+    /// and aggregate digest travel together (no readiness/URL TOCTOU).
     func verifiedURL(for model: ModelIdentifier) async -> URL? {
-        await acquisition.verifiedURL(for: model)
+        await acquisition.verifiedArtifact(for: model)?.folder
+    }
+
+    /// Round-5 B5: atomic verified-artifact value for admission.
+    func verifiedArtifact(for model: ModelIdentifier) async -> ModelAcquisitionController.VerifiedModelArtifact? {
+        await acquisition.verifiedArtifact(for: model)
     }
 
     func refreshAll() {

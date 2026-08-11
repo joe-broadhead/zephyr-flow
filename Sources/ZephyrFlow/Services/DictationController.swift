@@ -99,10 +99,35 @@ final class DictationController: ObservableObject {
                 keyProvider: { key })
             do {
                 try await ActorHistoryRepository.shared.load()
-                // Review B8: historyReady is only true when initialization
-                // SUCCEEDED (a Keychain failure or load error keeps it false,
-                // so session admission errors out instead of writing).
-                self.historyReady = true
+                // Round-5 REQ-5: historyReady reflects the real storage state.
+                // When history is DISABLED the storage is marked disabled and
+                // dictation proceeds without writes. When enabled, only a
+                // ready (encrypted or plaintext) store admits history writes;
+                // sealed-key-unavailable / read-failure / corruption surface.
+                if !self.settingsStore.settings.saveHistory {
+                    await ActorHistoryRepository.shared.markHistoryDisabled()
+                    self.historyReady = true
+                    ZFLog.info("History disabled — dictation proceeds without writes")
+                    return
+                }
+                let state = await ActorHistoryRepository.shared.storageState
+                switch state {
+                case .readyEncrypted, .readyPlaintext:
+                    // Review B8: historyReady is only true when initialization
+                    // SUCCEEDED (a Keychain failure or load error keeps it
+                    // false, so session admission errors out instead of
+                    // writing).
+                    self.historyReady = true
+                case .plaintextMigrationPending:
+                    // Data is safe (still plaintext on disk); writes are
+                    // permitted and migration retries next launch.
+                    self.historyReady = true
+                case .sealedKeyUnavailable, .storageReadFailure, .corruptQuarantined:
+                    ZFLog.error("History storage not ready: \(state.rawValue)")
+                    self.historyReady = false
+                case .uninitialized, .historyDisabled:
+                    self.historyReady = false
+                }
             } catch {
                 ZFLog.error("History load failed: \(error.localizedDescription)")
                 // historyReady stays false — beginSession will surface the
@@ -850,10 +875,17 @@ final class DictationController: ObservableObject {
             do {
                 // Review B6v2: load from the verified/promoted directory (not
                 // WhisperKit's own cache) when the artifact is verified.
+                // Round-5 B5: atomic artifact — if the artifact is no longer
+                // verified here, FAIL (never fall back to identifier loading).
+                guard let artifact = await store.verifiedArtifact(for: model) else {
+                    self.isModelLoading = false
+                    ZFLog.error("Fresh engine load refused — verified artifact unavailable")
+                    return
+                }
                 try await activeEngine.load(
                     model: model,
-                    verifiedFolder: store.verifiedURL(for: model)?.path)
-                await activeEngine.recordVerifiedDigest(store.verifiedDigest(for: model))
+                    verifiedFolder: artifact.folder.path)
+                await activeEngine.recordVerifiedDigest(artifact.aggregateDigest)
                 self.isModelLoading = false
             } catch {
                 self.isModelLoading = false
@@ -878,14 +910,26 @@ final class DictationController: ObservableObject {
             // Verified cache hit: load directly from the verified directory
             // (Review B6v2: NOT WhisperKit's own cache).
             do {
+                // Round-5 B5: atomic artifact — readiness and folder travel
+                // together; a nil artifact here means the directory changed
+                // between readiness and load. FAIL CLOSED (never identifier
+                // fallback from a verified admission).
+                guard let artifact = await store.verifiedArtifact(for: model) else {
+                    self.isModelLoading = false
+                    ZFLog.error("Verified cache hit refused — artifact vanished/unverified")
+                    store.publishLoadCompletion(
+                        requestID: requestID, model: model,
+                        outcome: .failed(model: model, message: "verified artifact unavailable"))
+                    return
+                }
                 try await activeEngine.load(
                     model: model,
-                    verifiedFolder: store.verifiedURL(for: model)?.path)
+                    verifiedFolder: artifact.folder.path)
                 // Review B8: record the verified artifact digest (from the
                 // reviewed manifest) so session evidence ties the loaded
                 // engine to the verified artifact.
                 await activeEngine.recordVerifiedDigest(
-                    store.verifiedDigest(for: model))
+                    artifact.aggregateDigest)
                 self.isModelLoading = false
                 store.publishLoadCompletion(
                     requestID: requestID, model: model,
@@ -926,12 +970,22 @@ final class DictationController: ObservableObject {
         do {
             // Review B6v2: the just-acquired artifact was promoted to the
             // verified cache — load from that directory.
+            // Round-5 B5: atomic artifact (folder + digest); nil => the
+            // promotion did not produce a digest-complete manifest — fail.
+            guard let artifact = await store.verifiedArtifact(for: model) else {
+                self.isModelLoading = false
+                ZFLog.error("Post-acquisition load refused — artifact not digest-verified")
+                store.publishLoadCompletion(
+                    requestID: requestID, model: model,
+                    outcome: .failed(model: model, message: "artifact not verified"))
+                return
+            }
             try await activeEngine.load(
                 model: model,
-                verifiedFolder: store.verifiedURL(for: model)?.path)
+                verifiedFolder: artifact.folder.path)
             // Review B8: record the verified digest of the just-acquired
             // artifact so the engine identity carries it.
-            await activeEngine.recordVerifiedDigest(store.verifiedDigest(for: model))
+            await activeEngine.recordVerifiedDigest(artifact.aggregateDigest)
             self.isModelLoading = false
             store.publishLoadCompletion(
                 requestID: requestID, model: model,

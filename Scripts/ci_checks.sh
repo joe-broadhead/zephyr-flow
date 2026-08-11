@@ -52,17 +52,23 @@ fi
 # Review B9: group the `|| true` so it applies to grep only, not the whole
 # pipeline. (Shell pipelines bind tighter than `||`; the ungrouped form made
 # WARN_LOG empty whenever warnings existed, disabling the baseline diff.)
-# Review NIT (round 4): canonicalize to UNIQUE MESSAGE only. The old form kept
-# both 'File.swift: warning: X' (primary line) and '`- warning: X' (Swift's
-# diagnostic-tree secondary line) for the SAME warning — duplicated entries in
-# two formats, fragile to compiler tree rendering and paths. Message-only is
-# line-stable and deduplicates identical diagnostics from any file.
+# Review REQ-4 (round 5): stable tuple — count relative-file | diagnostic-id |
+# normalized-message. `sort -u` alone removed file identity and occurrence
+# count, so adding the same generic warning to a NEW file produced no new
+# unique message. Each primary line is normalized to its source file
+# (relative to the repo root), the diagnostic id ([#X]) is extracted, the
+# message is normalized, and identical tuples are counted. The compiler's
+# tree child lines ('`- warning: X') are dropped (the primary carries file
+# identity + count), so a diagnostic is counted once per file.
 ( grep 'warning:' /tmp/zf_sc_build.log || true ) \
-  | sed -E 's/^[[:space:]|`-]+//' \
-  | sed -E 's/^.*\/Sources\/[^:]+:[0-9]+:[0-9]+: warning: //' \
-  | sed -E 's/^.*\/Tests\/[^:]+:[0-9]+:[0-9]+: warning: //' \
-  | sed -E 's/^warning: //' \
-  | sed -E 's/[[:space:]]+/ /g' | sort -u > "$WARN_LOG"
+  | awk '/^[[:space:]]*[|`-]|^[[:space:]]+\|/ { next }  { print }' \
+  | sed -E 's#^.*/zephyr-flow/##' \
+  | sed -E 's/^([^:]+):[0-9]+:[0-9]+: warning: (.*)$/\1 | \2/' \
+  | sed -E 's/^warning: (.*)$/unknown | \1/' \
+  | sed -E 's/[[:space:]]+/ /g' \
+  | sed -E 's/^([^|]*) \| (.*)(\[#[A-Za-z0-9]+\])(.*)$/\1 | \3 | \2\4/' \
+  | sort | uniq -c | sed -E 's/^[[:space:]]*([0-9]+)[[:space:]]+(.*)$/\1 \2/' \
+  | sort -u > "$WARN_LOG"
 BASELINE="docs/development/ci/strict-concurrency-warnings-baseline.txt"
 if [[ -f "$BASELINE" ]]; then
   NEW="$(comm -13 <(grep -v '^#' "$BASELINE" | sed '/^$/d' | sort -u) "$WARN_LOG")"

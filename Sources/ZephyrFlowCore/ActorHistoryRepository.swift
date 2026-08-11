@@ -1,5 +1,29 @@
 import Foundation
 
+/// Round-5 REQ-5: explicit history-storage states. Only actual
+/// decode/authentication corruption quarantines; storage I/O failures,
+/// missing keys and pending migrations are distinct, observable states so
+/// admission can decide based on real encryption readiness.
+public enum HistoryStorageState: String, Codable, Sendable, Equatable, CaseIterable {
+    case uninitialized
+    /// Valid document loaded; encryption active (or empty-and-encrypted).
+    case readyEncrypted
+    /// Valid document loaded; encryption not configured.
+    case readyPlaintext
+    /// Plaintext loaded with encryption configured but the migration persist
+    /// failed — data is safe (still plaintext), retry on next launch.
+    case plaintextMigrationPending
+    /// Sealed data exists but the key is unavailable — never expose plaintext,
+    /// refuse writes.
+    case sealedKeyUnavailable
+    /// The history file could not be READ (permission/I/O) — NOT corruption.
+    case storageReadFailure
+    /// Genuine corruption: the file was quarantined and a clean store started.
+    case corruptQuarantined
+    /// History feature disabled by the user — dictation proceeds, no writes.
+    case historyDisabled
+}
+
 // JOE-2261: actor-isolated, opt-in, bounded history repository.
 // Async I/O off the MainActor; atomic durable writes; restrictive
 // permissions; schema versioning; corruption quarantine; recoverable
@@ -39,6 +63,8 @@ public actor ActorHistoryRepository: HistoryRepository {
     /// encryption is configured or sealed data exists, a missing key NEVER
     /// falls back to plaintext.
     public private(set) var isInitialized = false
+    /// Round-5 REQ-5: explicit storage state (see HistoryStorageState).
+    public private(set) var storageState: HistoryStorageState = .uninitialized
     /// Review R7: true once encryption has been configured (Keychain key).
     public private(set) var encryptionConfigured = false
     /// Review R7: true when sealed (encrypted) data exists on disk and the key
@@ -83,6 +109,12 @@ public actor ActorHistoryRepository: HistoryRepository {
         self.encryptionConfigured = true
     }
 
+    /// Round-5 REQ-5: mark history as user-disabled (dictation proceeds, no
+    /// writes). The controller calls this when the user has history OFF.
+    public func markHistoryDisabled() {
+        storageState = .historyDisabled
+    }
+
     /// Load + migrate on first use (recoverable from corruption).
     public func load() async throws {
         try fileSystem.createDirectory(fileURL.deletingLastPathComponent())
@@ -91,11 +123,26 @@ public actor ActorHistoryRepository: HistoryRepository {
             document = HistoryDocument(entries: [])
             // Review B8: a fresh install (no file) is still INITIALIZED (empty
             // but writable) — previously this returned without setting the flag.
+            // Round-5 REQ-5: record whether the fresh store is encrypted-ready.
             isInitialized = true
+            storageState =
+                (encryptionConfigured && keyProvider() != nil)
+                ? .readyEncrypted
+                : (encryptionConfigured ? .sealedKeyUnavailable : .readyPlaintext)
             return
         }
         do {
-            let data = try fileSystem.readData(fileURL)
+            let data: Data
+            do {
+                data = try fileSystem.readData(fileURL)
+            } catch {
+                // Round-5 REQ-5: a READ failure (permission/I/O) is NOT
+                // corruption — never quarantine a valid file because it could
+                // not be read. Surface the distinct state.
+                storageState = .storageReadFailure
+                recoveryState = "history file could not be read: \(String(describing: error))"
+                throw HistoryRepositoryError.ioFailed
+            }
             // Encrypted document: decrypt with the current key; a missing or
             // wrong key NEVER yields partial plaintext — explicit recovery.
             if let encrypted = try? decoder.decode(EncryptedHistoryDocument.self, from: data) {
@@ -107,13 +154,17 @@ public actor ActorHistoryRepository: HistoryRepository {
                     document = decrypted
                     recoveryState = nil
                     sealedDataUnreadable = false
+                    storageState = .readyEncrypted
                 } else {
                     document = HistoryDocument(entries: [])
                     recoveryState =
                         "history key missing or invalid — sealed content retained on disk, no plaintext exposed"
                     // Review R7: sealed data exists but the key is unavailable —
                     // writes MUST be refused, never overwrite with plaintext.
+                    // Round-5 REQ-5: distinct state (never empty-in-memory
+                    // admission; the controller surfaces it).
                     sealedDataUnreadable = true
+                    storageState = .sealedKeyUnavailable
                 }
             } else {
                 document = try decode(data)
@@ -123,6 +174,12 @@ public actor ActorHistoryRepository: HistoryRepository {
                 // (otherwise every configured plaintext migration failed and
                 // was quarantined as corruption).
                 isInitialized = true
+                // Round-5 REQ-5: plaintext loaded — state reflects whether
+                // encryption is active yet.
+                storageState =
+                    (encryptionConfigured && keyProvider() != nil)
+                    ? .readyEncrypted
+                    : (encryptionConfigured ? .sealedKeyUnavailable : .readyPlaintext)
                 // Review B8: a plaintext legacy document loaded while
                 // encryption is configured is immediately re-encrypted so
                 // existing history does not remain plaintext indefinitely.
@@ -137,6 +194,8 @@ public actor ActorHistoryRepository: HistoryRepository {
                         // be migrated on a later successful load.
                         lastWriteError = "history migration failed: \(String(describing: error))"
                         recoveryState = "plaintext history could not be encrypted yet — retry on next launch"
+                        // Round-5 REQ-5: distinct pending-migration state.
+                        storageState = .plaintextMigrationPending
                     }
                 }
             }
@@ -144,13 +203,20 @@ public actor ActorHistoryRepository: HistoryRepository {
                 document.entries,
                 policy: retention,
                 now: Date())
+        } catch let e as HistoryRepositoryError where e == .ioFailed {
+            // Round-5 REQ-5: a storage READ failure is NOT corruption — do not
+            // quarantine a valid file that could not be read. The state was
+            // set above (storageReadFailure); rethrow without quarantine.
+            throw e
         } catch {
             // Genuine CORRUPTION (unreadable/undecodable data): quarantine the
             // file and start clean (recoverable). Migration/key/disk errors are
             // handled above and do NOT reach here.
+            // Round-5 REQ-5: distinct corrupt state (admission surfaces it).
             let quarantine = fileURL.appendingPathExtension("quarantined")
             try? fileSystem.move(fileURL, to: quarantine)
             document = HistoryDocument(entries: [])
+            storageState = .corruptQuarantined
             throw HistoryRepositoryError.corruptionDetected
         }
         isInitialized = true

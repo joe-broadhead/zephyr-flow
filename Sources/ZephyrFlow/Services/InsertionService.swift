@@ -559,11 +559,11 @@ actor InsertionService: InsertionServiceProtocol {
                         && abs(winW - size.width) < 2 && abs(winH - size.height) < 2
                     if matches { return windowNumber }
                 } else {
-                    // No AX bounds available: the first window of the PID is
-                    // the best available signal (single-window apps), but the
-                    // identity is weaker — callers still fail closed on
-                    // later validation changes.
-                    return windowNumber
+                    // Round-5 NIT 3: without AX bounds we cannot prove this
+                    // window IS the validated one — fail closed (nil) rather
+                    // than return the first window of the PID (identity
+                    // overclaim). Callers treat nil as unresolvable.
+                    continue
                 }
             }
         }

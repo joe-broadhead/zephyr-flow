@@ -207,9 +207,35 @@ public actor ModelAcquisitionController {
         return digests.joined(separator: ":")
     }
 
+    /// Round-5 B5: one atomic verified-artifact value — folder + manifest
+    /// version + aggregate digest. A "verified" model means EVERY byte
+    /// WhisperKit can load was enumerated in the manifest and hashed; there is
+    /// no separate readiness/URL TOCTOU (the folder, manifest version and
+    /// aggregate digest travel together).
+    public struct VerifiedModelArtifact: Sendable, Equatable {
+        public let folder: URL
+        public let manifestVersion: Int
+        public let aggregateDigest: String
+        public init(folder: URL, manifestVersion: Int, aggregateDigest: String) {
+            self.folder = folder
+            self.manifestVersion = manifestVersion
+            self.aggregateDigest = aggregateDigest
+        }
+    }
+
     /// The ONLY source of truth for a ready model: manifest verified, URL
-    /// promoted atomically.
+    /// promoted atomically. Round-5 B5: EVERY artifact must carry a digest AND
+    /// the actual hash must match — a digest present with a hash failure (or a
+    /// missing digest entirely) is a verification FAILURE (fail closed), never
+    /// a skipped check.
     public func verifiedURL(for model: ModelIdentifier) -> URL? {
+        verifiedArtifact(for: model)?.folder
+    }
+
+    /// Round-5 B5: atomic verified-artifact lookup (folder + manifest version
+    /// + aggregate digest) with digest-REQUIRED verification of every artifact
+    /// WhisperKit loads.
+    public func verifiedArtifact(for model: ModelIdentifier) -> VerifiedModelArtifact? {
         guard model.isWhisperKit else { return nil }
         guard let manifest = fs.readManifest(for: model) else { return nil }
         let url = fs.verifiedCacheRoot().appendingPathComponent(model.rawValue)
@@ -219,20 +245,32 @@ public actor ModelAcquisitionController {
         guard total >= manifest.minTotalBytes, total <= manifest.maxTotalBytes else {
             return nil
         }
+        // Round-5 B5: digest-REQUIRED. Every artifact must have a digest and
+        // its actual hash must match. A manifest with un-hashed artifacts is
+        // NOT a verified model (fail closed).
+        var digests: [String] = []
         for artifact in manifest.artifacts {
             let artifactURL = url.appendingPathComponent(artifact.name)
             guard fs.fileExists(artifactURL) else { return nil }
             if let size = fs.fileSize(artifactURL), size < artifact.minBytes {
                 return nil
             }
-            if let digest = artifact.sha256Digest,
-                let actual = fs.sha256Hex(of: artifactURL),
-                actual != digest
-            {
+            guard let expected = artifact.sha256Digest else {
+                // Round-5 B5: a digestless artifact means unverified bytes.
                 return nil
             }
+            // Hash failure (nil actual OR mismatch) is a verification failure.
+            guard let actual = fs.sha256Hex(of: artifactURL), actual == expected else {
+                return nil
+            }
+            digests.append(actual)
         }
-        return url
+        guard !digests.isEmpty else { return nil }
+        let aggregate = digests.joined(separator: ":")
+        return VerifiedModelArtifact(
+            folder: url,
+            manifestVersion: manifest.schemaVersion,
+            aggregateDigest: aggregate)
     }
 
     /// Acquire a verified model. Concurrent calls for the same model share
@@ -353,10 +391,14 @@ public actor ModelAcquisitionController {
                     throw ModelAcquisitionError.verificationFailed(
                         "artifact \(artifact.name) truncated \(size) < \(artifact.minBytes)")
                 }
+                // Round-5 B5: a digest present with a hash failure is a
+                // verification FAILURE (never skipped). Digestless artifacts
+                // are hashed at promotion time (below) so the stored manifest
+                // is always digest-complete.
                 if let digest = artifact.sha256Digest {
                     guard let actual = fs.sha256Hex(of: artifactURL), actual == digest else {
                         throw ModelAcquisitionError.verificationFailed(
-                            "artifact \(artifact.name) digest mismatch")
+                            "artifact \(artifact.name) digest mismatch or hash failure")
                     }
                 }
             }
@@ -382,12 +424,38 @@ public actor ModelAcquisitionController {
         }
 
         // Atomic promotion into the verified cache, then manifest.
+        // Round-5 B5: compute a digest for EVERY artifact and write a
+        // digest-COMPLETE manifest, so the on-disk manifest can never be
+        // "verified" with un-hashed bytes. Artifacts without a digest at
+        // promotion make the model unverifiable (fail closed below).
         let final = fs.verifiedCacheRoot().appendingPathComponent(model.rawValue)
         do {
             try fs.createDirectory(fs.verifiedCacheRoot(), permissions: 0o700)
             try fs.remove(final)  // clear any stale verified dir
             try fs.promote(from: staging, to: final)
-            try fs.writeManifest(manifest, for: model)
+            var digestArtifacts: [ModelArtifactSpec] = []
+            for artifact in manifest.artifacts {
+                let artifactURL = final.appendingPathComponent(artifact.name)
+                guard fs.fileExists(artifactURL),
+                    let actual = fs.sha256Hex(of: artifactURL)
+                else {
+                    throw ModelAcquisitionError.promotionFailed(
+                        "cannot hash artifact \(artifact.name) — model unverifiable")
+                }
+                digestArtifacts.append(
+                    ModelArtifactSpec(
+                        name: artifact.name,
+                        minBytes: artifact.minBytes,
+                        sha256Digest: actual))
+            }
+            let digestManifest = ModelManifest(
+                engineIdentity: manifest.engineIdentity,
+                modelID: manifest.modelID,
+                artifacts: digestArtifacts,
+                minTotalBytes: manifest.minTotalBytes,
+                maxTotalBytes: manifest.maxTotalBytes,
+                createdAtUptimeNanos: manifest.createdAtUptimeNanos)
+            try fs.writeManifest(digestManifest, for: model)
         } catch {
             try? fs.quarantine(staging, reason: "promotion failed")
             states[model] = .failed
@@ -413,7 +481,17 @@ public actor ModelAcquisitionController {
     public static func makeManifest(
         for model: ModelIdentifier,
         createdAtUptimeNanos: UInt64,
-        artifactNames: [String] = ["config.json", "model.mlmodelc"],
+        // Round-5 B5: the default enumerates EVERY asset the pinned WhisperKit
+        // loader can consume (MelSpectrogram, AudioEncoder, TextDecoder,
+        // optional TextDecoderContextPrefill, tokenizer assets + config).
+        artifactNames: [String] = [
+            "config.json",
+            "MelSpectrogram.mlmodelc",
+            "AudioEncoder.mlmodelc",
+            "TextDecoder.mlmodelc",
+            "TextDecoderContextPrefill.mlmodelc",
+            "tokenizer.json",
+        ],
         minArtifactBytes: UInt64 = 1_000,
         minTotalBytes: UInt64 = 1_000_000,
         maxTotalBytes: UInt64 = 4_000_000_000,

@@ -102,27 +102,48 @@ final class SessionAudioConverter {
     /// Review REQ-6: drain any buffered tail the AVAudioConverter holds at
     /// end-of-stream (resampling can buffer partial output across chunks).
     /// Call ONCE after the final chunk; returns the residual 16 kHz mono
-    /// samples (possibly empty). Not idempotent — call only at EOS.
+    /// samples (possibly empty). Round-5 NIT 8: drains REPEATEDLY until the
+    /// converter reports end-of-stream/no-data (a fixed single-capacity call
+    /// could leave buffered output behind), with a bounded iteration/sample
+    /// budget so a misbehaving converter cannot loop forever.
     func flush() -> [Float] {
         guard let converter else { return [] }
         let capacity = AVAudioFrameCount(4096)
         guard
-            let outBuf = AVAudioPCMBuffer(
-                pcmFormat: AVAudioFormat(
-                    commonFormat: .pcmFormatFloat32,
-                    sampleRate: Self.targetSampleRate,
-                    channels: 1,
-                    interleaved: false)!,
-                frameCapacity: capacity)
+            let fmt = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: Self.targetSampleRate,
+                channels: 1,
+                interleaved: false)
         else { return [] }
-        var error: NSError?
-        let status = converter.convert(to: outBuf, error: &error) { _, outStatus in
-            outStatus.pointee = .endOfStream
-            return nil
+        var all: [Float] = []
+        var iterations = 0
+        let maxIterations = 64
+        var sawEndOfStream = false
+        while iterations < maxIterations, !sawEndOfStream {
+            iterations += 1
+            guard
+                let outBuf = AVAudioPCMBuffer(
+                    pcmFormat: fmt, frameCapacity: capacity)
+            else { break }
+            var error: NSError?
+            let status = converter.convert(to: outBuf, error: &error) { _, outStatus in
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            guard status != .error, outBuf.frameLength > 0,
+                let channel = outBuf.floatChannelData?[0]
+            else {
+                // No data (or error): converter drained or failed — stop.
+                break
+            }
+            all.append(
+                contentsOf: UnsafeBufferPointer(
+                    start: channel, count: Int(outBuf.frameLength)))
+            // The converter only signals end-of-stream via the status block;
+            // treat a short final buffer as the natural end.
+            if outBuf.frameLength < capacity / 2 { break }
         }
-        guard status != .error, outBuf.frameLength > 0,
-            let channel = outBuf.floatChannelData?[0]
-        else { return [] }
-        return Array(UnsafeBufferPointer(start: channel, count: Int(outBuf.frameLength)))
+        return all
     }
 }
