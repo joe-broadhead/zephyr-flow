@@ -929,7 +929,96 @@ struct CoreTests {
             check("B3 sink drains terminal event", drained.count == 1 && drained[0].terminal == .completed)
         }
 
-        print("B5-MARKER: after B3 block, before B5")
+        // ===== B3 round-5: session terminal agreement (control == UI == telemetry) =====
+        do {
+            // Review B3 (round 5): a DEGRADED drain must end with the session
+            // in the error phase AND the terminal telemetry carrying .degraded
+            // (the state machine reached .degraded via the legal .drainFailed
+            // event) — no invented .failed, no success.
+            let provider = FakeSessionStages()
+            await provider.setPartials(["hello"])
+            await provider.setDegraded(true)
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await s.end()
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            let telemetry = await s.drainTelemetry()
+            let terminal = telemetry.first { $0.kind == .terminal }
+            check(
+                "B3r5 degraded drain -> UI error",
+                states.contains { $0.phase == .error })
+            check(
+                "B3r5 degraded drain -> telemetry terminal .degraded",
+                terminal?.terminal == .degraded)
+        }
+        do {
+            // Review B3 (round 5): a TRUNCATED engine result (finalize returns
+            // non-complete) must end with UI warning + telemetry .truncated
+            // (legal .engineTruncated from .transforming).
+            let provider = FakeSessionStages()
+            await provider.setPartials(["hello"])
+            await provider.setCompleteness(.truncated)
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await s.end()
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            await s.cancel()
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            let telemetry = await s.drainTelemetry()
+            let terminal = telemetry.first { $0.kind == .terminal }
+            check(
+                "B3r5 truncated engine -> UI warning",
+                states.contains { $0.phase == .warning })
+            check(
+                "B3r5 truncated engine -> telemetry terminal .truncated",
+                terminal?.terminal == .truncated)
+        }
+        do {
+            // Review B3 (round 5): every terminal event in the session shares
+            // ONE telemetry ID (terminal + capture-accounting correlate).
+            let provider = FakeSessionStages()
+            await provider.setPartials(["hello"])
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await s.end()
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            await s.cancel()
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            let telemetry = await s.drainTelemetry()
+            let ids = Set(telemetry.map { $0.sessionID })
+            check(
+                "B3r5 all session telemetry shares one ID",
+                ids.count == 1)
+        }
+
         // ===== B5 regression: rejected Flow never auto-inserts =====
         do {
             // Review B5: when Flow returns a REJECTED outcome (protected spans
@@ -1047,9 +1136,65 @@ struct CoreTests {
             _ = c4.begin()
             _ = c4.stage(.readyToCapture)
             _ = c4.finish(category: .degraded)
+            // Round-5 B3: degraded is a DRAIN-stage terminal. From .capturing
+            // there is no legal degraded event — the machine stays nonterminal
+            // (authoritative; the orchestrator must not claim degraded from a
+            // stage that cannot produce it).
             check(
-                "B3 finish(degraded) from capturing -> failed (machine legal)",
-                c4.state == .failed && c4.terminal == .failed)
+                "B3 finish(degraded) from capturing stays nonterminal",
+                !c4.state.isTerminal && c4.terminal == nil)
+            // The legal path: .draining + .drainFailed -> .degraded.
+            var c5 = SessionControlModel()
+            _ = c5.begin()
+            _ = c5.stage(.readyToCapture)
+            _ = c5.stage(.stop)
+            _ = c5.finish(category: .degraded)
+            check(
+                "B3 finish(degraded) from draining -> degraded (legal)",
+                c5.state == .degraded && c5.terminal == .degraded)
+            // Partial/truncated are legal from .transforming.
+            var c6 = SessionControlModel()
+            _ = c6.begin()
+            _ = c6.stage(.readyToCapture)
+            _ = c6.stage(.stop)
+            _ = c6.stage(.drainFinished)
+            _ = c6.stage(.transcriptionFinished)
+            _ = c6.finish(category: .partial)
+            check(
+                "B3 finish(partial) from transforming -> partial (legal)",
+                c6.state == .partial && c6.terminal == .partial)
+            var c7 = SessionControlModel()
+            _ = c7.begin()
+            _ = c7.stage(.readyToCapture)
+            _ = c7.stage(.stop)
+            _ = c7.stage(.drainFinished)
+            _ = c7.stage(.transcriptionFinished)
+            _ = c7.finish(category: .truncated)
+            check(
+                "B3 finish(truncated) from transforming -> truncated (legal)",
+                c7.state == .truncated && c7.terminal == .truncated)
+            // Failed after Flow: .resolvingTarget + .targetResolutionFailed.
+            var c8 = SessionControlModel()
+            _ = c8.begin()
+            _ = c8.stage(.readyToCapture)
+            _ = c8.stage(.stop)
+            _ = c8.stage(.drainFinished)
+            _ = c8.stage(.transcriptionFinished)
+            _ = c8.stage(.transformationFinished)
+            _ = c8.finish(category: .failed)
+            check(
+                "B3 finish(failed) from resolvingTarget -> failed (legal)",
+                c8.state == .failed && c8.terminal == .failed)
+            // Finalize failure: .transcribing + .transcriptionFailed.
+            var c9 = SessionControlModel()
+            _ = c9.begin()
+            _ = c9.stage(.readyToCapture)
+            _ = c9.stage(.stop)
+            _ = c9.stage(.drainFinished)
+            _ = c9.finish(category: .failed)
+            check(
+                "B3 finish(failed) from transcribing -> failed (legal)",
+                c9.state == .failed && c9.terminal == .failed)
         }
         do {
             // R1.5: readyToCapture transitions preparing -> capturing (the
@@ -3718,9 +3863,6 @@ struct CoreTests {
             check("B5 load has no corruption error", loadError == nil)
             // The legacy entry is retained (NOT quarantined).
             let entries = await repo.entries()
-            print(
-                "B5-DIAG entries=\(entries.count) texts=\(entries.map{$0.text}) exists=\(FileManager.default.fileExists(atPath: file.path)) recovery=\(await repo.recoveryState ?? "nil")"
-            )
             check(
                 "B5 legacy plaintext migrated, entry retained", entries.count == 1 && entries[0].text == "legacy-entry")
             check(

@@ -31,6 +31,9 @@ public enum TelemetryEventKind: String, Codable, CaseIterable, Sendable, Equatab
     case terminal  // exactly one per session (TerminalGuard)
     case abandoned  // unfinished guard dropped
     case captureAccounting  // frame counts (captured/delivered/dropped/decoded)
+    /// Round-5 B3: the control state did NOT reach the requested terminal —
+    /// recorded so the divergence is observable (never silent).
+    case terminalMismatch
     case flowOutcome  // status/loss class/fallback
     case insertionConfidence  // verified/unverified/copy/uncertain
     case sinkDropped  // event sink overflow (count only)

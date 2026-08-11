@@ -69,14 +69,26 @@ public enum SessionEvent: String, Codable, CaseIterable, Sendable, Equatable {
     case captureFailed
     case stop  // user release; drain begins
     case drainFinished  // all accepted frames delivered
+    /// Round-5 B3: the drain degraded (incomplete consumer, dropped frames,
+    /// timeout) — a legal failure terminal from `.draining`.
+    case drainFailed
     case transcriptionFailed
     case transcriptionFinished
     case transformationFailed
     case transformationFinished
+    /// Round-5 B3: the engine produced a PARTIAL result (legal terminal from
+    /// `.transforming`).
+    case enginePartial
+    /// Round-5 B3: the engine produced a TRUNCATED result (legal terminal
+    /// from `.transforming`).
+    case engineTruncated
     case targetValidationSucceeded
     case targetChanged
     case targetSecure
     case targetUnknown
+    /// Round-5 B3: target resolution failed after Flow (legal terminal from
+    /// `.resolvingTarget`).
+    case targetResolutionFailed
     case insertionFailed
     case insertionSucceeded
     case deadlineViolated
@@ -143,6 +155,9 @@ public struct SessionStateMachine: Sendable {
         // ---- draining ----
         case (.draining, .drainFinished):
             return .to(.transcribing)
+        case (.draining, .drainFailed):
+            // Round-5 B3: a degraded drain is a LEGAL failure terminal.
+            return .to(.degraded)
         case (.draining, .cancel):
             return .to(.cancelled)
         case (.draining, .shutdownRequested):
@@ -171,6 +186,12 @@ public struct SessionStateMachine: Sendable {
             return .to(.resolvingTarget)
         case (.transforming, .transformationFailed):
             return .to(.failed)
+        case (.transforming, .enginePartial):
+            // Round-5 B3: engine produced a partial result — legal terminal.
+            return .to(.partial)
+        case (.transforming, .engineTruncated):
+            // Round-5 B3: engine produced a truncated result — legal terminal.
+            return .to(.truncated)
         case (.transforming, .cancel):
             return .to(.cancelled)
         case (.transforming, .shutdownRequested):
@@ -190,6 +211,9 @@ public struct SessionStateMachine: Sendable {
         case (.resolvingTarget, .targetUnknown):
             // Unknown sensitivity fails closed into the secure-terminal band.
             return .to(.secureTarget)
+        case (.resolvingTarget, .targetResolutionFailed):
+            // Round-5 B3: target resolution failed after Flow — legal terminal.
+            return .to(.failed)
         case (.resolvingTarget, .cancel):
             return .to(.cancelled)
         case (.resolvingTarget, .shutdownRequested):

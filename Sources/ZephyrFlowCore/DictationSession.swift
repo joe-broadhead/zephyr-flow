@@ -345,6 +345,9 @@ public actor DictationSession {
     private var cancelRequested = false
     /// Review B3: exactly-one terminal emission via TerminalGuard + sink.
     private var terminalGuard: TerminalGuard
+    /// Round-5 B3: ONE stored telemetry ID for every event in this session
+    /// (terminal + capture-accounting), so records can be correlated.
+    private let sessionTelemetryID: SessionTelemetryID
     private let telemetrySink = BoundedEventSink(capacity: 64)
     /// Review B2v2 (round 5): release signal — fired exactly once in
     /// finishTerminal after `released = true`. Lets the host (controller)
@@ -376,8 +379,11 @@ public actor DictationSession {
         self.sessionID = sid
         self.broadcaster = SessionStateBroadcaster<SessionUIState>(initial: SessionUIState())
         // Review B3v2: unique telemetry id per session (not token, which is
-        // 'zf' for every session).
-        self.terminalGuard = TerminalGuard(sessionID: SessionTelemetryID())
+        // 'zf' for every session). Round-5 B3: stored once and reused by
+        // capture-accounting events so they correlate with the terminal.
+        let tid = SessionTelemetryID()
+        self.sessionTelemetryID = tid
+        self.terminalGuard = TerminalGuard(sessionID: tid)
         // Review R2/4: create a DURABLE command mailbox at init so control
         // events (end/cancel/retry/discard) are never lost before run()
         // installs the consumer. Buffering keeps commands sent during setup
@@ -556,7 +562,10 @@ public actor DictationSession {
         publish(phase: .processing, interim: state.interimText, level: state.audioLevel)
 
         if audioSummary.degraded || !audioSummary.reconciled {
-            _ = control.stage(.captureFailed)
+            // Round-5 B3: degraded is a DRAIN-stage failure — stage the legal
+            // .drainFailed event (from .draining), not the illegal
+            // .captureFailed (which is only legal from .capturing).
+            _ = control.stage(.drainFailed)
             // Review R2/6: a degraded capture must release the engine (a
             // streaming engine would block the NEXT session with
             // alreadyStreaming). cancel() stops audio + engine + channel.
@@ -585,9 +594,10 @@ public actor DictationSession {
         do {
             final = try await provider.finalize()
         } catch {
-            // Finalize failed: still in .transcribing — .captureFailed is
-            // legal here.
-            _ = control.stage(.captureFailed)
+            // Round-5 B3: finalize failure occurs in .transcribing — the legal
+            // event is .transcriptionFailed (not .captureFailed, which is only
+            // legal from .capturing).
+            _ = control.stage(.transcriptionFailed)
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
             finishTerminal(category: .failed)
             return
@@ -602,9 +612,19 @@ public actor DictationSession {
         publish(phase: .processing, interim: state.interimText, level: state.audioLevel)
 
         if final.completeness != .complete {
-            _ = control.stage(.targetUnknown)
+            // Round-5 B3: an incomplete engine result occurs in .transforming —
+            // stage the legal .engineTruncated/.enginePartial terminal, not
+            // .targetUnknown (which belongs to target resolution).
+            switch final.completeness {
+            case .partial:
+                _ = control.stage(.enginePartial)
+            case .truncated:
+                _ = control.stage(.engineTruncated)
+            default:
+                _ = control.stage(.engineTruncated)
+            }
             publish(phase: .warning, interim: state.interimText, level: state.audioLevel)
-            finishTerminal(category: .truncated)
+            finishTerminal(category: final.completeness == .partial ? .partial : .truncated)
             return
         }
 
@@ -843,13 +863,14 @@ public actor DictationSession {
     }
 
     /// Exactly-once terminal release: owned tasks cancelled, stream finished.
+    /// Round-5 B3: terminal release is ONLY performed when the authoritative
+    /// control state accepted the transition AND the reached terminal matches
+    /// the requested category. If the machine stayed nonterminal (or reached
+    /// a different terminal), the session must NOT claim the requested
+    /// terminal: no telemetry, no broadcaster finish, no release — the
+    /// mismatch is surfaced (observably) so the caller can reconcile.
     private func finishTerminal(category: TerminalCategory) {
         guard !released else { return }
-        released = true
-        // Review B2v2 (round 5): signal host-side joins immediately after the
-        // release flag is set, so awaitTerminalAndReleased() can observe it.
-        releaseContinuation?.yield(())
-        releaseContinuation?.finish()
         // Review R1.5: drive the control state machine to the matching
         // terminal state so the terminal OUTCOME (not just cleanup) is
         // recorded exactly once. A duplicate finish is a no-op because the
@@ -858,26 +879,34 @@ public actor DictationSession {
             StageOutcomeCategory(
                 rawValue: category.rawValue) ?? .failed
         let reachedState = control.finish(category: outcomeCategory)
-        // Review B3v2: the emitted terminal category must match the AUTHORITATIVE
-        // control state. If the requested category was not legal from the
-        // current state (e.g. .degraded from .draining), the state machine
-        // reached a different terminal (or stayed nonterminal). Emit the
-        // ACTUAL state's category so control state, telemetry and UI agree.
-        let emittedCategory: TerminalCategory
-        if reachedState.isTerminal {
-            emittedCategory =
-                TerminalCategory(
-                    rawValue: SessionControlModel.terminalOutcome(for: reachedState)?.rawValue
-                        ?? category.rawValue) ?? category
-        } else {
-            // The state machine could not reach a terminal from the current
-            // state — the orchestration and control model are out of sync.
-            // Record failed (the session is ending) and surface a controlled
-            // mismatch so it is not a silent success.
+        // Round-5 B3: the control state must be TERMINAL and the reached
+        // terminal must MATCH the requested category. Otherwise the
+        // orchestration is out of sync with the state machine — do NOT emit
+        // telemetry or release as though the state accepted it.
+        guard reachedState.isTerminal,
+            let outcome = SessionControlModel.terminalOutcome(for: reachedState),
+            TerminalCategory(rawValue: outcome.rawValue) == category
+        else {
+            // Observable mismatch: record a terminal-mismatch telemetry event
+            // (content-free) so the divergence is never silent. The session
+            // is NOT released as the requested category.
             ZFLogPlaceholder.error(
                 "terminal state mismatch: requested \(category.rawValue), control stayed \(reachedState.rawValue)")
-            emittedCategory = .failed
+            telemetrySink.record(
+                TelemetryEvent(
+                    sessionID: sessionTelemetryID,
+                    kind: .terminalMismatch,
+                    terminal: category,
+                    durationNanos: nil,
+                    atNanos: nowNanos()))
+            return
         }
+        released = true
+        // Review B2v2 (round 5): signal host-side joins immediately after the
+        // release flag is set, so awaitTerminalAndReleased() can observe it.
+        releaseContinuation?.yield(())
+        releaseContinuation?.finish()
+        let emittedCategory = category
         // Review B3: emit the versioned terminal event exactly once through
         // the TerminalGuard (a second finish is refused). Content-free.
         let now = nowNanos()
@@ -891,7 +920,7 @@ public actor DictationSession {
         if let counts = state.outputs.audioSummary {
             telemetrySink.record(
                 TelemetryEvent(
-                    sessionID: SessionTelemetryID(),
+                    sessionID: sessionTelemetryID,
                     kind: .captureAccounting,
                     terminal: emittedCategory,
                     frameCounts: FrameCountSnapshot(

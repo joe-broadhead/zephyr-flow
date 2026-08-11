@@ -585,12 +585,25 @@ final class DictationController: ObservableObject {
             Task {
                 let events = await session.drainTelemetry()
                 for event in events where event.kind == .terminal {
+                    // Round-5 B3: forward the EXACT terminal category (never
+                    // collapse failed/truncated/secure/deadline into
+                    // sessionCompleted — they must be distinguishable in the
+                    // production sink).
                     let kind: MetricsEventKind
                     switch event.terminal {
                     case .completed: kind = .sessionCompleted
                     case .degraded: kind = .sessionDegraded
-                    case .cancelled: kind = .sessionCompleted
-                    default: kind = .sessionCompleted
+                    case .partial: kind = .sessionPartial
+                    case .truncated: kind = .sessionTruncated
+                    case .cancelled: kind = .sessionCancelled
+                    case .failed: kind = .sessionFailed
+                    case .deadlineExceeded: kind = .sessionDeadlineExceeded
+                    case .secureTarget: kind = .sessionSecureTarget
+                    case .targetChanged: kind = .targetChanged
+                    case .abandonedDuringShutdown: kind = .sessionAbandoned
+                    case nil:
+                        // Terminal event without a category: record failed.
+                        kind = .sessionFailed
                     }
                     await self.environment.metrics.record(
                         MetricsEvent(kind: kind, value: event.durationNanos ?? 0, atNanos: event.atNanos))

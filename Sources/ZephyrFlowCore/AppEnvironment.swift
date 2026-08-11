@@ -30,6 +30,13 @@ public enum MetricsEventKind: String, Codable, CaseIterable, Sendable, Equatable
     case sessionStarted
     case sessionCompleted
     case sessionDegraded
+    case sessionPartial
+    case sessionTruncated
+    case sessionCancelled
+    case sessionFailed
+    case sessionDeadlineExceeded
+    case sessionSecureTarget
+    case sessionAbandoned
     case targetValidated
     case targetChanged
     case targetGone

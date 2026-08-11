@@ -138,20 +138,24 @@ public struct SessionControlModel: Sendable, Equatable {
     public mutating func finish(category: StageOutcomeCategory) -> SessionState {
         guard let sid = sessionID else { return state }
         guard !state.isTerminal else { return state }
-        // Review B3: the state machine is AUTHORITATIVE — never force-apply a
-        // terminal that the machine declares illegal. If the canonical event
-        // is illegal from the current state, the orchestration is out of sync
-        // with the control model: leave the state unchanged and let the
-        // caller's cleanup (finishTerminal) proceed. The session is still
-        // cleaned up exactly once; the terminal STATE simply records what the
-        // machine actually allows.
+        // Review B3 (round 5): the state machine is AUTHORITATIVE — never
+        // force-apply a terminal the machine declares illegal. The event is
+        // chosen STAGE-DEPENDENTLY (canonicalEvent(for:from:)) so every
+        // failure category has a legal event from the current state: a
+        // degraded drain uses .drainFailed from .draining, a finalize failure
+        // uses .transcriptionFailed from .transcribing, an incomplete engine
+        // uses .enginePartial/.engineTruncated from .transforming, a
+        // post-Flow target failure uses .targetResolutionFailed from
+        // .resolvingTarget. If the resulting state is still nonterminal the
+        // orchestration is out of sync and the caller must NOT claim the
+        // terminal (finishTerminal enforces this).
         let machine = SessionStateMachine()
-        let canonicalEvent: SessionEvent? = SessionControlModel.canonicalEvent(for: category)
+        let canonicalEvent: SessionEvent? = SessionControlModel.canonicalEvent(for: category, from: state)
         if let event = canonicalEvent {
             switch machine.transition(from: state, event: event) {
             case .to(let next):
                 // Legal transition (lands on the category's canonical
-                // terminal; the machine maps captureFailed -> .failed etc.).
+                // terminal; the machine maps drainFailed -> .degraded etc.).
                 _ = applyTransition(next, sid: sid)
                 return state
             case .stay:
@@ -165,17 +169,42 @@ public struct SessionControlModel: Sendable, Equatable {
         return state
     }
 
-    /// Canonical event that drives the state machine toward a category.
-    public static func canonicalEvent(for category: StageOutcomeCategory) -> SessionEvent? {
+    /// Stage-dependent canonical event that drives the state machine toward
+    /// a category from the CURRENT state (round-5 B3). Each failure category
+    /// now has a legal event per stage, so finish() reaches a terminal that
+    /// matches the requested category instead of remaining nonterminal.
+    public static func canonicalEvent(
+        for category: StageOutcomeCategory,
+        from state: SessionState
+    ) -> SessionEvent? {
         switch category {
         case .completed: return .insertionSucceeded
-        case .degraded, .truncated, .partial: return .captureFailed
         case .cancelled: return .cancel
         case .deadlineExceeded: return .deadlineViolated
         case .targetChanged: return .targetChanged
         case .secureTarget: return .targetSecure
-        case .failed: return .preparationFailed
         case .abandonedDuringShutdown: return .shutdownRequested
+        case .degraded:
+            // Degraded is a drain-stage failure terminal.
+            return state == .draining ? .drainFailed : nil
+        case .partial:
+            // Engine partial is a transform-stage terminal.
+            return state == .transforming ? .enginePartial : nil
+        case .truncated:
+            // Engine truncated is a transform-stage terminal.
+            return state == .transforming ? .engineTruncated : nil
+        case .failed:
+            // Stage-specific failure event (never a generic cross-stage one).
+            switch state {
+            case .preparing: return .preparationFailed
+            case .capturing: return .captureFailed
+            case .draining: return .drainFailed
+            case .transcribing: return .transcriptionFailed
+            case .transforming: return .transformationFailed
+            case .resolvingTarget: return .targetResolutionFailed
+            case .inserting: return .insertionFailed
+            default: return nil
+            }
         }
     }
 
