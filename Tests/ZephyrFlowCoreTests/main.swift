@@ -4790,12 +4790,13 @@ struct CoreTests {
                 engineChoice: .whisper,
                 settings: settings(false))
             weak var weak7 = s7
-            let s7copy = s7
+            var s7copy = s7
             let runTask7 = Task { await s7copy!.run() }
             try? await Task.sleep(nanoseconds: 50_000_000)
             await s7!.end()
             await runTask7.value
             s7 = nil
+            s7copy = nil  // Round-6: release the Sendable-capture copy
             // Give the executor a beat to run deinit.
             var released = false
             for _ in 0..<5 {
