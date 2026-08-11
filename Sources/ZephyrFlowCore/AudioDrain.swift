@@ -198,12 +198,12 @@ public enum AudioDrainAssessment {
         public let barrierTimedOut: Bool
         public let barrierDrained: Bool
         public let consumerCompleted: Bool
-        public let lateAppends: Int
+        public let lateAppends: UInt64
         public let reconciled: Bool
         public init(
             seqDegraded: Bool, channelDegraded: Bool,
             barrierTimedOut: Bool, barrierDrained: Bool,
-            consumerCompleted: Bool, lateAppends: Int, reconciled: Bool
+            consumerCompleted: Bool, lateAppends: UInt64, reconciled: Bool
         ) {
             self.seqDegraded = seqDegraded
             self.channelDegraded = channelDegraded

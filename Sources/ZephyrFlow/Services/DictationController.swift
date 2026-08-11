@@ -50,6 +50,11 @@ final class DictationController: ObservableObject {
     /// session does NOT start after the user already released — control is
     /// immediately addressable rather than queued behind long engine work.
     private var pendingBeginTask: Task<Void, Never>?
+    /// Review B2v2 (round 5): the press-edge session intent (immutable,
+    /// allocated synchronously at the press/toggle edge). Release/cancel
+    /// invalidate it immediately even before the queued begin starts.
+    private var pendingIntent: PendingSessionIntent?
+    private var sessionIntentGeneration: UInt64 = 0
     private var admissionOpen = true
     /// The active per-session actor (nil between sessions). Successive
     /// sessions are distinct actors + providers — no shared mutable state.
@@ -114,17 +119,40 @@ final class DictationController: ObservableObject {
             switch event {
             case .press:
                 ZFLog.info("Hotkey press")
-                // Review B2v2: begin runs INSIDE the sessionChain (serialized),
-                // so overlapping presses cannot create concurrent begins.
-                // pendingBeginTask is set inside the chain to the running
-                // begin so a release/cancel can preempt it during preload.
+                // Review B2v2 (round 5): allocate the immutable session intent
+                // SYNCHRONOUSLY at the press edge — BEFORE the queued begin
+                // operation starts. A release/cancel that arrives while the
+                // press is still queued can invalidate this intent even though
+                // pendingBeginTask does not exist yet.
+                let intent = PendingSessionIntent(
+                    generation: self.sessionIntentGeneration &+ 1,
+                    pressTimestampNanos: self.environment.clock.nowNanos(),
+                    requestedMode: "hotkey")
+                self.sessionIntentGeneration = intent.generation
+                self.pendingIntent = intent
                 self.enqueueSession {
-                    let beginTask = Task { @MainActor in await self.beginSession() }
+                    // The begin runs inside the sessionChain (serialized);
+                    // it checks the intent before/after every await and aborts
+                    // if release/cancel already invalidated it.
+                    let beginTask = Task { @MainActor in
+                        await self.beginSession(intent: intent)
+                    }
                     self.pendingBeginTask = beginTask
                     await beginTask.value
+                    if self.pendingIntent?.generation == intent.generation {
+                        self.pendingIntent = nil
+                    }
                 }
             case .release:
                 ZFLog.info("Hotkey release")
+                // Review B2v2 (round 5): invalidate the press-edge intent
+                // IMMEDIATELY (synchronously), so even a begin that is still
+                // queued (pendingBeginTask not yet created) observes the
+                // cancellation before it starts preparation/capture.
+                if let intent = self.pendingIntent {
+                    intent.cancel()
+                    self.pendingIntent = nil
+                }
                 // Review R1.4: preempt a pending begin DURING model preload
                 // immediately (not through the sessionChain FIFO). Without
                 // this, a release during a slow engine load queues behind the
@@ -184,15 +212,39 @@ final class DictationController: ObservableObject {
 
         // 2. Finish/cancel the active session (single terminal outcome in the
         // per-session actor; exactly-once release happens there).
+        // Review B2v2 (round 5): do NOT claim sessionFinished until the
+        // session's run() task has reached terminal release. Join with a
+        // bounded deadline; if the session is still running (e.g. suspended
+        // in insertion/history), the handshake enters the abandoned path and
+        // the recovery marker records the incomplete shutdown.
         if let session {
             sessionTask?.cancel()
             await session.cancel()
+            let joined = await session.awaitTerminalAndReleased(
+                deadlineNanosAhead: 2_000_000_000)
+            // Join the run task itself (bounded) so a suspended operation
+            // cannot mutate state after we clear the references.
+            if let task = sessionTask {
+                let taskDeadline = now() &+ 1_000_000_000
+                while !task.isCancelled, now() < taskDeadline {
+                    try? await Task.sleep(nanoseconds: 10_000_000)
+                }
+            }
             sessionTask = nil
             stateTask?.cancel()
             stateTask = nil
             self.session = nil
+            if !joined {
+                // No `abandon` API on the handshake: entering abandoned is a
+                // deadline decision. Mark it via the recovery marker path by
+                // not completing sessionFinished and letting finalize observe
+                // the expired deadline (recovery marker written next launch).
+                ZFLog.error("termination: session did not quiesce — sessionFinished NOT marked")
+            }
         }
-        _ = handshake.completeStep(.sessionFinished, nowNanos: now())
+        if handshake.state != .abandoned {
+            _ = handshake.completeStep(.sessionFinished, nowNanos: now())
+        }
 
         // 3. Audio already owned/released by the session's provider; ensure the
         // shared capture is stopped.
@@ -244,7 +296,15 @@ final class DictationController: ObservableObject {
 
     // MARK: - Session (thin projection)
 
-    private func beginSession() async {
+    private func beginSession(intent: PendingSessionIntent? = nil) async {
+        // Review B2v2 (round 5): the intent is invalidated synchronously at
+        // the press edge by release/cancel — a begin that was still queued
+        // aborts here without preparing or activating the microphone.
+        if intent?.isCancelled == true {
+            ZFLog.info("beginSession aborted — session intent already cancelled")
+            pendingBeginTask = nil
+            return
+        }
         guard admissionOpen, session == nil else {
             ZFLog.info("beginSession ignored — admission closed or session active")
             return
@@ -255,11 +315,22 @@ final class DictationController: ObservableObject {
             ZFLog.info("beginSession waiting for history initialization")
             var waited: UInt64 = 0
             while !historyReady, waited < 5_000_000_000 {
+                // Review B2v2 (round 5): a release/cancel during the history
+                // wait must abort the begin, not start it after the user
+                // already released.
+                if intent?.isCancelled == true {
+                    pendingBeginTask = nil
+                    return
+                }
                 try? await Task.sleep(nanoseconds: 50_000_000)
                 waited += 50_000_000
             }
             if !historyReady {
                 showError("History storage could not be initialized — check Keychain access.")
+                return
+            }
+            if intent?.isCancelled == true {
+                pendingBeginTask = nil
                 return
             }
         }
@@ -335,6 +406,14 @@ final class DictationController: ObservableObject {
             engine: activeEngine,
             engineKind: usingAppleEngine ? .appleSpeech : .whisper,
             engineToken: currentEngineToken)
+        // Review B2v2 (round 5): final intent check immediately before
+        // session creation — the user may have released during the last
+        // model-readiness await.
+        if intent?.isCancelled == true {
+            pendingBeginTask = nil
+            ZFLog.info("beginSession aborted — intent cancelled before session creation")
+            return
+        }
         let s = DictationSession(
             provider: provider,
             engineChoice: usingAppleEngine ? .appleSpeech : .whisper,
@@ -378,6 +457,12 @@ final class DictationController: ObservableObject {
     }
 
     func cancelSession() {
+        // Review B2v2 (round 5): invalidate the press-edge intent immediately
+        // so a still-queued begin aborts before starting.
+        if let intent = self.pendingIntent {
+            intent.cancel()
+            self.pendingIntent = nil
+        }
         // Review B2v2: a cancel during model preload must preempt the pending
         // begin directly (session is nil then), not queue behind it.
         if self.session == nil, let pending = self.pendingBeginTask,
@@ -400,11 +485,22 @@ final class DictationController: ObservableObject {
     }
 
     func toggleManualSession() {
+        // Review B2v2 (round 5): the manual toggle also creates an intent at
+        // the action edge so a second toggle can preempt model work.
+        let intent = PendingSessionIntent(
+            generation: self.sessionIntentGeneration &+ 1,
+            pressTimestampNanos: self.environment.clock.nowNanos(),
+            requestedMode: "manual-toggle")
+        self.sessionIntentGeneration = intent.generation
+        self.pendingIntent = intent
         enqueueSession {
             if self.session == nil {
-                await self.beginSession()
+                await self.beginSession(intent: intent)
             } else {
                 await self.endSession()
+            }
+            if self.pendingIntent?.generation == intent.generation {
+                self.pendingIntent = nil
             }
         }
     }
@@ -641,17 +737,40 @@ final class DictationController: ObservableObject {
             switch event {
             case .press:
                 ZFLog.info("Hotkey press")
-                // Review B2v2: begin runs INSIDE the sessionChain (serialized),
-                // so overlapping presses cannot create concurrent begins.
-                // pendingBeginTask is set inside the chain to the running
-                // begin so a release/cancel can preempt it during preload.
+                // Review B2v2 (round 5): allocate the immutable session intent
+                // SYNCHRONOUSLY at the press edge — BEFORE the queued begin
+                // operation starts. A release/cancel that arrives while the
+                // press is still queued can invalidate this intent even though
+                // pendingBeginTask does not exist yet.
+                let intent = PendingSessionIntent(
+                    generation: self.sessionIntentGeneration &+ 1,
+                    pressTimestampNanos: self.environment.clock.nowNanos(),
+                    requestedMode: "hotkey")
+                self.sessionIntentGeneration = intent.generation
+                self.pendingIntent = intent
                 self.enqueueSession {
-                    let beginTask = Task { @MainActor in await self.beginSession() }
+                    // The begin runs inside the sessionChain (serialized);
+                    // it checks the intent before/after every await and aborts
+                    // if release/cancel already invalidated it.
+                    let beginTask = Task { @MainActor in
+                        await self.beginSession(intent: intent)
+                    }
                     self.pendingBeginTask = beginTask
                     await beginTask.value
+                    if self.pendingIntent?.generation == intent.generation {
+                        self.pendingIntent = nil
+                    }
                 }
             case .release:
                 ZFLog.info("Hotkey release")
+                // Review B2v2 (round 5): invalidate the press-edge intent
+                // IMMEDIATELY (synchronously), so even a begin that is still
+                // queued (pendingBeginTask not yet created) observes the
+                // cancellation before it starts preparation/capture.
+                if let intent = self.pendingIntent {
+                    intent.cancel()
+                    self.pendingIntent = nil
+                }
                 // Review R1.4: preempt a pending begin DURING model preload
                 // immediately (not through the sessionChain FIFO). Without
                 // this, a release during a slow engine load queues behind the

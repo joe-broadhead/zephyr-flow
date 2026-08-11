@@ -844,6 +844,61 @@ struct CoreTests {
                 states.contains { $0.phase == SessionPhase.hidden })
         }
 
+        // ===== B2 round-5 regression: press-edge intent + termination join =====
+        do {
+            // Review B2v2 (round 5): the session intent is allocated at the
+            // press edge and invalidated synchronously by release/cancel —
+            // even before the queued begin starts. A begin that observes the
+            // cancelled intent must abort without preparing/starting capture.
+            let intent = PendingSessionIntent(
+                generation: 1, pressTimestampNanos: 100, requestedMode: "hotkey")
+            check("B2r5 intent starts valid", !intent.isCancelled)
+            intent.cancel()
+            check("B2r5 intent cancelled synchronously", intent.isCancelled)
+            // A NEW intent (new press) is valid again.
+            let intent2 = PendingSessionIntent(
+                generation: 2, pressTimestampNanos: 200, requestedMode: "hotkey")
+            check("B2r5 new press intent valid", !intent2.isCancelled)
+            check("B2r5 generations distinct", intent2.generation == intent.generation + 1)
+            check("B2r5 press timestamp retained", intent2.pressTimestampNanos == 200)
+        }
+        do {
+            // Termination join: a session that completes normally reaches
+            // terminal release and awaitTerminalAndReleased returns true.
+            let provider = FakeSessionStages()
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: false,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await s.end()
+            await runTask.value
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            let joined = await s.awaitTerminalAndReleased(deadlineNanosAhead: 500_000_000)
+            check("B2r5 normal session reaches terminal release", joined)
+            // A session that is deliberately kept running (no end command) must
+            // NOT report terminal release within a short deadline.
+            let s2 = DictationSession(
+                provider: FakeSessionStages(), engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: false,
+                    copyOnlyOverrideBundleIDs: []))
+            let runTask2 = Task { await s2.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            let joined2 = await s2.awaitTerminalAndReleased(deadlineNanosAhead: 50_000_000)
+            check("B2r5 live session not released within deadline", !joined2)
+            await s2.cancel()
+            await runTask2.value
+            let joined3 = await s2.awaitTerminalAndReleased(deadlineNanosAhead: 500_000_000)
+            check("B2r5 cancelled session releases", joined3)
+        }
+
         // ===== B3 regression: exactly-one terminal telemetry emission =====
         do {
             // Review B3: the TerminalGuard emits a versioned terminal event
@@ -2320,44 +2375,51 @@ struct CoreTests {
             check("B1r5 drained+consumer-complete succeeds", !assess(barrierDrained: true, consumerCompleted: true))
             // Drained but consumer NOT completed => DEGRADED (the round-5
             // blocker: the old expression ignored consumer completion).
-            check("B1r5 drained+consumer-incomplete is degraded", assess(barrierDrained: true, consumerCompleted: false))
+            check(
+                "B1r5 drained+consumer-incomplete is degraded", assess(barrierDrained: true, consumerCompleted: false))
             // Consumer completed but barrier timed out => degraded.
-            check("B1r5 barrier-timeout still degraded",
-                  AudioDrainAssessment.isDegraded(
-                      AudioDrainAssessment.Input(
-                          seqDegraded: false, channelDegraded: false,
-                          barrierTimedOut: true, barrierDrained: true,
-                          consumerCompleted: true, lateAppends: 0,
-                          reconciled: true)))
+            check(
+                "B1r5 barrier-timeout still degraded",
+                AudioDrainAssessment.isDegraded(
+                    AudioDrainAssessment.Input(
+                        seqDegraded: false, channelDegraded: false,
+                        barrierTimedOut: true, barrierDrained: true,
+                        consumerCompleted: true, lateAppends: 0,
+                        reconciled: true)))
             // Late appends / unreconciled / sequence-degraded / channel-degraded
             // each independently force degradation.
-            check("B1r5 late append degrades",
-                  AudioDrainAssessment.isDegraded(
-                      AudioDrainAssessment.Input(
-                          seqDegraded: false, channelDegraded: false,
-                          barrierTimedOut: false, barrierDrained: true,
-                          consumerCompleted: true, lateAppends: 1,
-                          reconciled: true)))
-            check("B1r5 unreconciled degrades",
-                  AudioDrainAssessment.isDegraded(
-                      AudioDrainAssessment.Input(
-                          seqDegraded: false, channelDegraded: false,
-                          barrierTimedOut: false, barrierDrained: true,
-                          consumerCompleted: true, lateAppends: 0,
-                          reconciled: false)))
-            check("B1r5 seq-degraded degrades",
-                  AudioDrainAssessment.isDegraded(
-                      AudioDrainAssessment.Input(
-                          seqDegraded: true, channelDegraded: false,
-                          barrierTimedOut: false, barrierDrained: true,
-                          consumerCompleted: true, lateAppends: 0,
-                          reconciled: true)))
+            check(
+                "B1r5 late append degrades",
+                AudioDrainAssessment.isDegraded(
+                    AudioDrainAssessment.Input(
+                        seqDegraded: false, channelDegraded: false,
+                        barrierTimedOut: false, barrierDrained: true,
+                        consumerCompleted: true, lateAppends: 1,
+                        reconciled: true)))
+            check(
+                "B1r5 unreconciled degrades",
+                AudioDrainAssessment.isDegraded(
+                    AudioDrainAssessment.Input(
+                        seqDegraded: false, channelDegraded: false,
+                        barrierTimedOut: false, barrierDrained: true,
+                        consumerCompleted: true, lateAppends: 0,
+                        reconciled: false)))
+            check(
+                "B1r5 seq-degraded degrades",
+                AudioDrainAssessment.isDegraded(
+                    AudioDrainAssessment.Input(
+                        seqDegraded: true, channelDegraded: false,
+                        barrierTimedOut: false, barrierDrained: true,
+                        consumerCompleted: true, lateAppends: 0,
+                        reconciled: true)))
             // Ownership: the task/converter handles must be RETAINED while
             // the consumer is incomplete (never discarded mid-flight).
-            check("B1r5 retain ownership while consumer incomplete",
-                  AudioDrainAssessment.shouldRetainOwnership(consumerCompleted: false))
-            check("B1r5 release ownership when consumer complete",
-                  !AudioDrainAssessment.shouldRetainOwnership(consumerCompleted: true))
+            check(
+                "B1r5 retain ownership while consumer incomplete",
+                AudioDrainAssessment.shouldRetainOwnership(consumerCompleted: false))
+            check(
+                "B1r5 release ownership when consumer complete",
+                !AudioDrainAssessment.shouldRetainOwnership(consumerCompleted: true))
             // Session-level behavior: a degraded summary (produced when the
             // consumer is incomplete) must drive the session to the error
             // phase (never success), with no insertion and no history write.

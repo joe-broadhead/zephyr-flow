@@ -346,6 +346,12 @@ public actor DictationSession {
     /// Review B3: exactly-one terminal emission via TerminalGuard + sink.
     private var terminalGuard: TerminalGuard
     private let telemetrySink = BoundedEventSink(capacity: 64)
+    /// Review B2v2 (round 5): release signal — fired exactly once in
+    /// finishTerminal after `released = true`. Lets the host (controller)
+    /// join session termination with a bounded deadline instead of claiming
+    /// cleanup before the run() task has reached terminal release.
+    private var releaseContinuation: AsyncStream<Void>.Continuation?
+    private var releaseStream: AsyncStream<Void>?
 
     public init(
         provider: any DictationSessionStageProviding,
@@ -380,6 +386,41 @@ public actor DictationSession {
         let stream = AsyncStream<Command>(bufferingPolicy: .bufferingNewest(64)) { cont = $0 }
         self.commandContinuation = cont
         self.commandStream = stream
+        var relCont: AsyncStream<Void>.Continuation?
+        let relStream = AsyncStream<Void> { relCont = $0 }
+        self.releaseContinuation = relCont
+        self.releaseStream = relStream
+    }
+
+    // MARK: - Termination join (round-5 B2)
+
+    /// Review B2v2 (round 5): bounded join on session termination. Returns
+    /// true when the session reached exactly-once terminal release before the
+    /// deadline; false when it is still running (the caller must treat the
+    /// session as not-quiesced and never claim cleanup).
+    public func awaitTerminalAndReleased(
+        deadlineNanosAhead: UInt64 = 3_000_000_000
+    ) async -> Bool {
+        // Already released: immediate success.
+        if released { return true }
+        guard let releaseStream else { return false }
+        // Race the release signal against a bounded deadline. The release
+        // task returns true when finishTerminal yields; the sleep task
+        // returns false at the deadline — first result wins, then the group
+        // is cancelled so neither side outlives the call.
+        return await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                var iterator = releaseStream.makeAsyncIterator()
+                return await iterator.next() != nil
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: deadlineNanosAhead)
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
     }
 
     // MARK: - UI subscription (reconnect-safe)
@@ -805,6 +846,10 @@ public actor DictationSession {
     private func finishTerminal(category: TerminalCategory) {
         guard !released else { return }
         released = true
+        // Review B2v2 (round 5): signal host-side joins immediately after the
+        // release flag is set, so awaitTerminalAndReleased() can observe it.
+        releaseContinuation?.yield(())
+        releaseContinuation?.finish()
         // Review R1.5: drive the control state machine to the matching
         // terminal state so the terminal OUTCOME (not just cleanup) is
         // recorded exactly once. A duplicate finish is a no-op because the
