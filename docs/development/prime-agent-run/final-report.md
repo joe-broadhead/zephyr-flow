@@ -13,7 +13,7 @@ external completion gate.
   - 8 `parent_summary` (epics 2232-2239)
   - 8 `deferred_by_contract` (release-supply-chain + Aurum lanes blocked by
     human/credential/real-device gates; provisional assumptions P2-P5)
-- **Integration head:** `d6e580bf` (gate-passed head) on `agent/zephyr-production-run-20260808T103416Z`
+- **Integration head:** `c0e7480` (gate-passed head) on `agent/zephyr-review-fixes`
   (pushed; master/main untouched; no tags/releases).
 - Every autonomous acceptance criterion has retained deterministic evidence;
   no microphone/AX/factory/notarization/independent-review evidence was
@@ -73,13 +73,13 @@ enforces discovery).
 - `FINAL_GATE_REQUESTED` committed; both branches pushed.
 - `/usr/local/libexec/zephyr-prime-final-gate-20260808T103416Z` ran manually
   and passed at the current committed+pushed head:
-  - pass 1: **FINAL GATE PASSED** `d6e580bf…` (Zephyr) / `2d80982c…` (Aurum),
+  - pass 1: **FINAL GATE PASSED** `c0e7480…` (Zephyr) / `2d80982c…` (Aurum),
     exit 0 (log: `/tmp/final_gate4.log`).
   - pass 2 (after ledger-head bookkeeping commits): **FINAL GATE PASSED**
     `8991692b…` / `2d80982c…`, exit 0 (log: `/tmp/final_gate5.log`).
 - The ledger's `integration_head` is kept equal to the exact head the gate
   runs at (the committed ledger records the first gate-passed head
-  `d6e580bf…`; the on-disk record tracks the current head).
+  `c0e7480…`; the on-disk record tracks the current head).
 - Child worktrees removed; single clean worktree each repo; no tags.
 - 9/9 `Scripts/ci_checks.sh` gates green at the final head (XCTest enforced on
   CI; CLT parity suite green locally; strict-concurrency baseline 88 and

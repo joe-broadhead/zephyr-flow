@@ -1,8 +1,8 @@
-# Review-Fixes Candidate Report — branch agent/zephyr-review-fixes @ 4832e15
+# Review-Fixes Candidate Report — branch agent/zephyr-review-fixes @ c0e7480
 
-**Status:** remediation candidate (NOT re-approved). Five review rounds were
-addressed; a sixth review is required before merge. This file is regenerated
-from the candidate head 4832e15 (pushed, clean).
+**Status:** remediation candidate (NOT re-approved). Six review rounds were
+addressed; a seventh review is required before merge. This file is regenerated
+from the candidate head c0e7480 (pushed, clean).
 
 ## History
 - `0e5f0b2` (original): review 1 → BLOCKED (15 blockers).
@@ -10,68 +10,56 @@ from the candidate head 4832e15 (pushed, clean).
 - `85fe010` (round 2 fixes): review 3 → STILL BLOCKED (9 blockers + REQ + nits).
 - `8a521ac` (round 3 fixes): review 4 → STILL BLOCKED (6 blockers + REQ + nits).
 - `b690eed` (round 4 fixes): review 5 → STILL BLOCKED (5 blockers + REQ + nits).
-- `4832e15` (round 5 fixes): this head. See below.
+- `ef4e742` (round 5 fixes): review 6 → STILL BLOCKED (4 blockers + REQ + nits).
+- `c0e7480` (round 6 fixes): this head. See below.
 
 ## What changed vs the original reviewed head
-- **~65 commits**, ~65 files changed vs the originally-reviewed head `0e5f0b2`.
-- **1182 test checks pass, 0 failures** (CLT suite).
-- **All 9 CI gates pass**, including the REQ-4 tuple-format strict-concurrency
-  gate (count file | id | message — file identity + occurrence retained),
-  recursive shellcheck with -print0, required PyYAML, drift clean, coverage
-  >=70, ASan lane, and the explicit rapid-control/crash-recovery lane.
+- ~72 commits vs the originally-reviewed head `0e5f0b2`.
+- **1213 test checks pass, 0 failures** (CLT suite).
+- **All 9 CI gates pass**, including: REQ-4 tuple strict-concurrency baseline
+  (39 tuples, 0 new), recursive shellcheck with -print0, required PyYAML,
+  drift clean, coverage >=70, ASan lane, explicit rapid-control/crash lane.
+- The 6,000-line single main() was split into 8 runPartN() functions (same
+  file): the frontend previously peaked near the OS memory limit and was
+  killed mid-compile; builds now complete in seconds with a bounded peak.
 
-## Round-5 BLOCKER disposition (each with commit + regression test)
+## Round-6 BLOCKER disposition (each with commit + regression test)
 | Blocker | Fix | Commit | Test |
 |---|---|---|---|
-| B1v2 drain success before consumer completion | consumer completion is a MANDATORY success condition (AudioDrainAssessment, pure Core); stopCapture quiesces (bounded 1s) then QUARANTINES the engine + retains deliveryTask/converter ownership when the consumer is stuck | `f5b8509` | B1r5 suite: drained+incomplete degrades; ownership retained; session error (no success/insertion/history) |
-| B2v2 press-edge intent + shutdown quiescence | PendingSessionIntent allocated SYNCHRONOUSLY at the press/toggle edge; release/cancel invalidate it immediately (begin aborts before/after every await); DictationSession.awaitTerminalAndReleased() bounded join; controller joins before .sessionFinished | `e0b72ec` | B2r5 suite: intent invalidation/generations; normal release; live-session not released; cancelled releases |
-| B3v2 state machine nonterminal vs invented .failed | NEW legal events .drainFailed/.enginePartial/.engineTruncated/.targetResolutionFailed; stage-dependent canonicalEvent(for:from:); finishTerminal REQUIRES terminal+match (else no release, observable .terminalMismatch); one stored telemetry ID; exact metrics categories | `fd4d32d` | B3r5 suite: stage-specific legality; session-level UI+telemetry agreement (degraded->.degraded, truncated->.truncated); single ID |
-| B4v2 paste bound to app only | NEW immutable one-use TargetLease (PID+process-start+bundle+window+element+capabilities+deadline); paste validates WHOLE lease before mutation + at event time; TargetValidationService derives window from focused element's kAXWindowAttribute (bounds-matched); axWindowID fails closed without bounds | `1f9849e` | B4r5 suite: lease match/mismatch (window/field/process/bundle/role/capability/expiry); session carries lease |
-| B5v2 verified != all loaded bytes | VerifiedModelArtifact (atomic folder+manifestVersion+aggregateDigest); digest-REQUIRED verification (hash failure = FAIL); manifest enumerates ALL WhisperKit components (MelSpectrogram/AudioEncoder/TextDecoder/TextDecoderContextPrefill/tokenizer/config); digest-complete manifest written at promotion; controller+engine never fall back to identifier loading | `567f820` | B5r5 suite: manifest enumeration; atomic artifact; tamper invalidation |
+| B1 cancel during history strands session | applied-insertion-wins: post-history cancel records .lateCancelAfterInsertion and finishes .completed (never a second terminal from .completed); finishTerminal mismatch branch NEVER strands — emits actual/fallback category + always releases/finishes broadcaster with a .terminalMismatch marker | `bb51a4e` | B1r6: block recordHistory, cancel during it -> run exits, broadcaster finishes, exactly one terminal (.completed), late-cancel warning, session released, next session completes |
+| B2 shutdown join + manual toggle | TerminationHandshake.abandon(reason:); controller RACES sessionTask.value against a bounded deadline (not isCancelled polling); on failure retains quarantined shutdown owner, no sessionFinished/pasteboardResolved/sessionCompleted; release signal fires only after broadcaster finish; toggle preempts existing pending intent | `bb51a4e` | B2r6: abandon refuses further steps; normal session joined after broadcast finish; preempted intent cancelled |
+| B3 TargetLease not enforced | nonce + session/sensitivity identity in matches(); TargetLeaseRegistry consumes nonce ONCE before first side-effecting attempt; leaseStillMatches rebuilds a fresh snapshot + full pure matcher; AX path enforces same lease; frontmostWindowID reads AXValue (was String, always nil); capabilities via AXUIElementIsAttributeSettable | `bb51a4e` | B3r6: cross-session/sensitivity rejection; nonce one-use |
+| B4 verified model can't verify .mlmodelc / tokenizer network | production sha256Hex+fileSize DIRECTORY-AWARE (recursive sorted rel paths+lengths+bytes); prefill optional; downloader stages complete tokenizer dir; engine passes tokenizerFolder (no Hub fallback); localOnly enforced | `bb51a4e` | B4r6: directory-model ready; inner-file tamper invalidates; optional prefill absent ready; tokenizer dir in manifest |
 
-## Round-5 REQUIRED-BEFORE-MERGE addressed
-- **REQ-4** tuple-format concurrency baseline: `count file | id | message`
-  (file identity + occurrence retained; sort -u no longer hides new-file
-  occurrences). Baseline regenerated (43 tuples). `4832e15`
-- **REQ-5** explicit history states: HistoryStorageState (readyEncrypted,
-  readyPlaintext, plaintextMigrationPending, sealedKeyUnavailable,
-  storageReadFailure, corruptQuarantined, historyDisabled); storage READ
-  failure is not corruption (no quarantine); controller consults state
-  (history-disabled proceeds; non-ready states surface when enabled).
-  `567f820`
-- **REQ-6** enhanced-Flow rejection provenance: single transformation +
-  single guard; outcome preserves actual backend, original rejection, fallback
-  backend, requested-vs-delivered loss class. `567f820`
-- **REQ-2** production paths under XCTest: ProductionBlockerTests.swift covers
-  all five blocker scenarios + history states; runs under
-  `swift test --sanitize=address`. `567f820`
+## Round-6 REQUIRED-BEFORE-MERGE addressed
+- **REQ-2** sealedKeyAuthFailed distinct from sealedKeyUnavailable; controller
+  blocks history-enabled admission on plaintextMigrationPending.
+- **REQ-3** B1 quiescence wait fixed (elapsed-from-start 1s; resample before
+  retention decision).
+- **REQ-6 (partial)** evidence regenerated from the actual tested SHA below.
+- NITs 1-5 addressed (enhanced backend for clean/raw; flush observes
+  end-of-stream; PendingSessionIntent doc; verifiedURL legacy note;
+  sessionCompleted not a storage-flush marker).
 
-## Round-5 nits addressed
-- NIT 1-2: removed B5-MARKER + B5-DIAG prints (round-4 commit, verified).
-- NIT 3: axWindowID fails closed (nil) when AX bounds cannot be compared.
-- NIT 4: finish() doc no longer overclaims exactly-one outcome.
-- NIT 5: capture-accounting decoded=0 (delivered input != decoded output).
-- NIT 6: removed redundant channelStats reference.
-- NIT 7: removed unused EnhancedFlowProcessor t0.
-- NIT 8: SessionAudioConverter.flush drains repeatedly (bounded budget).
+## Round-6 NITs
+- NIT 1: EnhancedFlowProcessor reports .regex backend for .clean/.raw.
+- NIT 2: flush observes AVAudioConverterOutputStatus.endOfStream.
+- NIT 3: PendingSessionIntent doc ("immutable identity + atomic cancellation flag").
+- NIT 4: verifiedURL documented legacy; verifiedArtifact is the source of truth.
+- NIT 5: sessionCompleted not emitted for shutdown bookkeeping.
 
-## STILL NOT addressed (external / requires CI + hardware + human)
+## Still external / honest (unchanged)
 - **REQ-1**: exact-SHA GitHub Actions run (workflow ready + Actions pinned;
-  requires a runner + push/PR; the agent branch isn't in the workflow push
-  branches). Cannot be executed from this environment.
-- **REQ-3**: Swift 6 language mode (package is tools 5.10; 43 tuple baseline
-  entries; the gate is honestly labeled Swift 5 mode). Separate refactoring
-  branch.
-- **Controller-level XCTest on the app executable** (XCTest target compiles
-  against ZephyrFlow; execution requires the macOS app runtime).
-- **Cryptographic binding of WhisperKit loaded bytes** (loads the verified
-  promoted directory with downloads disabled; verified digest recorded as
-  provenance).
-- **Human/external gates** (real-device, credentials, JOE-2314, etc.) —
-  honest, in human-gates.md.
+  requires a runner + push/PR). Cannot be executed from this environment.
+- **REQ-3**: Swift 6 language mode (package is tools 5.10; 39 tuple baseline;
+  the gate is honestly labeled Swift 5 mode).
+- Controller-level XCTest execution (XCTest target compiles against the app;
+  execution requires the macOS app runtime).
+- Cryptographic binding of WhisperKit loaded bytes (loads the verified
+  promoted directory with downloads disabled; digest recorded as provenance).
+- Human/external gates (real-device, credentials, JOE-2314, etc.).
 
 ## CONFIRMED-GOOD across all rounds
-Branch isolation (no master/tag changes); external human gates not falsely
-marked Done; typed domain vocabulary; conservative pure sensitivity policy;
-pasteboard state-machine design; privacy-oriented observability; Aurum scope
-discipline; evidence organization.
+Branch isolation; external human gates not falsely marked Done; typed domain
+vocabulary; conservative sensitivity policy; pasteboard state-machine design;
+privacy-oriented observability; Aurum scope discipline; evidence organization.
