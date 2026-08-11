@@ -4790,13 +4790,16 @@ struct CoreTests {
                 engineChoice: .whisper,
                 settings: settings(false))
             weak var weak7 = s7
-            var s7copy = s7
-            let runTask7 = Task { await s7copy!.run() }
+            // Round-6: the Task closure must capture an IMMUTABLE actor
+            // reference (Sendable) — capturing a mutable `var` would be a
+            // non-Sendable capture under Swift-6 diagnostics.
+            let runTask7: Task<Void, Never>? = s7.map { captured in
+                Task { await captured.run() }
+            }
             try? await Task.sleep(nanoseconds: 50_000_000)
             await s7!.end()
-            await runTask7.value
+            await runTask7?.value
             s7 = nil
-            s7copy = nil  // Round-6: release the Sendable-capture copy
             // Give the executor a beat to run deinit.
             var released = false
             for _ in 0..<5 {
