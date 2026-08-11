@@ -1,45 +1,49 @@
 # Pinned strict-concurrency warnings (JOE-2291, review R8.1/B9).
-# Canonical form: UNIQUE MESSAGE only (no file/line/format prefixes). The old
-# format kept both 'File.swift: warning: X' and '`- warning: X' for the same
-# diagnostic (duplicated entries, fragile to compiler tree rendering).
-# Regenerate with the gate-3 pipeline from a clean build; NEW messages (not in
-# this list) fail CI. Gate-3 pipeline is grouped so grep||true applies to grep only.
-'s7' mutated after capture by sendable closure
-add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'ApplicationServices'
-add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'AVFAudio'
-capture of 'element' with non-Sendable type 'AXUIElement' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
-capture of 'inBuf' with non-Sendable type 'AVAudioPCMBuffer' in a '@Sendable' closure [#SendableClosureCaptures]
-capture of 'key' with non-Sendable type '(String) -> HistoryCryptoKey' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
-capture of 'manifest(_:digests:)' with non-Sendable type '(ModelIdentifier, [String : String]) -> ModelManifest' in a '@Sendable' closure; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
-concurrently-executed local function 'key' must be marked as '@Sendable'; this is an error in the Swift 6 language mode
-concurrently-executed local function 'manifest(_:digests:)' must be marked as '@Sendable'; this is an error in the Swift 6 language mode
-conformance of 'PrivacyPermissionProvider' to protocol 'PermissionProviding' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
-conformance of 'SettingsStoreRepository' to protocol 'SettingsRepository' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
-conformance of 'TargetValidationService' to protocol 'TargetValidationProviding' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode [#ConformanceIsolation]
-immutable value 'expect' was never used; consider replacing with '_' or removing it [#no-usage]
-initialization of immutable value 'copied' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
-initialization of immutable value 'monitor' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
-initialization of immutable value 't0' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
-instance method 'lock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
-instance method 'unlock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
-left side of nil coalescing operator '??' has non-optional type '[NSPasteboard.PasteboardType]', so the right side is never used
-main actor-isolated default value in a nonisolated context; this is an error in the Swift 6 language mode
-mutation of captured var 'consumed' in concurrently-executing code [#SendableClosureCaptures]
-mutation of captured var 'delivered' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
-mutation of captured var 'nested' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
-no 'async' operations occur within 'await' expression
-passing closure as a 'sending' parameter risks causing data races between code in the current task and concurrent execution of the closure; this is an error in the Swift 6 language mode [#SendingClosureRisksDataRace]
-reference to captured var 'consumed' in concurrently-executing code [#SendableClosureCaptures]
-reference to captured var 'nested' in concurrently-executing code; this is an error in the Swift 6 language mode [#SendableClosureCaptures]
-reference to var 'kAXTrustedCheckOptionPrompt' is not concurrency-safe because it involves shared mutable state; this is an error in the Swift 6 language mode
-sending 'copy' risks causing data races; this is an error in the Swift 6 language mode [#SendingRisksDataRace]
-sending 'kit' risks causing data races; this is an error in the Swift 6 language mode [#SendingRisksDataRace]
-sending 'result' risks causing data races; this is an error in the Swift 6 language mode [#SendingRisksDataRace]
-sending 'timer' risks causing data races; this is an error in the Swift 6 language mode [#SendingRisksDataRace]
-sending value of non-Sendable type '() -> UInt64' risks causing data races; this is an error in the Swift 6 language mode [#SendingRisksDataRace]
-static property 'shared' is not concurrency-safe because non-'Sendable' type 'FloatingPanelController' may have shared mutable state; this is an error in the Swift 6 language mode [#MutableGlobalVariable]
-using '_' to ignore the result of a Void-returning function is redundant
-variable 'dropped' was never used; consider replacing with '_' or removing it [#no-usage]
-variable 'gate' was never mutated; consider changing to 'let' constant
-variable 'list' was never mutated; consider changing to 'let' constant
-weak variable 'weak7' was never mutated; consider changing to 'let' constant [#WeakMutability]
+# Round-5 REQ-4 format: 'count relative-file | diagnostic-id | message' —
+# file identity and occurrence count are retained (sort -u alone hid new
+# occurrences of an existing message in a NEW file). Regenerate with the
+# gate-3 pipeline from a clean build; NEW tuples fail CI.
+# Gate-3 pipeline is grouped so grep||true applies to grep only.
+1 Tests/ZephyrFlowCoreTests/main.swift | 's7' mutated after capture by sendable closure
+1 Tests/ZephyrFlowCoreTests/main.swift | [#SendableClosureCaptures] | mutation of captured var 'delivered' in concurrently-executing code; this is an error in the Swift 6 language mode 
+1 Tests/ZephyrFlowCoreTests/main.swift | [#SendableClosureCaptures] | mutation of captured var 'nested' in concurrently-executing code; this is an error in the Swift 6 language mode 
+1 Tests/ZephyrFlowCoreTests/main.swift | [#SendableClosureCaptures] | reference to captured var 'nested' in concurrently-executing code; this is an error in the Swift 6 language mode 
+1 Tests/ZephyrFlowCoreTests/main.swift | [#WeakMutability] | weak variable 'weak7' was never mutated; consider changing to 'let' constant 
+1 Tests/ZephyrFlowCoreTests/main.swift | concurrently-executed local function 'key' must be marked as '@Sendable'; this is an error in the Swift 6 language mode
+1 Tests/ZephyrFlowCoreTests/main.swift | concurrently-executed local function 'manifest(_:digests:)' must be marked as '@Sendable'; this is an error in the Swift 6 language mode
+1 Tests/ZephyrFlowCoreTests/main.swift | immutable value 'expect' was never used; consider replacing with '_' or removing it [#no-usage]
+1 Tests/ZephyrFlowCoreTests/main.swift | initialization of immutable value 'copied' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
+1 Tests/ZephyrFlowCoreTests/main.swift | instance method 'lock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
+1 Tests/ZephyrFlowCoreTests/main.swift | instance method 'unlock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
+1 Tests/ZephyrFlowCoreTests/main.swift | using '_' to ignore the result of a Void-returning function is redundant
+1 Tests/ZephyrFlowCoreTests/main.swift | variable 'dropped' was never used; consider replacing with '_' or removing it [#no-usage]
+1 Tests/ZephyrFlowCoreTests/main.swift | variable 'gate' was never mutated; consider changing to 'let' constant
+1 Tests/ZephyrFlowCoreTests/main.swift | variable 'list' was never mutated; consider changing to 'let' constant
+12 Sources/ZephyrFlow/Services/ProductionSessionStages.swift | instance method 'unlock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
+2 Tests/ZephyrFlowCoreTests/main.swift | [#SendableClosureCaptures] | capture of 'manifest(_:digests:)' with non-Sendable type '(ModelIdentifier, [String : String]) -> ModelManifest' in a '@Sendable' closure; this is an error in the Swift 6 language mode 
+2 Tests/ZephyrFlowCoreTests/main.swift | no calls to throwing functions occur within 'try' expression
+3 Sources/ZephyrFlow/Services/AudioCapture.swift | [#SendingClosureRisksDataRace] | passing closure as a 'sending' parameter risks causing data races between code in the current task and concurrent execution of the closure; this is an error in the Swift 6 language mode 
+3 Sources/ZephyrFlow/Services/AudioCapture.swift | [#SendingRisksDataRace] | sending 'copy' risks causing data races; this is an error in the Swift 6 language mode 
+3 Sources/ZephyrFlow/Services/InsertionService.swift | add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'ApplicationServices'
+3 Sources/ZephyrFlow/Services/InsertionService.swift | left side of nil coalescing operator '??' has non-optional type '[NSPasteboard.PasteboardType]', so the right side is never used
+3 Sources/ZephyrFlow/Services/LaunchAtLoginService.swift | no 'async' operations occur within 'await' expression
+3 Sources/ZephyrFlow/Services/PrivacyService.swift | reference to var 'kAXTrustedCheckOptionPrompt' is not concurrency-safe because it involves shared mutable state; this is an error in the Swift 6 language mode
+3 Sources/ZephyrFlow/Services/ProductionSessionStages.swift | initialization of immutable value 'monitor' was never used; consider replacing with assignment to '_' or removing it [#no-usage]
+3 Sources/ZephyrFlow/Services/SessionAudioConverter.swift | [#SendableClosureCaptures] | capture of 'inBuf' with non-Sendable type 'AVAudioPCMBuffer' in a '@Sendable' closure 
+3 Sources/ZephyrFlow/Services/SessionAudioConverter.swift | [#SendableClosureCaptures] | mutation of captured var 'consumed' in concurrently-executing code 
+3 Sources/ZephyrFlow/Services/SessionAudioConverter.swift | [#SendableClosureCaptures] | reference to captured var 'consumed' in concurrently-executing code 
+3 Sources/ZephyrFlow/Services/SessionAudioConverter.swift | add '@preconcurrency' to suppress 'Sendable'-related warnings from module 'AVFAudio'
+3 Sources/ZephyrFlow/Services/SessionAudioConverter.swift | variable 'sawEndOfStream' was never mutated; consider changing to 'let' constant
+3 Sources/ZephyrFlow/Services/WhisperKitEngine.swift | [#SendingRisksDataRace] | sending 'kit' risks causing data races; this is an error in the Swift 6 language mode 
+4 Sources/ZephyrFlow/App/ZephyrFlowApp.swift | [#SendingRisksDataRace] | sending 'timer' risks causing data races; this is an error in the Swift 6 language mode 
+4 Sources/ZephyrFlow/Services/AppleSpeechEngine.swift | [#SendingClosureRisksDataRace] | passing closure as a 'sending' parameter risks causing data races between code in the current task and concurrent execution of the closure; this is an error in the Swift 6 language mode 
+4 Sources/ZephyrFlow/Services/AppleSpeechEngine.swift | [#SendingRisksDataRace] | sending 'result' risks causing data races; this is an error in the Swift 6 language mode 
+4 Sources/ZephyrFlow/Services/ProductionSessionStages.swift | main actor-isolated default value in a nonisolated context; this is an error in the Swift 6 language mode
+4 Sources/ZephyrFlow/Services/TargetValidationService.swift | [#ConformanceIsolation] | conformance of 'TargetValidationService' to protocol 'TargetValidationProviding' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode 
+4 Sources/ZephyrFlow/UI/Panel/FloatingPanel.swift | [#MutableGlobalVariable] | static property 'shared' is not concurrency-safe because non-'Sendable' type 'FloatingPanelController' may have shared mutable state; this is an error in the Swift 6 language mode 
+5 Sources/ZephyrFlow/App/AppEnvironment+Production.swift | [#ConformanceIsolation] | conformance of 'PrivacyPermissionProvider' to protocol 'PermissionProviding' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode 
+5 Sources/ZephyrFlow/App/AppEnvironment+Production.swift | [#ConformanceIsolation] | conformance of 'SettingsStoreRepository' to protocol 'SettingsRepository' crosses into main actor-isolated code and can cause data races; this is an error in the Swift 6 language mode 
+5 Tests/ZephyrFlowCoreTests/main.swift | [#SendableClosureCaptures] | capture of 'key' with non-Sendable type '(String) -> HistoryCryptoKey' in a '@Sendable' closure; this is an error in the Swift 6 language mode 
+5 Tests/ZephyrFlowCoreTests/main.swift | [#SendingRisksDataRace] | sending value of non-Sendable type '() -> UInt64' risks causing data races; this is an error in the Swift 6 language mode 
+9 Sources/ZephyrFlow/Services/InsertionService.swift | [#SendableClosureCaptures] | capture of 'element' with non-Sendable type 'AXUIElement' in a '@Sendable' closure; this is an error in the Swift 6 language mode 
+9 Sources/ZephyrFlow/Services/ProductionSessionStages.swift | instance method 'lock' is unavailable from asynchronous contexts; Use async-safe scoped locking instead; this is an error in the Swift 6 language mode
