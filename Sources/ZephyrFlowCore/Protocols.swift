@@ -74,7 +74,8 @@ public protocol InsertionServiceProtocol: Actor {
         copyOnlyOverrides: Set<String>,
         validatedElement: TargetSnapshot.ElementIdentity?,
         validatedPid: Int32?,
-        validatedWindowID: UInt32?
+        validatedWindowID: UInt32?,
+        lease: TargetLease?
     ) async -> InsertionOutcome
 }
 
@@ -89,7 +90,8 @@ extension InsertionServiceProtocol {
         copyOnlyOverrides: Set<String>,
         validatedElement: TargetSnapshot.ElementIdentity? = nil,
         validatedPid: Int32? = nil,
-        validatedWindowID: UInt32? = nil
+        validatedWindowID: UInt32? = nil,
+        lease: TargetLease? = nil
     ) async -> InsertionOutcome {
         await insert(text)
     }

@@ -374,7 +374,8 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             // binds to the exact validated target.
             validatedElement: request.validatedElement,
             validatedPid: request.validatedPid,
-            validatedWindowID: request.validatedWindowID)
+            validatedWindowID: request.validatedWindowID,
+            lease: request.lease)
     }
 
     func recordHistory(

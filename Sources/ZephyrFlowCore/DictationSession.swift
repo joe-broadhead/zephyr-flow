@@ -184,6 +184,11 @@ public struct SessionInsertRequest: Sendable, Equatable {
     public let validatedElement: TargetSnapshot.ElementIdentity?
     public let validatedPid: Int32?
     public let validatedWindowID: UInt32?
+    /// Round-5 B4: the complete, immutable one-use target lease produced by
+    /// successful validation. The paste path validates the WHOLE lease
+    /// (PID + process-start + bundle + window + element + capabilities)
+    /// before clipboard mutation and again immediately before Command-V.
+    public let lease: TargetLease?
     public let sensitivity: SessionSensitivity
     public let sessionID: SessionID
     public let copyOnlyOverrides: Set<String>
@@ -194,6 +199,7 @@ public struct SessionInsertRequest: Sendable, Equatable {
         validatedElement: TargetSnapshot.ElementIdentity? = nil,
         validatedPid: Int32? = nil,
         validatedWindowID: UInt32? = nil,
+        lease: TargetLease? = nil,
         sensitivity: SessionSensitivity,
         sessionID: SessionID, copyOnlyOverrides: Set<String>
     ) {
@@ -204,6 +210,7 @@ public struct SessionInsertRequest: Sendable, Equatable {
         self.validatedElement = validatedElement
         self.validatedPid = validatedPid
         self.validatedWindowID = validatedWindowID
+        self.lease = lease
         self.sensitivity = sensitivity
         self.sessionID = sessionID
         self.copyOnlyOverrides = copyOnlyOverrides
@@ -711,6 +718,15 @@ public actor DictationSession {
             // transcript-bearing side effect. A cancel during processing must
             // prevent insertion, not just be buffered until review.
             if await checkCancellation() { return true }
+            // Round-5 B4: produce the complete, immutable one-use target
+            // lease at validation time. The paste path validates the WHOLE
+            // lease (PID + process-start + bundle + window + element +
+            // capabilities) — not just the bundle — before mutation.
+            let lease = TargetLease.make(
+                snapshot: snapshot,
+                sessionID: sessionID,
+                validationDeadlineNanosAhead: 10_000_000_000,  // 10s
+                nowNanos: nowNanos())
             let result = await provider.insert(
                 SessionInsertRequest(
                     text: retainedText,
@@ -723,6 +739,7 @@ public actor DictationSession {
                     validatedElement: snapshot.element,
                     validatedPid: snapshot.target.pid,
                     validatedWindowID: snapshot.target.windowID,
+                    lease: lease,
                     sensitivity: validation.effectiveSensitivity,
                     sessionID: sessionID,
                     copyOnlyOverrides: Set(settings.copyOnlyOverrideBundleIDs)))

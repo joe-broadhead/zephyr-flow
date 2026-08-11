@@ -24,7 +24,8 @@ actor InsertionService: InsertionServiceProtocol {
         copyOnlyOverrides: Set<String> = [],
         validatedElement: TargetSnapshot.ElementIdentity? = nil,
         validatedPid: Int32? = nil,
-        validatedWindowID: UInt32? = nil
+        validatedWindowID: UInt32? = nil,
+        lease: TargetLease? = nil
     ) async -> InsertionOutcome {
         guard !text.isEmpty else { return .failed("Empty text") }
         // JOE-2259: domain rejection of automatic insertion for secure/unknown
@@ -37,6 +38,7 @@ actor InsertionService: InsertionServiceProtocol {
         let role = await focusedRole()
         let frontBundle = await frontmostBundleID()
         let bundle = targetBundleID ?? frontBundle
+        let validatedLease = lease
         ZFLog.info(
             "Insert request len=\(text.count) ax=\(AXIsProcessTrusted()) mode=\(mode.rawValue) bundle=\(bundle ?? "nil") role=\(role ?? "nil")"
         )
@@ -109,7 +111,7 @@ actor InsertionService: InsertionServiceProtocol {
                 try? await Task.sleep(nanoseconds: settle)
                 let paste = await pasteViaClipboard(
                     text, sessionID: sessionID, sensitivity: sensitivity,
-                    validatedTargetBundle: bundle)
+                    validatedTargetBundle: bundle, lease: validatedLease)
                 switch paste {
                 case .pasted:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=posted")
@@ -409,6 +411,108 @@ actor InsertionService: InsertionServiceProtocol {
     /// to a CGWindowID via CGWindowListCopyWindowInfo, falling back to the
     /// window's PID hash (stable per process/window on macOS). Returns nil when
     /// the window cannot be resolved — callers must fail closed.
+    /// Round-5 B4: re-validate the complete target lease against the CURRENT
+    /// frontmost application + focused element. Requires the bundle, PID,
+    /// process-start identity, window and element capabilities to all match;
+    /// a same-app field/window switch or PID reuse fails closed.
+    private func leaseStillMatches(
+        lease: TargetLease,
+        nowNanos: UInt64
+    ) async -> Bool {
+        if lease.isExpired(nowNanos: nowNanos) {
+            ZFLog.info("lease re-check: expired")
+            return false
+        }
+        let currentBundle = await frontmostBundleID()
+        guard currentBundle == lease.bundleID else {
+            ZFLog.info("lease re-check: bundle changed")
+            return false
+        }
+        // Re-resolve the frontmost PID via NSWorkspace (bundle-owner PID).
+        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        guard let frontPID, frontPID == lease.pid else {
+            ZFLog.info("lease re-check: PID changed")
+            return false
+        }
+        // Window identity: the focused element's window (fail closed when it
+        // cannot be resolved).
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedRef: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(
+                systemWide,
+                kAXFocusedUIElementAttribute as CFString,
+                &focusedRef) == .success,
+            let focused = focusedRef,
+            CFGetTypeID(focused) == AXUIElementGetTypeID()
+        else {
+            ZFLog.info("lease re-check: no focused element")
+            return false
+        }
+        let element = unsafeBitCast(focused, to: AXUIElement.self)
+        if let expectedWindow = lease.windowID {
+            guard let currentWindow = axWindowID(element) else {
+                ZFLog.info("lease re-check: window unresolvable — fail closed")
+                return false
+            }
+            guard currentWindow == expectedWindow else {
+                ZFLog.info("lease re-check: window changed")
+                return false
+            }
+        }
+        // Element identity: role/subrole when the lease carries them.
+        if let expectedRole = lease.element?.role {
+            guard let currentRole = await focusedRole(),
+                currentRole == expectedRole
+            else {
+                ZFLog.info("lease re-check: role changed")
+                return false
+            }
+        }
+        if let expectedSub = lease.element?.subrole {
+            guard let currentSub = focusedSubrole(element),
+                currentSub == expectedSub
+            else {
+                ZFLog.info("lease re-check: subrole changed")
+                return false
+            }
+        }
+        // Capability parity.
+        guard axIsSettable(element) == lease.settable,
+            axIsEditable(element) == lease.editable,
+            axIsEnabled(element) == lease.enabled
+        else {
+            ZFLog.info("lease re-check: capability changed")
+            return false
+        }
+        return true
+    }
+
+    private nonisolated func focusedSubrole(_ element: AXUIElement) -> String? {
+        axString(element, "AXSubrole")
+    }
+
+    private nonisolated func axIsSettable(_ element: AXUIElement) -> Bool {
+        guard let v = axValueFor(element, "AXSettable") else { return false }
+        return v as? Bool ?? false
+    }
+
+    private nonisolated func axIsEditable(_ element: AXUIElement) -> Bool {
+        guard let v = axValueFor(element, "AXEditable") else { return false }
+        return v as? Bool ?? false
+    }
+
+    private nonisolated func axIsEnabled(_ element: AXUIElement) -> Bool {
+        guard let v = axValueFor(element, "AXEnabled") else { return false }
+        return v as? Bool ?? false
+    }
+
+    private nonisolated func axValueFor(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+        return value
+    }
+
     private nonisolated func axWindowID(_ element: AXUIElement) -> UInt32? {
         var windowRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXWindowAttribute as CFString, &windowRef) == .success,
@@ -486,12 +590,6 @@ actor InsertionService: InsertionServiceProtocol {
         return nil
     }
 
-    private nonisolated func axValueFor(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value
-    }
-
     private nonisolated func axString(_ element: AXUIElement, _ attribute: String) -> String? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
@@ -529,7 +627,11 @@ actor InsertionService: InsertionServiceProtocol {
         _ text: String,
         sessionID: SessionID?,
         sensitivity: SessionSensitivity,
-        validatedTargetBundle: String? = nil
+        validatedTargetBundle: String? = nil,
+        lease: TargetLease? = nil,
+        nowNanos: @escaping @Sendable () -> UInt64 = {
+            DispatchTime.now().uptimeNanoseconds
+        }
     ) async -> ClipboardPasteResult {
         // JOE-2260: lossless bounded transaction. Snapshot EVERY item with
         // every available type/data (no flattening); enforce the reviewed
@@ -571,7 +673,16 @@ actor InsertionService: InsertionServiceProtocol {
         // Review B4v2: validate the target BEFORE any clipboard mutation.
         // A changed/unknown/secure target must never see the transcript on the
         // global pasteboard (even transiently), so the checks run first.
-        if let expected = validatedTargetBundle {
+        // Round-5 B4: when a complete TargetLease is present, validate the
+        // WHOLE lease (PID + process-start + bundle + window + element) —
+        // a same-app field/window switch must fail closed, not just a bundle
+        // change.
+        if let lease {
+            guard await leaseStillMatches(lease: lease, nowNanos: nowNanos()) else {
+                ZFLog.info("paste pre-check: lease mismatch (exact target changed) — blocked before mutation")
+                return .failed
+            }
+        } else if let expected = validatedTargetBundle {
             let current = await frontmostBundleID()
             guard let current, current == expected else {
                 ZFLog.info("paste pre-check: frontmost bundle changed/unknown — blocked before mutation")
@@ -602,7 +713,14 @@ actor InsertionService: InsertionServiceProtocol {
 
         // Re-check immediately before the event too (focus can change during
         // the settle); if it did, restore the clipboard and fail closed.
-        if let expected = validatedTargetBundle {
+        if let lease {
+            guard await leaseStillMatches(lease: lease, nowNanos: nowNanos()) else {
+                ZFLog.info("paste event-time: lease mismatch — restore + blocked")
+                restoreSnapshot(original, markerType: markerType)
+                tx.cancel()
+                return .failed
+            }
+        } else if let expected = validatedTargetBundle {
             let current = await frontmostBundleID()
             guard let current, current == expected else {
                 ZFLog.info("paste event-time: frontmost bundle changed — restore + blocked")

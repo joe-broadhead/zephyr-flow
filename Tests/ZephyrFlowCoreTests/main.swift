@@ -42,6 +42,8 @@ actor FakeSessionStages: DictationSessionStageProviding {
     var cancelCount = 0
     var cancelled = false
     var insertionCount = 0
+    /// Round-5 B4: the last insert request observed (lease verification).
+    var lastInsertRequest: SessionInsertRequest?
     var prepareCount = 0
     var capturedSessionIDs: [SessionID] = []
     /// Review R2/4 test hook: block stopCapture for this long so a cancel can
@@ -164,6 +166,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
 
     func insert(_ request: SessionInsertRequest) async -> InsertionOutcome {
         insertionCount += 1
+        lastInsertRequest = request
         return insertionOutcome
     }
 
@@ -2039,6 +2042,119 @@ struct CoreTests {
                 u.consume(.openAccessibilitySettings, nowNanos: 100) && u.consumedAction == .openAccessibilitySettings)
             u.clear(.userDiscarded)
             check("2272 discard clears", u.clearReason == .userDiscarded)
+        }
+
+        // ===== B4 round-5: exact TargetLease validation =====
+        do {
+            // Review B4 (round 5): a complete immutable target lease binds
+            // paste insertion to the EXACT validated field/window — not just
+            // the application. PID reuse, same-app field switches and window
+            // switches must fail closed.
+            let sid = SessionID(token: "lease", sequence: 1, createdAtUptimeNanos: 0)
+            func snapshot(
+                pid: Int32 = 42, start: UInt64 = 900, bundle: String = "com.example.Editor",
+                window: UInt32? = 7, role: String = "AXTextField", subrole: String? = nil,
+                token: String? = "tok", settable: Bool = true, editable: Bool = true,
+                enabled: Bool = true
+            ) -> TargetSnapshot {
+                TargetSnapshot(
+                    sessionID: sid, capturedAtUptimeNanos: 100,
+                    target: TargetSnapshot.Identity(
+                        pid: pid, bundleID: bundle,
+                        processStartUptimeNanos: start,
+                        windowID: window, appVersion: "1.0"),
+                    element: TargetSnapshot.ElementIdentity(
+                        role: role, subrole: subrole, resolutionToken: token),
+                    settable: settable, editable: editable, enabled: enabled,
+                    selectionRange: 0..<0,
+                    sensitivity: SensitivityAssessment(
+                        sensitivity: .normal, source: .accessibilityRole,
+                        capturedAtNanos: 100))
+            }
+            let s = snapshot()
+            let lease = TargetLease.make(
+                snapshot: s, sessionID: sid,
+                validationDeadlineNanosAhead: 1_000_000_000, nowNanos: 0)
+            // Exact re-resolution matches.
+            check(
+                "B4r5 lease matches exact target",
+                lease.matches(reResolved: s, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // Same bundle, different window -> mismatch (same-app window switch).
+            let otherWindow = snapshot(window: 8)
+            check(
+                "B4r5 lease rejects same-app window switch",
+                !lease.matches(reResolved: otherWindow, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // Same app, different element token -> mismatch (same-window field switch).
+            let otherField = snapshot(token: "tok2")
+            check(
+                "B4r5 lease rejects same-app field switch (token)",
+                !lease.matches(reResolved: otherField, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // PID reuse / process restart -> mismatch.
+            let pidReuse = snapshot(pid: 42, start: 901)
+            check(
+                "B4r5 lease rejects process restart (start identity)",
+                !lease.matches(reResolved: pidReuse, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // Different bundle -> mismatch.
+            let otherBundle = snapshot(bundle: "com.other.App")
+            check(
+                "B4r5 lease rejects bundle change",
+                !lease.matches(reResolved: otherBundle, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // Role/subrole change -> mismatch.
+            let roleChange = snapshot(role: "AXTextArea")
+            check(
+                "B4r5 lease rejects role change",
+                !lease.matches(reResolved: roleChange, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // Capability change -> mismatch.
+            let capChange = snapshot(editable: false)
+            check(
+                "B4r5 lease rejects capability change",
+                !lease.matches(reResolved: capChange, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // Expiry -> mismatch even for the exact target.
+            check(
+                "B4r5 lease expires (deadline passed)",
+                !lease.matches(reResolved: s, requireWindow: true, requireElementToken: true, nowNanos: 2_000_000_000))
+            // Without requireWindow/requireElementToken the weaker identity is
+            // still bundle+pid+process-start bound.
+            let weak = snapshot(window: nil, token: nil)
+            let lease2 = TargetLease.make(
+                snapshot: weak, sessionID: sid,
+                validationDeadlineNanosAhead: 1_000_000_000, nowNanos: 0)
+            let windowChanged = snapshot(window: 99, token: nil)
+            check(
+                "B4r5 lease matches when window/token not required",
+                lease2.matches(
+                    reResolved: windowChanged, requireWindow: false, requireElementToken: false, nowNanos: 100))
+        }
+        do {
+            // Session-level: a validated insertion request carries the lease
+            // (produced at validation time), and a non-validated path has no
+            // lease (fail-closed review).
+            let provider = FakeSessionStages()
+            await provider.setPartials(["hello"])
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await s.end()
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            await s.cancel()
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            // The fake records the last insert request; verify it carried a
+            // lease with the validated pid/bundle/window.
+            let lastRequest = await provider.lastInsertRequest
+            check("B4r5 insert request carries lease", lastRequest?.lease != nil)
+            if let l = lastRequest?.lease {
+                check("B4r5 lease pid matches snapshot", l.pid == 42)
+                check("B4r5 lease bundle matches snapshot", l.bundleID == "com.example.Editor")
+                check("B4r5 lease window matches snapshot", l.windowID == 7)
+            }
         }
 
         // ===== JOE-2260: lossless bounded pasteboard transaction =====

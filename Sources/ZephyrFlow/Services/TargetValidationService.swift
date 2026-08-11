@@ -81,7 +81,7 @@ final class TargetValidationService: TargetValidationProviding {
                 pid: pid,
                 bundleID: bundle,
                 processStartUptimeNanos: processStartNanos(pid: pid),
-                windowID: frontmostWindowID(pid: pid),
+                windowID: frontmostWindowID(pid: pid, element: element),
                 appVersion: bundleShortVersion(bundle)),
             element: .init(
                 role: role ?? "unknown",
@@ -130,7 +130,7 @@ final class TargetValidationService: TargetValidationProviding {
             pid: pid,
             bundleID: bundle,
             processStartUptimeNanos: processStartNanos(pid: pid),
-            windowID: frontmostWindowID(pid: pid),
+            windowID: frontmostWindowID(pid: pid, element: element),
             element: .init(
                 role: role ?? "unknown",
                 subrole: subrole,
@@ -238,21 +238,62 @@ final class TargetValidationService: TargetValidationProviding {
         return settable.boolValue
     }
 
-    /// Frontmost usable window id of a pid via CGWindowList (boundaries only).
-    private func frontmostWindowID(pid: Int32) -> UInt32? {
+    /// Round-5 B4: window identity derived from the FOCUSED ELEMENT's
+    /// kAXWindowAttribute (not the first layer-zero window of the process).
+    /// Returns nil when the AX window cannot be resolved or its bounds cannot
+    /// be matched to a CGWindowID — callers fail closed (nil window id means
+    /// paste requires a lease that cannot be re-validated, so it is refused).
+    private func frontmostWindowID(pid: Int32, element: AXUIElement?) -> UInt32? {
+        guard let element else { return nil }
+        var windowRef: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(
+                element, kAXWindowAttribute as CFString, &windowRef) == .success,
+            let window = windowRef,
+            CFGetTypeID(window) == AXUIElementGetTypeID()
+        else { return nil }
+        let windowElement = unsafeBitCast(window, to: AXUIElement.self)
+        // Read the AX window's bounds (position+size).
+        var position = CGPoint.zero
+        var size = CGSize.zero
+        var posOK = false
+        var sizeOK = false
+        if let posRef = attr(windowElement, kAXPositionAttribute) {
+            AXValueGetValue(unsafeBitCast(posRef, to: AXValue.self), .cgPoint, &position)
+            posOK = true
+        }
+        if let sizeRef = attr(windowElement, kAXSizeAttribute) {
+            AXValueGetValue(unsafeBitCast(sizeRef, to: AXValue.self), .cgSize, &size)
+            sizeOK = true
+        }
         guard
             let list = CGWindowListCopyWindowInfo(
                 [.optionOnScreenOnly, .excludeDesktopElements],
                 kCGNullWindowID) as? [[String: Any]]
         else { return nil }
-        let windows = list.filter {
-            ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
-                && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+        // Match the CG window owned by this PID whose bounds match the AX
+        // window's bounds (same origin within tolerance + same size). No
+        // bounds match => nil (fail closed; never the first PID window).
+        for w in list {
+            guard let ownerPID = w[kCGWindowOwnerPID as String] as? NSNumber,
+                ownerPID.int32Value == pid,
+                let winID = w[kCGWindowNumber as String] as? NSNumber
+            else { continue }
+            guard posOK, sizeOK,
+                let bounds = w[kCGWindowBounds as String] as? [String: CGFloat]
+            else { continue }
+            let bx = bounds["X"] ?? 0
+            let by = bounds["Y"] ?? 0
+            let bw = bounds["Width"] ?? 0
+            let bh = bounds["Height"] ?? 0
+            let matches =
+                abs(bx - position.x) < 2 && abs(by - position.y) < 2
+                && abs(bw - size.width) < 2 && abs(bh - size.height) < 2
+            if matches {
+                return UInt32(winID.int32Value)
+            }
         }
-        guard let first = windows.first,
-            let winID = first[kCGWindowNumber as String] as? NSNumber
-        else { return nil }
-        return UInt32(winID.int32Value)
+        return nil
     }
 
     private func processStartNanos(pid: Int32) -> UInt64? {
