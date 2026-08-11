@@ -76,6 +76,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
     func setValidationOutcomes(_ o: [TargetValidationOutcome]) { validationOutcomes = o }
     func setCompleteness(_ c: EngineResultCompleteness) { completeness = c }
     func setStopDelay(_ ns: UInt64) { stopDelayNanos = ns }
+    func setDegraded(_ d: Bool) { degraded = d }
 
     func prepare(sessionID: SessionID) async {
         prepareCount += 1
@@ -2294,6 +2295,101 @@ struct CoreTests {
             _ = ok3.noteDelivered(sequence: 4, nowNanos: 500)
             check("R1.3 final sequence after begin drains", ok3.isComplete && ok3.isTerminal)
         }
+        // ===== B1 round-5 regression: incomplete consumer must degrade =====
+        do {
+            // Review B1v2 (round 5): `markTimedOut()` only fires while the
+            // barrier is still .draining. A barrier ALREADY drained at the
+            // deadline (final chunk delivered) with a consumer still running
+            // (EOS tail append suspended) must STILL be degraded — consumer
+            // completion is a mandatory success condition, tracked
+            // independently of barrier state.
+            func assess(
+                barrierDrained: Bool, consumerCompleted: Bool
+            ) -> Bool {
+                AudioDrainAssessment.isDegraded(
+                    AudioDrainAssessment.Input(
+                        seqDegraded: false,
+                        channelDegraded: false,
+                        barrierTimedOut: false,
+                        barrierDrained: barrierDrained,
+                        consumerCompleted: consumerCompleted,
+                        lateAppends: 0,
+                        reconciled: true))
+            }
+            // Drained + consumer completed => NOT degraded (success).
+            check("B1r5 drained+consumer-complete succeeds", !assess(barrierDrained: true, consumerCompleted: true))
+            // Drained but consumer NOT completed => DEGRADED (the round-5
+            // blocker: the old expression ignored consumer completion).
+            check("B1r5 drained+consumer-incomplete is degraded", assess(barrierDrained: true, consumerCompleted: false))
+            // Consumer completed but barrier timed out => degraded.
+            check("B1r5 barrier-timeout still degraded",
+                  AudioDrainAssessment.isDegraded(
+                      AudioDrainAssessment.Input(
+                          seqDegraded: false, channelDegraded: false,
+                          barrierTimedOut: true, barrierDrained: true,
+                          consumerCompleted: true, lateAppends: 0,
+                          reconciled: true)))
+            // Late appends / unreconciled / sequence-degraded / channel-degraded
+            // each independently force degradation.
+            check("B1r5 late append degrades",
+                  AudioDrainAssessment.isDegraded(
+                      AudioDrainAssessment.Input(
+                          seqDegraded: false, channelDegraded: false,
+                          barrierTimedOut: false, barrierDrained: true,
+                          consumerCompleted: true, lateAppends: 1,
+                          reconciled: true)))
+            check("B1r5 unreconciled degrades",
+                  AudioDrainAssessment.isDegraded(
+                      AudioDrainAssessment.Input(
+                          seqDegraded: false, channelDegraded: false,
+                          barrierTimedOut: false, barrierDrained: true,
+                          consumerCompleted: true, lateAppends: 0,
+                          reconciled: false)))
+            check("B1r5 seq-degraded degrades",
+                  AudioDrainAssessment.isDegraded(
+                      AudioDrainAssessment.Input(
+                          seqDegraded: true, channelDegraded: false,
+                          barrierTimedOut: false, barrierDrained: true,
+                          consumerCompleted: true, lateAppends: 0,
+                          reconciled: true)))
+            // Ownership: the task/converter handles must be RETAINED while
+            // the consumer is incomplete (never discarded mid-flight).
+            check("B1r5 retain ownership while consumer incomplete",
+                  AudioDrainAssessment.shouldRetainOwnership(consumerCompleted: false))
+            check("B1r5 release ownership when consumer complete",
+                  !AudioDrainAssessment.shouldRetainOwnership(consumerCompleted: true))
+            // Session-level behavior: a degraded summary (produced when the
+            // consumer is incomplete) must drive the session to the error
+            // phase (never success), with no insertion and no history write.
+            let stages = FakeSessionStages()
+            await stages.setDegraded(true)
+            let s = DictationSession(
+                provider: stages, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await s.end()
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            await s.cancel()
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            check(
+                "B1r5 incomplete consumer -> session error (not success)",
+                states.contains { $0.phase == .error }
+                    && !states.contains { $0.phase == .success })
+            check(
+                "B1r5 incomplete consumer -> no insertion",
+                await stages.insertionCount == 0)
+            check(
+                "B1r5 incomplete consumer -> no history write",
+                await stages.historyCount == 0)
+        }
+
         do {
             // Channel sample accounting (content-free counts) via BoundedAudioChannel.
             let sid = SessionID(token: "drain", sequence: 1, createdAtUptimeNanos: 0)

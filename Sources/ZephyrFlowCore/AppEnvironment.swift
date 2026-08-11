@@ -276,6 +276,7 @@ public actor FakeWhisperEngine: WhisperEngineProtocol {
             termination: .completed)
     }
     public func cancel() async {}
+    public func quarantine() async { isQuarantined = true }
 }
 
 /// Deterministic fake insertion service.

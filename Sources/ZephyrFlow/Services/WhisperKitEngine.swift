@@ -345,6 +345,10 @@ actor WhisperKitEngine: WhisperEngineProtocol {
             modelVersion: nil, modelDigest: verifiedDigest)
     }
 
+    func quarantine() async {
+        _isQuarantined = true
+    }
+
     func cancel() async {
         isFinalizing = true
         partialLoopTask?.cancel()

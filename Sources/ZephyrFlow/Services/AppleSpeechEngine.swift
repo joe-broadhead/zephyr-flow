@@ -9,6 +9,7 @@ import ZephyrFlowCore
 /// (required for reliable recognition — 16 kHz converted PCM often yields empty results).
 actor AppleSpeechEngine: WhisperEngineProtocol {
     public var isQuarantined: Bool { false }  // never quarantines
+    func quarantine() async {}  // Apple Speech never quarantines
     public var verifiedDigest: String? { nil }
     public func recordVerifiedDigest(_ digest: String?) {}
     private(set) var isReady = false

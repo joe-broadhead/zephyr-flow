@@ -32,7 +32,10 @@ let package = Package(
         ),
         .testTarget(
             name: "ZephyrFlowTests",
-            dependencies: ["ZephyrFlowCore"],
+            // Review REQ-2 (round 5): the authoritative XCTest target must
+            // cover the production paths (session stages, controller, engine,
+            // insertion). It depends on the app target for those types.
+            dependencies: ["ZephyrFlowCore", "ZephyrFlow"],
             path: "Tests/ZephyrFlowTests"
         ),
         // CLT-friendly runner (no XCTest / full Xcode required)

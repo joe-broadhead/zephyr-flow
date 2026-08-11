@@ -226,16 +226,37 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        // If the consumer still hasn't completed at the deadline, it may be
-        // suspended in engine.appendAudio and could mutate accounting later.
-        // We do NOT await it further (bounded); the barrier is timedOut so the
-        // summary degrades, and we retain the task handle (no discard that
-        // lets it mutate unseen state after we read it).
-        if !(lock.withLock { deliveryFinished }) {
+        // Review B1v2 (round 5): the consumer must COMPLETE for a success.
+        // `markTimedOut()` only fires while the barrier is still .draining —
+        // if the final chunk already drained the barrier, the deadline does
+        // not mark a timeout even though the consumer (and its EOS tail
+        // append) are still running. Track consumer completion independently.
+        let consumerCompleted = lock.withLock { deliveryFinished }
+        if !consumerCompleted {
             ZFLog.info("Audio consumer did not complete in time — degraded")
+            // Review B1v2: try to quiesce the delivery task with a SHORT
+            // bounded cancel window so the retained handle cannot mutate
+            // accounting/engine during finalization.
+            lock.withLock { deliveryTask?.cancel() }
+            let quiesceDeadline = environment.clock.nowNanos() &+ 1_000_000_000
+            while !(lock.withLock { deliveryFinished }) {
+                if environment.clock.nowNanos() &- quiesceDeadline >= 1_000_000_000 {
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+        }
+        // If the consumer STILL has not completed, it is suspended inside an
+        // engine operation: quarantine the engine (it must not be reused by a
+        // later session) and RETAIN ownership of the task + converter so a
+        // late resume cannot mutate accounting/engine unseen while the caller
+        // has already begun finalization.
+        let consumerStillRunning = !(lock.withLock { deliveryFinished })
+        if consumerStillRunning {
+            ZFLog.info("Audio consumer stuck after quiesce — quarantining engine, retaining ownership")
+            await engine.quarantine()
         }
         let channelStats = channel?.stats()
-        _ = channelStats
         let (seqDegraded, barrierTimedOut, barrierDrained, lateAppends) = lock.withLock {
             (
                 sequencer.isDegraded,
@@ -271,8 +292,20 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // Review R1.3: a successful capture requires the barrier to have
         // DRAINED (final sequence acknowledged). A barrier left .draining is
         // degraded — it never acknowledged the end-of-stream marker.
-        let notDrained = !barrierDrained
-        let degraded = seqDegraded || channelDegraded || barrierTimedOut || notDrained || lateAppends > 0 || !reconciled
+        // Review B1v2 (round 5): a success ALSO requires the consumer to have
+        // completed (EOS tail flushed + appended before deliveryFinished).
+        // A consumer still running at the deadline means the tail may be
+        // missing even though the numbered chunks drained. This decision is
+        // the pure, unit-tested AudioDrainAssessment (Core).
+        let degraded = AudioDrainAssessment.isDegraded(
+            AudioDrainAssessment.Input(
+                seqDegraded: seqDegraded,
+                channelDegraded: channelDegraded,
+                barrierTimedOut: barrierTimedOut,
+                barrierDrained: barrierDrained,
+                consumerCompleted: consumerCompleted,
+                lateAppends: lateAppends,
+                reconciled: reconciled))
         let summary = SessionAudioSummary(
             capturedSourceSamples: accounting.capturedSourceSamples,
             deliveredEngineSamples: accounting.deliveredEngineSamples,
@@ -280,8 +313,16 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             degraded: degraded,
             reconciled: reconciled,
             drainState: drainBarrier.state.rawValue)
-        deliveryTask = nil
-        converter = nil
+        // Review B1v2: never discard ownership while the consumer may still be
+        // running. Only clear the handles when the task completed; otherwise
+        // the retained task+converter keep the unfinished operation reachable
+        // (and the engine is quarantined above so it cannot be reused).
+        if !AudioDrainAssessment.shouldRetainOwnership(
+            consumerCompleted: consumerCompleted)
+        {
+            deliveryTask = nil
+            converter = nil
+        }
         // Note: `channel` is a local copy (let) from self.channel; the shared
         // self.channel is cleared in cancel()/deinit. No local clear needed.
         return summary

@@ -31,6 +31,10 @@ public protocol WhisperEngineProtocol: Actor {
     func stopAndFinalize() async throws -> FinalTranscription
     func cancel() async
     func appendAudio(_ samples: [Float]) async
+    /// Review B1v2 (round 5): quarantine the engine — the delivery consumer
+    /// could not be quiesced within the bounded deadline, so the engine may
+    /// still be owned by an unfinished task. The instance must not be reused.
+    func quarantine() async
 }
 
 public enum WhisperEngineError: LocalizedError, Sendable {

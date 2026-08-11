@@ -182,3 +182,58 @@ public struct AudioDrainBarrier: Sendable, Equatable {
         if state == .draining { state = .timedOut }
     }
 }
+
+// MARK: - Round-5 B1: drain success assessment (pure, unit-tested)
+
+/// Round-5 review B1: a successful drain requires BOTH the barrier drained
+/// AND the delivery consumer completed (its EOS converter flush + tail append
+/// ran before `deliveryFinished`). `markTimedOut()` only fires while the
+/// barrier is still `.draining`, so a barrier already `.drained` at the
+/// deadline does NOT imply the consumer finished — consumer completion is
+/// tracked independently and is a MANDATORY success condition.
+public enum AudioDrainAssessment {
+    public struct Input: Sendable, Equatable {
+        public let seqDegraded: Bool
+        public let channelDegraded: Bool
+        public let barrierTimedOut: Bool
+        public let barrierDrained: Bool
+        public let consumerCompleted: Bool
+        public let lateAppends: Int
+        public let reconciled: Bool
+        public init(
+            seqDegraded: Bool, channelDegraded: Bool,
+            barrierTimedOut: Bool, barrierDrained: Bool,
+            consumerCompleted: Bool, lateAppends: Int, reconciled: Bool
+        ) {
+            self.seqDegraded = seqDegraded
+            self.channelDegraded = channelDegraded
+            self.barrierTimedOut = barrierTimedOut
+            self.barrierDrained = barrierDrained
+            self.consumerCompleted = consumerCompleted
+            self.lateAppends = lateAppends
+            self.reconciled = reconciled
+        }
+    }
+
+    /// A capture is degraded if ANY condition fails — including an
+    /// incomplete consumer (round-5 B1: a consumer still running at the
+    /// deadline means the EOS tail may be missing even though numbered
+    /// chunks drained).
+    public static func isDegraded(_ i: Input) -> Bool {
+        i.seqDegraded
+            || i.channelDegraded
+            || i.barrierTimedOut
+            || !i.barrierDrained
+            || !i.consumerCompleted
+            || i.lateAppends > 0
+            || !i.reconciled
+    }
+
+    /// Ownership rule (round-5 B1): never discard the delivery task /
+    /// converter while the consumer may still be running. Only clear the
+    /// handles when the consumer completed; otherwise retain them so a late
+    /// resume cannot mutate accounting/engine unseen.
+    public static func shouldRetainOwnership(consumerCompleted: Bool) -> Bool {
+        !consumerCompleted
+    }
+}
