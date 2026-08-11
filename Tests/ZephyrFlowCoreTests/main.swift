@@ -52,6 +52,9 @@ actor FakeSessionStages: DictationSessionStageProviding {
     /// Review B5 test hook: when true, applyFlow returns a REJECTED outcome
     /// (protected spans not preserved, original text returned).
     var flowRejected = false
+    /// Round-6 B1 test hook: block recordHistory this long so a cancel can
+    /// land deterministically during history persistence.
+    var historyDelayNanos: UInt64 = 0
 
     static func makeSnapshot(
         sessionID: SessionID,
@@ -79,6 +82,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
     func setCompleteness(_ c: EngineResultCompleteness) { completeness = c }
     func setStopDelay(_ ns: UInt64) { stopDelayNanos = ns }
     func setDegraded(_ d: Bool) { degraded = d }
+    func setHistoryDelay(_ ns: UInt64) { historyDelayNanos = ns }
 
     func prepare(sessionID: SessionID) async {
         prepareCount += 1
@@ -174,6 +178,9 @@ actor FakeSessionStages: DictationSessionStageProviding {
         originalText: String, finalText: String,
         duration: TimeInterval, modelName: String
     ) async {
+        if historyDelayNanos > 0 {
+            try? await Task.sleep(nanoseconds: historyDelayNanos)
+        }
         historyCount += 1
     }
 
@@ -220,6 +227,8 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     var failDownload = false
     var downloadBytes = 2_000_000  // writes 2 MB payload
     var truncateArtifact = false
+    /// Round-6 B4: skip the optional TextDecoderContextPrefill bundle.
+    var skipPrefill = false
     var corruptDigest = false
     var failPromote = false
     var failQuarantine = false
@@ -250,9 +259,39 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     func directorySize(_ url: URL) -> UInt64 {
         lock.withLock { nodes.filter { $0.key.hasPrefix(key(url) + "/") }.values.reduce(0) { $0 + $1.size } }
     }
-    func fileSize(_ url: URL) -> UInt64? { lock.withLock { nodes[key(url)]?.size } }
+    func fileSize(_ url: URL) -> UInt64? {
+        lock.withLock {
+            // Round-6 B4: a directory bundle reports its RECURSIVE size
+            // (mirroring production), not the directory node's size.
+            if nodes[key(url)]?.isDir == true {
+                return nodes.filter { $0.key.hasPrefix(key(url) + "/") }
+                    .values.reduce(0) { $0 + $1.size }
+            }
+            return nodes[key(url)]?.size
+        }
+    }
     func sha256Hex(of url: URL) -> String? {
         lock.withLock {
+            // Round-6 B4: directory-aware hash (recursive sorted relative
+            // paths + lengths + bytes), mirroring production.
+            if nodes[key(url)]?.isDir == true {
+                let prefix = key(url) + "/"
+                var entries: [(String, Data)] = []
+                for (k, n) in nodes where k.hasPrefix(prefix) {
+                    if let data = n.data {
+                        entries.append((k.replacingOccurrences(of: prefix, with: ""), data))
+                    }
+                }
+                entries.sort { $0.0 < $1.0 }
+                guard !entries.isEmpty else { return nil }
+                var hasher = SHA256()
+                for (rel, data) in entries {
+                    hasher.update(data: Data(rel.utf8))
+                    hasher.update(data: withUnsafeBytes(of: UInt64(data.count).bigEndian) { Data($0) })
+                    hasher.update(data: data)
+                }
+                return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            }
             guard let n = nodes[key(url)], let data = n.data else { return nil }
             let h = SHA256.hash(data: data)
             return h.map { String(format: "%02x", $0) }.joined()
@@ -271,30 +310,46 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
         var modelData = Data(repeating: 0xCD, count: Int(downloadBytes))
         if truncateArtifact { modelData = Data(repeating: 0xCD, count: 500) }
         try createDirectory(stagingURL, permissions: 0o700)
-        let names = [
-            "config.json",
+        // Round-6 B4: .mlmodelc entries are DIRECTORY BUNDLES (a file inside),
+        // matching real compiled Core ML models; the tokenizer is a directory
+        // with tokenizer.json + configs. This makes the fake exercise the
+        // same directory-aware hashing as production.
+        lock.lock()
+        // config.json is a single file.
+        nodes[key(stagingURL.appendingPathComponent("config.json"))] = Node(
+            isDir: false, data: config, size: UInt64(config.count))
+        // CoreML bundles as directories with a payload file inside.
+        let bundleNames = [
             "MelSpectrogram.mlmodelc",
             "AudioEncoder.mlmodelc",
             "TextDecoder.mlmodelc",
             "TextDecoderContextPrefill.mlmodelc",
-            "tokenizer.json",
         ]
-        lock.lock()
-        for (i, name) in names.enumerated() {
-            let artifactURL = stagingURL.appendingPathComponent(name)
-            // Distinct payload per component so digests differ.
-            var payload =
-                i == 0
-                ? config
-                : Data(repeating: UInt8(0x10 + i), count: Int(downloadBytes) / max(names.count - 1, 1))
-            // Round-5 B5: truncateArtifact truncates a non-config component
-            // (below the manifest minBytes) to force quarantine.
-            if truncateArtifact, i == 2 {
-                payload = Data(repeating: UInt8(0x10 + i), count: 500)
+        for (i, name) in bundleNames.enumerated() {
+            if skipPrefill && name == "TextDecoderContextPrefill.mlmodelc" {
+                continue
             }
-            nodes[key(artifactURL)] = Node(
+            let dir = stagingURL.appendingPathComponent(name)
+            nodes[key(dir)] = Node(isDir: true, data: nil, size: 0)
+            var payload = Data(
+                repeating: UInt8(0x20 + i),
+                count: Int(downloadBytes) / max(bundleNames.count, 1))
+            if truncateArtifact, i == 1 {
+                payload = Data(repeating: UInt8(0x20 + i), count: 500)
+            }
+            let inner = dir.appendingPathComponent("model.mlmodel")
+            nodes[key(inner)] = Node(
                 isDir: false, data: payload, size: UInt64(payload.count))
         }
+        // tokenizer directory with tokenizer.json + config.
+        let tokDir = stagingURL.appendingPathComponent("tokenizer")
+        nodes[key(tokDir)] = Node(isDir: true, data: nil, size: 0)
+        nodes[key(tokDir.appendingPathComponent("tokenizer.json"))] = Node(
+            isDir: false, data: Data(repeating: 0x44, count: 200_000),
+            size: 200_000)
+        nodes[key(tokDir.appendingPathComponent("config.json"))] = Node(
+            isDir: false, data: Data(repeating: 0x45, count: 5_000),
+            size: 5_000)
         lock.unlock()
         onProgress(
             ModelDownloadProgress(
@@ -433,21 +488,44 @@ final class InMemoryHistoryFS: HistoryFileSystem, @unchecked Sendable {
 
 @main
 struct CoreTests {
-    static func main() async {
-        var failed = 0
-        func check(_ name: String, _ ok: Bool, _ detail: String = "") {
-            if ok {
-                print("  ✓ \(name)")
-            } else {
-                print("  ✗ \(name)\(detail.isEmpty ? "" : " — \(detail)")")
-                failed += 1
-            }
+    /// Round-6: the original single 6,000-line main() function type-checked as
+    /// one unit and peaked near the OS memory limit (jetsam killed
+    /// swift-frontend mid-compile). Split into per-part functions below so
+    /// each type-checks independently with a bounded peak.
+    static var failed = 0
+    static func check(_ name: String, _ ok: Bool, _ detail: String = "") {
+        if ok {
+            print("  ✓ \(name)")
+        } else {
+            print("  ✗ \(name)\(detail.isEmpty ? "" : " — \(detail)")")
+            failed += 1
         }
+    }
 
+    static let processor = FlowProcessor()
+
+    static func main() async {
         print("ZephyrFlowCore tests\n")
 
-        let processor = FlowProcessor()
+        await Self.runPart0()
+        await Self.runPart1()
+        await Self.runPart2()
+        await Self.runPart3()
+        await Self.runPart4()
+        await Self.runPart5()
+        await Self.runPart6()
+        await Self.runPart7()
+        print("")
+        if failed == 0 {
+            print("All tests passed.")
+            exit(0)
+        } else {
+            print("\(failed) test(s) failed.")
+            exit(1)
+        }
+    }
 
+    static func runPart0() async {
         // Raw
         do {
             let out = await processor.process("  um hello world  ", style: .raw)
@@ -947,6 +1025,66 @@ struct CoreTests {
             check("B2r5 cancelled session releases", joined3)
         }
 
+        // ===== B2 round-6: handshake abandon + release-after-broadcaster =====
+        do {
+            // Review B2 (round 6): the release signal fires only AFTER
+            // terminal cleanup and broadcaster finish — awaitTerminalAndReleased
+            // means "run() reached terminal AND broadcaster done".
+            let provider = FakeSessionStages()
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await s.end()
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            await runTask.value
+            let joined = await s.awaitTerminalAndReleased(deadlineNanosAhead: 500_000_000)
+            check("B2r6 normal session joined after broadcast finish", joined)
+            // Broadcaster finished -> stream drained to terminal state.
+            check(
+                "B2r6 broadcaster finished (success seen)",
+                states.contains { $0.phase == .success })
+        }
+        do {
+            // Review B2 (round 6): handshake abandon is explicit and the
+            // abandoned handshake reports the recovery marker + does NOT mark
+            // remaining steps (sessionFinished etc. must be refused).
+            var hs = TerminationHandshake(deadlineNanosAhead: 10_000)
+            hs.begin(nowNanos: 0)
+            _ = hs.completeStep(.admissionClosed, nowNanos: 1)
+            let st = hs.abandon(reason: "session run task did not quiesce")
+            check("B2r6 abandon -> .abandoned", st == .abandoned)
+            check("B2r6 abandoned is terminal", hs.isTerminal)
+            check("B2r6 recovery marker set", hs.recoveryMarker != nil)
+            // completeStep on an abandoned handshake is a no-op (no remaining
+            // steps can be marked).
+            let after = hs.completeStep(.sessionFinished, nowNanos: 5)
+            check("B2r6 abandoned refuses further steps", after == .abandoned)
+            check(
+                "B2r6 sessionFinished not marked after abandon",
+                !hs.completedSteps.contains(.sessionFinished))
+        }
+        do {
+            // Review B2 (round 6): manual toggle preempts a queued begin —
+            // two rapid toggles with no session must cancel intent 1, not
+            // overwrite it (intent 1 must be invalid).
+            let intent1 = PendingSessionIntent(
+                generation: 1, pressTimestampNanos: 0, requestedMode: "manual-toggle")
+            intent1.cancel()  // the controller cancels the existing intent
+            check("B2r6 preempted intent is cancelled", intent1.isCancelled)
+            // A fresh intent allocated only when no pending begin exists.
+            let intent2 = PendingSessionIntent(
+                generation: 2, pressTimestampNanos: 1, requestedMode: "manual-toggle")
+            check("B2r6 new intent valid after preempt", !intent2.isCancelled)
+            check("B2r6 intent generations strictly increase", intent2.generation > intent1.generation)
+        }
+
         // ===== B3 regression: exactly-one terminal telemetry emission =====
         do {
             // Review B3: the TerminalGuard emits a versioned terminal event
@@ -1065,6 +1203,85 @@ struct CoreTests {
             check(
                 "B3r5 all session telemetry shares one ID",
                 ids.count == 1)
+        }
+    }
+
+    static func runPart1() async {
+        // ===== B1 round-6: cancel during history persistence never strands =====
+        do {
+            // Review B1 (round 6): when insertion succeeded (control is
+            // .completed) and a cancel arrives DURING the awaited history
+            // write, the session must NOT request a second terminal (.cancelled
+            // from .completed would hit the mismatch guard and strand the
+            // session unreleased). Applied insertion wins: finish as
+            // completed, record lateCancelAfterInsertion, run exits,
+            // broadcaster finishes, next session can start.
+            let provider = FakeSessionStages()
+            await provider.setPartials(["hello"])
+            await provider.setHistoryDelay(300_000_000)  // block history 300ms
+            let s = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream = await s.subscribe()
+            let runTask = Task { await s.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await s.end()  // enters validate+insert -> history (blocked 300ms)
+            try? await Task.sleep(nanoseconds: 60_000_000)
+            await s.cancel()  // lands during history persistence
+            var states: [SessionUIState] = []
+            for await st in stream { states.append(st) }
+            // The run task MUST exit (not hang waiting on a finished stream).
+            let exited = await withTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    await runTask.value
+                    return true
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                    return false
+                }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
+            check("B1r6 run task exits after history-cancel", exited)
+            check(
+                "B1r6 broadcaster finished (stream drained)",
+                states.count > 0)
+            // Exactly one terminal emitted.
+            let telemetry = await s.drainTelemetry()
+            let terminals = telemetry.filter { $0.kind == .terminal }
+            check("B1r6 exactly one terminal", terminals.count == 1)
+            check(
+                "B1r6 terminal is completed (applied wins)",
+                terminals.first?.terminal == .completed)
+            check(
+                "B1r6 late-cancel warning recorded",
+                telemetry.contains { $0.kind == .lateCancelAfterInsertion })
+            // The session reached terminal release (join succeeds).
+            let joined = await s.awaitTerminalAndReleased(deadlineNanosAhead: 500_000_000)
+            check("B1r6 session released after history-cancel", joined)
+            // A NEW session can start (session object reusable, no stranded
+            // state): drive a second session to completion.
+            let s2 = DictationSession(
+                provider: FakeSessionStages(), engineChoice: .whisper,
+                settings: SessionSettingsSnapshot(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .clean,
+                    insertionMode: "automatic", saveHistory: true,
+                    copyOnlyOverrideBundleIDs: []))
+            let stream2 = await s2.subscribe()
+            let runTask2 = Task { await s2.run() }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+            await s2.end()
+            var states2: [SessionUIState] = []
+            for await st in stream2 { states2.append(st) }
+            await runTask2.value
+            check(
+                "B1r6 next session completes normally",
+                states2.contains { $0.phase == .success })
         }
 
         // ===== B5 regression: rejected Flow never auto-inserts =====
@@ -1713,7 +1930,9 @@ struct CoreTests {
                 check("2268 restore attempt cap rejected", false)
             }
         }
+    }
 
+    static func runPart2() async {
         // ===== JOE-2269: typed InsertionOutcome + central policy =====
         do {
             let verified = InsertionOutcome.verifiedInserted(
@@ -2202,6 +2421,59 @@ struct CoreTests {
             }
         }
 
+        // ===== B3 round-6: lease nonce consumption + session/sensitivity identity =====
+        do {
+            let sid = SessionID(token: "lease2", sequence: 1, createdAtUptimeNanos: 0)
+            let otherSid = SessionID(token: "other", sequence: 2, createdAtUptimeNanos: 0)
+            func snap(sid: SessionID, sens: SessionSensitivity = .normal) -> TargetSnapshot {
+                TargetSnapshot(
+                    sessionID: sid, capturedAtUptimeNanos: 100,
+                    target: TargetSnapshot.Identity(
+                        pid: 42, bundleID: "com.example.Editor",
+                        processStartUptimeNanos: 900,
+                        windowID: 7, appVersion: "1.0"),
+                    element: TargetSnapshot.ElementIdentity(
+                        role: "AXTextField", subrole: nil, resolutionToken: "tok"),
+                    settable: true, editable: true, enabled: true,
+                    selectionRange: 0..<0,
+                    sensitivity: SensitivityAssessment(
+                        sensitivity: sens, source: .accessibilityRole,
+                        capturedAtNanos: 100))
+            }
+            let s = snap(sid: sid)
+            let lease = TargetLease.make(
+                snapshot: s, sessionID: sid,
+                validationDeadlineNanosAhead: 1_000_000_000, nowNanos: 0)
+            // Exact target + same session matches.
+            check(
+                "B3r6 lease matches with session identity",
+                lease.matches(reResolved: s, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // A DIFFERENT session snapshot fails (cross-session lease reuse).
+            let otherSession = snap(sid: otherSid)
+            check(
+                "B3r6 lease rejects cross-session reuse",
+                !lease.matches(reResolved: otherSession, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // A sensitivity change fails.
+            let sensChanged = snap(sid: sid, sens: .secure)
+            check(
+                "B3r6 lease rejects sensitivity change",
+                !lease.matches(reResolved: sensChanged, requireWindow: true, requireElementToken: true, nowNanos: 100))
+            // One-use consumption: first consume ok, second refused.
+            let registry = TargetLeaseRegistry()
+            let consumedOnce = await registry.consume(lease.nonce)
+            check("B3r6 lease consumed once", consumedOnce)
+            let consumedTwice = await registry.consume(lease.nonce)
+            check("B3r6 lease second consume refused", !consumedTwice)
+            check("B3r6 lease registry reports consumed", await registry.isConsumed(lease.nonce))
+            // Distinct nonces are independent.
+            let lease2 = TargetLease.make(
+                snapshot: s, sessionID: sid,
+                validationDeadlineNanosAhead: 1_000_000_000, nowNanos: 0)
+            check("B3r6 distinct nonces", lease2.nonce != lease.nonce)
+            let freshConsumed = await registry.consume(lease2.nonce)
+            check("B3r6 fresh nonce consumable", freshConsumed)
+        }
+
         // ===== JOE-2260: lossless bounded pasteboard transaction =====
         do {
             let sid = SessionID(token: "pb", sequence: 1, createdAtUptimeNanos: 0)
@@ -2529,7 +2801,9 @@ struct CoreTests {
                 "2248 ratio rounding within tolerance",
                 r.reconciles(converterRatio: 0.5, roundingToleranceSamples: 1))
         }
+    }
 
+    static func runPart3() async {
         // ===== R1.2 regression: non-16k source rate reconciles correctly =====
         do {
             // Review R1.2: the old code hardcoded 16k/16k for the converter
@@ -3111,7 +3385,9 @@ struct CoreTests {
             r1.start(token: tok)
             check("2253 resume once", r1.markResumed() && !r1.markResumed())
         }
+    }
 
+    static func runPart4() async {
         // ===== JOE-2254: validated language + on-device capability =====
         do {
             // Matrix: supported BCP-47 identifiers.
@@ -3662,7 +3938,9 @@ struct CoreTests {
                     && !pres(.complete, .accepted, changed).voiceOverLabel.isEmpty
                     && !pres(.partial, .accepted, verified).voiceOverLabel.isEmpty)
         }
+    }
 
+    static func runPart5() async {
         // ===== JOE-2243: AppEnvironment DI — full pipeline with fakes only =====
         do {
             var clock = FakeClock(now: 1000)
@@ -4251,7 +4529,9 @@ struct CoreTests {
                     && b.fallbackCount == 1
                     && b.insertionConfidenceCounts["verified"] == 5)
         }
+    }
 
+    static func runPart6() async {
         // ===== JOE-2290: transactional launch-at-login =====
         do {
             // Success: register -> status registered -> converge -> commit.
@@ -4476,6 +4756,18 @@ struct CoreTests {
 
         // ===== JOE-2255: verified model acquisition lifecycle =====
         do {
+            // Round-6 B4: directory-aware hash mirroring FakeModelFS.
+            nonisolated func dirHash(_ entries: [(String, Data)]) -> String {
+                let sorted = entries.sorted { $0.0 < $1.0 }
+                var hasher = SHA256()
+                for (rel, data) in sorted {
+                    hasher.update(data: Data(rel.utf8))
+                    hasher.update(data: withUnsafeBytes(of: UInt64(data.count).bigEndian) { Data($0) })
+                    hasher.update(data: data)
+                }
+                return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            }
+
             nonisolated func manifest(
                 _ model: ModelIdentifier,
                 digests: [String: String] = [:]
@@ -4484,21 +4776,34 @@ struct CoreTests {
                 // caller supplies any digest, fill ALL components with their
                 // deterministic fake payload digests (unless explicitly set).
                 var allDigests = digests
+                // Round-6 B4: components are .mlmodelc DIRECTORY bundles and a
+                // tokenizer DIRECTORY — digests are the directory-aware hashes
+                // of the fake's payload layout.
                 let names = [
                     "config.json",
                     "MelSpectrogram.mlmodelc",
                     "AudioEncoder.mlmodelc",
                     "TextDecoder.mlmodelc",
                     "TextDecoderContextPrefill.mlmodelc",
-                    "tokenizer.json",
+                    "tokenizer",
                 ]
                 for (i, name) in names.enumerated() {
                     if allDigests[name] == nil {
-                        let payload =
-                            i == 0
-                            ? Data(repeating: 0xAB, count: 10_000)
-                            : Data(repeating: UInt8(0x10 + i), count: 400_000)
-                        allDigests[name] = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+                        if i == 0 {
+                            allDigests[name] = SHA256.hash(data: Data(repeating: 0xAB, count: 10_000))
+                                .map { String(format: "%02x", $0) }.joined()
+                        } else if name == "tokenizer" {
+                            allDigests[name] = dirHash([
+                                ("config.json", Data(repeating: 0x45, count: 5_000)),
+                                ("tokenizer.json", Data(repeating: 0x44, count: 200_000)),
+                            ])
+                        } else {
+                            // Match the fake's payload size exactly
+                            // (downloadBytes / bundle count = 500,000 default).
+                            allDigests[name] = dirHash([
+                                ("model.mlmodel", Data(repeating: UInt8(0x20 + (i - 1)), count: 500_000))
+                            ])
+                        }
                     }
                 }
                 return ModelAcquisitionController.makeManifest(
@@ -4665,7 +4970,7 @@ struct CoreTests {
                 "AudioEncoder.mlmodelc",
                 "TextDecoder.mlmodelc",
                 "TextDecoderContextPrefill.mlmodelc",
-                "tokenizer.json",
+                "tokenizer",
             ] {
                 check("B5r5 default manifest includes \(expected)", names.contains(expected))
             }
@@ -4713,6 +5018,51 @@ struct CoreTests {
                 check(
                     "B5r5 tampered config invalidates readiness",
                     await acq3.verifiedArtifact(for: .whisperTiny) == nil)
+            }
+        }
+
+        // ===== B4 round-6: directory-aware verified model =====
+        do {
+            // Review B4 (round 6): a compiled .mlmodelc is a DIRECTORY bundle.
+            // The fake writes directories; acquisition must hash them
+            // recursively and a change inside ANY file invalidates readiness.
+            let fs = FakeModelFS()
+            let acq = ModelAcquisitionController(fs: fs)
+            let r = await acq.acquire(model: .whisperTiny, consent: true)
+            check("B4r6 directory-model happy path ready", r.state == .ready)
+            let artifact = await acq.verifiedArtifact(for: .whisperTiny)
+            check("B4r6 directory-model verified artifact", artifact != nil)
+            // Tamper with a file INSIDE an .mlmodelc bundle.
+            if let url = await acq.verifiedURL(for: .whisperTiny) {
+                let inner =
+                    url
+                    .appendingPathComponent("TextDecoder.mlmodelc")
+                    .appendingPathComponent("model.mlmodel")
+                try? fs.remove(inner)
+                try? fs.writeRaw(inner, data: Data(repeating: 0x77, count: 300_000))
+                check(
+                    "B4r6 inner file tamper invalidates readiness",
+                    await acq.verifiedArtifact(for: .whisperTiny) == nil)
+            }
+            // Optional prefill: a model WITHOUT TextDecoderContextPrefill is
+            // still valid (the pinned loader loads it only when present).
+            let fs2 = FakeModelFS()
+            // Remove the optional prefill from the fake's download.
+            fs2.skipPrefill = true
+            let acq2 = ModelAcquisitionController(fs: fs2)
+            let r2 = await acq2.acquire(model: .whisperTiny, consent: true)
+            check("B4r6 optional prefill absent still ready", r2.state == .ready)
+            // Tokenizer directory is part of the verified artifact.
+            let names = Set(
+                ModelAcquisitionController.makeManifest(for: .whisperTiny, createdAtUptimeNanos: 0)
+                    .artifacts.map { $0.name })
+            check("B4r6 tokenizer dir in manifest", names.contains("tokenizer"))
+            // Prefill marked optional in the manifest.
+            if let prefill = ModelAcquisitionController.makeManifest(
+                for: .whisperTiny, createdAtUptimeNanos: 0
+            )
+            .artifacts.first(where: { $0.name == "TextDecoderContextPrefill.mlmodelc" }) {
+                check("B4r6 prefill is optional", prefill.isOptional)
             }
         }
 
@@ -5241,7 +5591,9 @@ struct CoreTests {
             check("2283 superseded absorbed", ModelUIPolicy.absorbCompletion(isCurrent: false) == .none)
             check("2283 current absorbed", ModelUIPolicy.absorbCompletion(isCurrent: true) == .none)
         }
+    }
 
+    static func runPart7() async {
         // ===== JOE-2292: deterministic randomized session stress =====
         do {
             // 1. Seeded PRNG is deterministic and reproducible.
@@ -5640,15 +5992,6 @@ struct CoreTests {
                     source: .tap, down: true, keyCode: 63,
                     flags: 0x800000, isFnKey: true, timestampNanos: t0))
             check("2287 degraded processes", es8.presses == 1)
-        }
-
-        print("")
-        if failed == 0 {
-            print("All tests passed.")
-            exit(0)
-        } else {
-            print("\(failed) test(s) failed.")
-            exit(1)
         }
     }
 }

@@ -767,12 +767,22 @@ public actor DictationSession {
                         duration: TimeInterval(final.inferenceDurationNanos ?? 0) / 1_000_000_000,
                         modelName: final.engine.modelName)
                 }
-                // Review B2v2: a cancel that arrived during history persistence
-                // must not be followed by a success terminal.
+                // Round-6 B1: a cancel that arrived DURING history persistence
+                // cannot change the terminal — insertion already succeeded and
+                // the control state is .completed (applied wins). Requesting
+                // .cancelled would hit the mismatch guard and strand the
+                // session unreleased. Record a content-free warning instead
+                // and finish as completed: the run task exits, the broadcaster
+                // finishes, exactly one terminal is emitted, and the next
+                // session can begin.
                 if cancelRequested {
-                    publish(phase: .hidden, interim: "", level: 0.05)
-                    finishTerminal(category: .cancelled)
-                    return true
+                    telemetrySink.record(
+                        TelemetryEvent(
+                            sessionID: sessionTelemetryID,
+                            kind: .lateCancelAfterInsertion,
+                            terminal: nil,
+                            durationNanos: nil,
+                            atNanos: nowNanos()))
                 }
                 publish(phase: .success, interim: retainedText, level: state.audioLevel)
                 finishTerminal(category: .completed)
@@ -897,33 +907,37 @@ public actor DictationSession {
                 rawValue: category.rawValue) ?? .failed
         let reachedState = control.finish(category: outcomeCategory)
         // Round-5 B3: the control state must be TERMINAL and the reached
-        // terminal must MATCH the requested category. Otherwise the
-        // orchestration is out of sync with the state machine — do NOT emit
-        // telemetry or release as though the state accepted it.
-        guard reachedState.isTerminal,
-            let outcome = SessionControlModel.terminalOutcome(for: reachedState),
-            TerminalCategory(rawValue: outcome.rawValue) == category
-        else {
-            // Observable mismatch: record a terminal-mismatch telemetry event
-            // (content-free) so the divergence is never silent. The session
-            // is NOT released as the requested category.
+        // terminal must MATCH the requested category.
+        let actualOutcome = SessionControlModel.terminalOutcome(for: reachedState)
+        let matches =
+            reachedState.isTerminal
+            && actualOutcome != nil
+            && actualOutcome.flatMap { TerminalCategory(rawValue: $0.rawValue) } == category
+        // Round-6 B1: a mismatch must NEVER strand the session. The terminal
+        // is emitted with the ACTUAL reached category (applied wins) or a
+        // controlled .failed fallback, and release/broadcaster-finish ALWAYS
+        // run — with a terminalMismatch marker so the host sees the
+        // divergence (the sink is drained after the broadcaster finishes).
+        var emittedCategory = category
+        if !matches {
             ZFLogPlaceholder.error(
-                "terminal state mismatch: requested \(category.rawValue), control stayed \(reachedState.rawValue)")
+                "terminal state mismatch: requested \(category.rawValue), control reached \(reachedState.rawValue)")
+            if let actualOutcome,
+                let actual = TerminalCategory(rawValue: actualOutcome.rawValue)
+            {
+                emittedCategory = actual
+            } else {
+                emittedCategory = .failed
+            }
             telemetrySink.record(
                 TelemetryEvent(
                     sessionID: sessionTelemetryID,
                     kind: .terminalMismatch,
-                    terminal: category,
+                    terminal: emittedCategory,
                     durationNanos: nil,
                     atNanos: nowNanos()))
-            return
         }
         released = true
-        // Review B2v2 (round 5): signal host-side joins immediately after the
-        // release flag is set, so awaitTerminalAndReleased() can observe it.
-        releaseContinuation?.yield(())
-        releaseContinuation?.finish()
-        let emittedCategory = category
         // Review B3: emit the versioned terminal event exactly once through
         // the TerminalGuard (a second finish is refused). Content-free.
         let now = nowNanos()
@@ -956,6 +970,12 @@ public actor DictationSession {
         commandContinuation = nil
         commandStream = nil
         broadcaster.finish()
+        // Round-6 B2: the release signal fires only AFTER terminal cleanup
+        // and broadcaster completion — awaitTerminalAndReleased() now
+        // genuinely means "run() reached terminal and the broadcaster is
+        // done", not "the release flag was set".
+        releaseContinuation?.yield(())
+        releaseContinuation?.finish()
     }
 }
 

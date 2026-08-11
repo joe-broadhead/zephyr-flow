@@ -73,10 +73,42 @@ final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @u
     }
 
     func fileSize(_ url: URL) -> UInt64? {
-        (try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
+        // Round-6 B4: a directory bundle (e.g. a compiled .mlmodelc) reports
+        // its RECURSIVE size — the directory-entry size is not meaningful.
+        if isDirectory(url) { return directorySize(url) }
+        return (try? fm.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.uint64Value
     }
 
     func sha256Hex(of url: URL) -> String? {
+        // Round-6 B4: compiled Core ML models are DIRECTORY BUNDLES
+        // (.mlmodelc) or .mlpackage trees, not single files. Hash
+        // deterministically: SHA-256 over sorted relative paths + file
+        // lengths + file bytes, so the digest covers every byte the loader
+        // can consume and is stable across directory layouts.
+        if isDirectory(url) {
+            guard
+                let files = fm.enumerator(
+                    at: url, includingPropertiesForKeys: [.isRegularFileKey],
+                    options: [.skipsHiddenFiles])
+            else { return nil }
+            var entries: [(relative: String, data: Data)] = []
+            for case let fileURL as URL in files {
+                guard let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey]),
+                    values.isRegularFile == true,
+                    let data = try? Data(contentsOf: fileURL)
+                else { continue }
+                let rel = fileURL.path.replacingOccurrences(of: url.path + "/", with: "")
+                entries.append((rel, data))
+            }
+            entries.sort { $0.relative < $1.relative }
+            var hasher = SHA256()
+            for (rel, data) in entries {
+                hasher.update(data: Data(rel.utf8))
+                hasher.update(data: withUnsafeBytes(of: UInt64(data.count).bigEndian) { Data($0) })
+                hasher.update(data: data)
+            }
+            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        }
         guard let data = try? Data(contentsOf: url) else { return nil }
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -183,6 +215,23 @@ extension ProductionModelAcquisitionFileSystem {
             for item in items {
                 let dest = stagingURL.appendingPathComponent(item.lastPathComponent)
                 try fm.copyItem(at: item, to: dest)
+            }
+            // Round-6 B4: stage the complete TOKENIZER directory (tokenizer.json
+            // + its configuration files) into a tokenizer/ subfolder so the
+            // verified artifact is self-contained and the pinned loader's
+            // Hub-download tokenizer fallback can be disabled.
+            if let tokenizerDir = WhisperTokenizerLocator.locate() {
+                let tokenizerDest = stagingURL.appendingPathComponent("tokenizer")
+                try fm.createDirectory(
+                    at: tokenizerDest, withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700])
+                let tItems = try fm.contentsOfDirectory(
+                    at: tokenizerDir,
+                    includingPropertiesForKeys: nil)
+                for tItem in tItems {
+                    let dest = tokenizerDest.appendingPathComponent(tItem.lastPathComponent)
+                    try fm.copyItem(at: tItem, to: dest)
+                }
             }
             onProgress(ModelDownloadProgress(fraction: 1.0, bytesDownloaded: 0, bytesExpected: nil))
         }

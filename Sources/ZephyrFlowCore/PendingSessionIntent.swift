@@ -1,6 +1,7 @@
 import Foundation
 
-/// Round-5 review B2: an immutable, immediately-addressable session intent
+/// Round-5 review B2: an immediately-addressable session intent with an
+/// immutable identity and an ATOMIC cancellation flag (round-6 NIT 3),
 /// allocated SYNCHRONOUSLY at the press edge (before the queued begin
 /// operation starts). Release/cancel invalidate the intent even when the
 /// begin operation has not yet run — closing the window where a quick

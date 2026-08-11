@@ -238,12 +238,21 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             // bounded cancel window so the retained handle cannot mutate
             // accounting/engine during finalization.
             lock.withLock { deliveryTask?.cancel() }
-            let quiesceDeadline = environment.clock.nowNanos() &+ 1_000_000_000
+            // Round-6 REQ-3: bounded ONE-SECOND quiescence wait measured from
+            // a START timestamp. (The old `now &- quiesceDeadline >= 1s`
+            // wrapped unsigned while now < deadline, so the loop exited
+            // immediately and never actually waited.)
+            let quiesceStart = environment.clock.nowNanos()
             while !(lock.withLock { deliveryFinished }) {
-                if environment.clock.nowNanos() &- quiesceDeadline >= 1_000_000_000 {
+                if environment.clock.nowNanos() &- quiesceStart >= 1_000_000_000 {
                     break
                 }
                 try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            // Re-sample deliveryFinished AFTER the bounded wait — this is the
+            // value that decides retention/quarantine (round-6 REQ-3).
+            if lock.withLock({ deliveryFinished }) {
+                ZFLog.info("Audio consumer completed during quiesce window")
             }
         }
         // If the consumer STILL has not completed, it is suspended inside an

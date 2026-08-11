@@ -127,22 +127,37 @@ final class SessionAudioConverter {
                     pcmFormat: fmt, frameCapacity: capacity)
             else { break }
             var error: NSError?
+            var gotEndOfStream = false
             let status = converter.convert(to: outBuf, error: &error) { _, outStatus in
-                outStatus.pointee = .endOfStream
+                // Round-6 NIT 2: OBSERVE the converter's end-of-stream status
+                // (the old code set it but never read it back, so termination
+                // depended on a short-buffer heuristic).
+                if outStatus.pointee == .endOfStream {
+                    gotEndOfStream = true
+                }
                 return nil
             }
-            guard status != .error, outBuf.frameLength > 0,
+            if status == .error {
+                break
+            }
+            if gotEndOfStream {
+                sawEndOfStream = true
+            }
+            guard outBuf.frameLength > 0,
                 let channel = outBuf.floatChannelData?[0]
             else {
-                // No data (or error): converter drained or failed — stop.
+                // No data: converter drained — stop.
                 break
             }
             all.append(
                 contentsOf: UnsafeBufferPointer(
                     start: channel, count: Int(outBuf.frameLength)))
-            // The converter only signals end-of-stream via the status block;
-            // treat a short final buffer as the natural end.
-            if outBuf.frameLength < capacity / 2 { break }
+            // Round-6 NIT 2: the converter reports end-of-stream via the
+            // status block — stop on that signal; a short final buffer is
+            // also treated as the natural end (both are bounded).
+            if outBuf.frameLength < capacity / 2 || sawEndOfStream {
+                break
+            }
         }
         return all
     }

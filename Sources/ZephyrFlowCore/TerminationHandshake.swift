@@ -82,6 +82,18 @@ public struct TerminationHandshake: Sendable, Equatable {
         return state
     }
 
+    /// Round-6 B2: explicitly abandon the handshake with a reason — the
+    /// caller detected a failed join/quiescence and must NOT mark remaining
+    /// steps (sessionFinished/pasteboardResolved/sessionCompleted) as done.
+    /// The recovery marker is written on the next launch.
+    @discardableResult
+    public mutating func abandon(reason: String) -> TerminationState {
+        guard state == .running || state == .idle else { return state }
+        state = .abandoned
+        abandonedReason = reason
+        return state
+    }
+
     /// Exactly-once terminal callback guard (no double finalization).
     public mutating func markFinalized() -> Bool {
         guard finalizeCount == 0 else { return false }

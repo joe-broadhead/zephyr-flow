@@ -87,6 +87,17 @@ actor InsertionService: InsertionServiceProtocol {
             strategies = ax + paste + copyTail
         }
 
+        // Round-6 B3: consume the lease ONCE before the first side-effecting
+        // strategy attempt. A second attempt (or a stale re-check after
+        // insertion) with the same lease is refused.
+        if let validatedLease {
+            let consumed = await TargetLeaseRegistry.shared.consume(validatedLease.nonce)
+            if !consumed {
+                ZFLog.info("insert refused — target lease already consumed")
+                return .targetUnknown
+            }
+        }
+
         for strategy in strategies {
             switch strategy {
             case .copyOnly:
@@ -130,12 +141,16 @@ actor InsertionService: InsertionServiceProtocol {
 
             case .axSelectedText, .axValue:
                 guard AXIsProcessTrusted() else { continue }
+                // Round-6 B3: the AX path enforces the SAME lease (full
+                // identity revalidation) — paste failure cascading to AX must
+                // not drop the exact-target protection.
                 let axOutcome = await insertViaAccessibility(
                     text,
                     validatedTargetBundle: bundle,
                     validatedElement: validatedElement,
                     validatedPid: validatedPid,
-                    validatedWindowID: validatedWindowID)
+                    validatedWindowID: validatedWindowID,
+                    lease: validatedLease)
                 switch axOutcome {
                 case .verified:
                     ZFLog.info("insert strategy=\(strategy.rawValue) bundle=\(bundle ?? "nil") result=verified")
@@ -187,7 +202,8 @@ actor InsertionService: InsertionServiceProtocol {
         validatedTargetBundle: String?,
         validatedElement: TargetSnapshot.ElementIdentity? = nil,
         validatedPid: Int32? = nil,
-        validatedWindowID: UInt32? = nil
+        validatedWindowID: UInt32? = nil,
+        lease: TargetLease? = nil
     ) async -> AXInsertResult {
         // JOE-2270: consult the deterministic write policy before ANY write.
         // Re-resolve capability + selection immediately before the write, then
@@ -224,6 +240,20 @@ actor InsertionService: InsertionServiceProtocol {
                 ZFLog.info("AX: frontmost bundle changed/unavailable after validation (expected \(expected)) — blocked")
                 return .failed
             }
+        }
+        // Round-6 B3: full lease revalidation for the AX path (process-start,
+        // window, element token, session, sensitivity). When a lease exists it
+        // is the authoritative identity — the weaker per-field checks below
+        // are a backstop for lease-less (legacy) requests.
+        if let lease {
+            let sessionID = lease.sessionID
+            guard await leaseStillMatches(lease: lease, nowNanos: DispatchTime.now().uptimeNanoseconds)
+            else {
+                ZFLog.info("AX: target lease mismatch — blocked")
+                return .failed
+            }
+            // Re-resolve current identity for the write itself.
+            _ = sessionID
         }
 
         // Review B4: bind the write to the VALIDATED element, not just the
@@ -415,6 +445,11 @@ actor InsertionService: InsertionServiceProtocol {
     /// frontmost application + focused element. Requires the bundle, PID,
     /// process-start identity, window and element capabilities to all match;
     /// a same-app field/window switch or PID reuse fails closed.
+    /// Round-6 B3: re-resolve the CURRENT target into a fresh TargetSnapshot
+    /// and delegate to the pure lease matcher with the FULL requirements
+    /// (process-start, focused window, element token, session, sensitivity).
+    /// Automatic insertion requires non-nil process-start identity, a focused
+    /// window id and a stable element token.
     private func leaseStillMatches(
         lease: TargetLease,
         nowNanos: UInt64
@@ -423,19 +458,42 @@ actor InsertionService: InsertionServiceProtocol {
             ZFLog.info("lease re-check: expired")
             return false
         }
-        let currentBundle = await frontmostBundleID()
-        guard currentBundle == lease.bundleID else {
-            ZFLog.info("lease re-check: bundle changed")
+        guard
+            let reResolved = await resolveCurrentTarget(
+                sessionID: lease.sessionID,
+                leaseSensitivity: lease.sensitivity,
+                nowNanos: nowNanos)
+        else {
+            ZFLog.info("lease re-check: current target unresolvable — fail closed")
             return false
         }
-        // Re-resolve the frontmost PID via NSWorkspace (bundle-owner PID).
-        let frontPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
-        guard let frontPID, frontPID == lease.pid else {
-            ZFLog.info("lease re-check: PID changed")
+        // Round-6 B3: automatic insertion REQUIRES process-start identity and
+        // a focused window + element token (nil identity cannot be compared —
+        // fail closed rather than skip).
+        guard reResolved.target.processStartUptimeNanos != nil,
+            reResolved.target.windowID != nil,
+            reResolved.element?.resolutionToken != nil
+        else {
+            ZFLog.info("lease re-check: missing process-start/window/token — fail closed")
             return false
         }
-        // Window identity: the focused element's window (fail closed when it
-        // cannot be resolved).
+        return lease.matches(
+            reResolved: reResolved,
+            requireWindow: true,
+            requireElementToken: true,
+            nowNanos: nowNanos)
+    }
+
+    /// Round-6 B3: resolve the CURRENT focused target into a fresh
+    /// TargetSnapshot using the same AX primitives as TargetValidationService
+    /// (window from the focused element's kAXWindowAttribute, capabilities via
+    /// AXUIElementIsAttributeSettable). Used for full-lease revalidation.
+    private func resolveCurrentTarget(
+        sessionID: SessionID,
+        leaseSensitivity: SessionSensitivity,
+        nowNanos: UInt64
+    ) async -> TargetSnapshot? {
+        guard AXIsProcessTrusted() else { return nil }
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         guard
@@ -445,47 +503,54 @@ actor InsertionService: InsertionServiceProtocol {
                 &focusedRef) == .success,
             let focused = focusedRef,
             CFGetTypeID(focused) == AXUIElementGetTypeID()
-        else {
-            ZFLog.info("lease re-check: no focused element")
-            return false
-        }
+        else { return nil }
         let element = unsafeBitCast(focused, to: AXUIElement.self)
-        if let expectedWindow = lease.windowID {
-            guard let currentWindow = axWindowID(element) else {
-                ZFLog.info("lease re-check: window unresolvable — fail closed")
-                return false
-            }
-            guard currentWindow == expectedWindow else {
-                ZFLog.info("lease re-check: window changed")
-                return false
-            }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success else { return nil }
+        let currentBundle = await frontmostBundleID()
+        // Process-start identity via NSRunningApplication (PID reuse check).
+        let running = NSRunningApplication(processIdentifier: pid)
+        let processStart = running?.launchDate.map {
+            UInt64($0.timeIntervalSince1970 * 1_000_000_000)
         }
-        // Element identity: role/subrole when the lease carries them.
-        if let expectedRole = lease.element?.role {
-            guard let currentRole = await focusedRole(),
-                currentRole == expectedRole
-            else {
-                ZFLog.info("lease re-check: role changed")
-                return false
-            }
-        }
-        if let expectedSub = lease.element?.subrole {
-            guard let currentSub = focusedSubrole(element),
-                currentSub == expectedSub
-            else {
-                ZFLog.info("lease re-check: subrole changed")
-                return false
-            }
-        }
-        // Capability parity.
-        guard axIsSettable(element) == lease.settable,
-            axIsEditable(element) == lease.editable,
-            axIsEnabled(element) == lease.enabled
-        else {
-            ZFLog.info("lease re-check: capability changed")
-            return false
-        }
-        return true
+        let role = await focusedRole()
+        let subrole = focusedSubrole(element)
+        let token = axString(element, kAXIdentifierAttribute as String)
+        // Capabilities: settable via AXUIElementIsAttributeSettable on the
+        // VALUE attribute (round-6 B3 — the old synthetic "AXSettable" read
+        // was not equivalent); editable = text-like role; enabled via AX.
+        let settable = axIsSettable(element)
+        let editable =
+            Self.textLikeRoles.contains(role ?? "")
+        let enabled = axBool(element, kAXEnabledAttribute as String)
+        // Sensitivity: secure role -> secure; editable -> normal; else unknown
+        // (fail-closed). A mismatch with the lease's sensitivity fails the
+        // lease (the pure matcher compares them).
+        let sensitivity: SessionSensitivity =
+            role == "AXSecureTextField"
+            ? .secure
+            : (editable ? .normal : .unknown)
+        return TargetSnapshot(
+            sessionID: sessionID,
+            capturedAtUptimeNanos: nowNanos,
+            target: TargetSnapshot.Identity(
+                pid: Int32(pid),
+                bundleID: currentBundle,
+                processStartUptimeNanos: processStart,
+                windowID: axWindowID(element),
+                appVersion: nil),
+            element: TargetSnapshot.ElementIdentity(
+                role: role ?? "unknown",
+                subrole: subrole,
+                resolutionToken: token),
+            settable: settable,
+            editable: editable,
+            enabled: enabled,
+            selectionRange: nil,
+            sensitivity: SensitivityAssessment(
+                sensitivity: sensitivity,
+                source: .accessibilityRole,
+                capturedAtNanos: nowNanos))
     }
 
     private nonisolated func focusedSubrole(_ element: AXUIElement) -> String? {
@@ -493,18 +558,22 @@ actor InsertionService: InsertionServiceProtocol {
     }
 
     private nonisolated func axIsSettable(_ element: AXUIElement) -> Bool {
-        guard let v = axValueFor(element, "AXSettable") else { return false }
-        return v as? Bool ?? false
+        // Round-6 B3: the authoritative Accessibility API for settability.
+        var settable: DarwinBoolean = false
+        AXUIElementIsAttributeSettable(
+            element, kAXValueAttribute as CFString, &settable)
+        return settable.boolValue
     }
 
     private nonisolated func axIsEditable(_ element: AXUIElement) -> Bool {
-        guard let v = axValueFor(element, "AXEditable") else { return false }
-        return v as? Bool ?? false
+        // Editability is role-based (text-like roles), mirroring the
+        // validation service — there is no AXEditable attribute.
+        let role = axString(element, kAXRoleAttribute as String)
+        return Self.textLikeRoles.contains(role ?? "")
     }
 
     private nonisolated func axIsEnabled(_ element: AXUIElement) -> Bool {
-        guard let v = axValueFor(element, "AXEnabled") else { return false }
-        return v as? Bool ?? false
+        axBool(element, kAXEnabledAttribute as String)
     }
 
     private nonisolated func axValueFor(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {

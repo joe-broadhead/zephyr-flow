@@ -28,11 +28,18 @@ public struct ModelArtifactSpec: Codable, Sendable, Equatable {
     public let minBytes: UInt64
     /// SHA-256 hex digest when the upstream format permits it.
     public let sha256Digest: String?
+    /// Round-6 B4: an OPTIONAL component (e.g. TextDecoderContextPrefill) may
+    /// be absent from a valid model — but when present it is still hashed.
+    public let isOptional: Bool
 
-    public init(name: String, minBytes: UInt64, sha256Digest: String?) {
+    public init(
+        name: String, minBytes: UInt64, sha256Digest: String?,
+        isOptional: Bool = false
+    ) {
         self.name = name
         self.minBytes = minBytes
         self.sha256Digest = sha256Digest
+        self.isOptional = isOptional
     }
 }
 
@@ -163,6 +170,9 @@ public actor ModelAcquisitionController {
     public struct ModelAcquisitionResult: Sendable, Equatable {
         public let model: ModelIdentifier
         public let state: ModelAcquisitionState
+        /// Round-6 NIT 4: retained for call-site compatibility; the single
+        /// source of truth is `verifiedArtifact(for:)` (folder + manifest
+        /// version + aggregate digest). New code MUST use the artifact form.
         public let verifiedURL: URL?
         public let error: ModelAcquisitionError?
 
@@ -251,7 +261,11 @@ public actor ModelAcquisitionController {
         var digests: [String] = []
         for artifact in manifest.artifacts {
             let artifactURL = url.appendingPathComponent(artifact.name)
-            guard fs.fileExists(artifactURL) else { return nil }
+            if !fs.fileExists(artifactURL) {
+                // Round-6 B4: optional components may be absent.
+                if artifact.isOptional { continue }
+                return nil
+            }
             if let size = fs.fileSize(artifactURL), size < artifact.minBytes {
                 return nil
             }
@@ -384,7 +398,9 @@ public actor ModelAcquisitionController {
             }
             for artifact in manifest.artifacts {
                 let artifactURL = staging.appendingPathComponent(artifact.name)
-                guard fs.fileExists(artifactURL) else {
+                if !fs.fileExists(artifactURL) {
+                    // Round-6 B4: optional components may be absent.
+                    if artifact.isOptional { continue }
                     throw ModelAcquisitionError.verificationFailed("missing artifact \(artifact.name)")
                 }
                 if let size = fs.fileSize(artifactURL), size < artifact.minBytes {
@@ -436,9 +452,13 @@ public actor ModelAcquisitionController {
             var digestArtifacts: [ModelArtifactSpec] = []
             for artifact in manifest.artifacts {
                 let artifactURL = final.appendingPathComponent(artifact.name)
-                guard fs.fileExists(artifactURL),
-                    let actual = fs.sha256Hex(of: artifactURL)
-                else {
+                guard fs.fileExists(artifactURL) else {
+                    // Round-6 B4: optional components may be absent.
+                    if artifact.isOptional { continue }
+                    throw ModelAcquisitionError.promotionFailed(
+                        "missing artifact \(artifact.name) — model unverifiable")
+                }
+                guard let actual = fs.sha256Hex(of: artifactURL) else {
                     throw ModelAcquisitionError.promotionFailed(
                         "cannot hash artifact \(artifact.name) — model unverifiable")
                 }
@@ -446,7 +466,8 @@ public actor ModelAcquisitionController {
                     ModelArtifactSpec(
                         name: artifact.name,
                         minBytes: artifact.minBytes,
-                        sha256Digest: actual))
+                        sha256Digest: actual,
+                        isOptional: artifact.isOptional))
             }
             let digestManifest = ModelManifest(
                 engineIdentity: manifest.engineIdentity,
@@ -490,8 +511,12 @@ public actor ModelAcquisitionController {
             "AudioEncoder.mlmodelc",
             "TextDecoder.mlmodelc",
             "TextDecoderContextPrefill.mlmodelc",
-            "tokenizer.json",
+            "tokenizer",
         ],
+        // Round-6 B4: TextDecoderContextPrefill is OPTIONAL in the pinned
+        // WhisperKit loader (loaded only when present). The tokenizer is a
+        // staged DIRECTORY (tokenizer.json + configs) hashed directory-aware.
+        optionalArtifactNames: Set<String> = ["TextDecoderContextPrefill.mlmodelc"],
         minArtifactBytes: UInt64 = 1_000,
         minTotalBytes: UInt64 = 1_000_000,
         maxTotalBytes: UInt64 = 4_000_000_000,
@@ -503,7 +528,8 @@ public actor ModelAcquisitionController {
             artifacts: artifactNames.map {
                 ModelArtifactSpec(
                     name: $0, minBytes: minArtifactBytes,
-                    sha256Digest: digests[$0])
+                    sha256Digest: digests[$0],
+                    isOptional: optionalArtifactNames.contains($0))
             },
             minTotalBytes: minTotalBytes,
             maxTotalBytes: maxTotalBytes,

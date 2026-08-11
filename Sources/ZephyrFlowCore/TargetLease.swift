@@ -7,9 +7,13 @@ import Foundation
 /// ordinary field to another in the same application (or window) must fail
 /// closed, never post Command-V into an unvalidated destination.
 ///
-/// The lease is one-use: after a mutation attempt it is marked consumed, so a
-/// stale re-check after insertion can never re-validate a different target.
+/// The lease is one-use: after a mutation attempt it is consumed (tracked by
+/// the actor-owned TargetLeaseRegistry keyed by nonce), so a stale re-check
+/// after insertion can never re-validate a different target.
 public struct TargetLease: Sendable, Equatable {
+    /// Round-6 B3: unique nonce so consumption can be tracked atomically by
+    /// the insertion service (value structs cannot carry a mutable flag).
+    public let nonce: UUID
     /// Session/generation identity (immutable allocation).
     public let sessionID: SessionID
     /// PID + process-start identity (PID reuse/process restart detection).
@@ -37,6 +41,7 @@ public struct TargetLease: Sendable, Equatable {
         pid: Int32,
         processStartUptimeNanos: UInt64?,
         bundleID: String?,
+        nonce: UUID = UUID(),
         windowID: UInt32?,
         element: TargetSnapshot.ElementIdentity?,
         settable: Bool,
@@ -47,6 +52,7 @@ public struct TargetLease: Sendable, Equatable {
         validationDeadlineNanos: UInt64
     ) {
         self.sessionID = sessionID
+        self.nonce = nonce
         self.pid = pid
         self.processStartUptimeNanos = processStartUptimeNanos
         self.bundleID = bundleID
@@ -97,7 +103,12 @@ public struct TargetLease: Sendable, Equatable {
         nowNanos: UInt64
     ) -> Bool {
         guard !isExpired(nowNanos: nowNanos) else { return false }
-        guard reResolved.target.pid == pid,
+        // Round-6 B3: the re-resolved snapshot must belong to the SAME
+        // session (never reuse a lease across sessions) and must carry the
+        // same sensitivity class.
+        guard reResolved.sessionID == sessionID,
+            reResolved.sensitivity.sensitivity == sensitivity,
+            reResolved.target.pid == pid,
             reResolved.target.processStartUptimeNanos == processStartUptimeNanos,
             reResolved.target.bundleID == bundleID
         else { return false }
@@ -128,5 +139,27 @@ public struct TargetLease: Sendable, Equatable {
             reResolved.enabled == enabled
         else { return false }
         return true
+    }
+}
+
+/// Round-6 B3: actor-owned one-use consumption registry for TargetLease
+/// nonces. A lease is consumed by the insertion service BEFORE the first
+/// side-effecting strategy attempt; a second attempt with the same lease (e.g.
+/// a stale re-check after insertion) is refused.
+public actor TargetLeaseRegistry {
+    public static let shared = TargetLeaseRegistry()
+    private var consumed: Set<UUID> = []
+
+    public init() {}
+
+    /// Atomically consume the lease; returns false when it was already used.
+    public func consume(_ nonce: UUID) -> Bool {
+        guard !consumed.contains(nonce) else { return false }
+        consumed.insert(nonce)
+        return true
+    }
+
+    public func isConsumed(_ nonce: UUID) -> Bool {
+        consumed.contains(nonce)
     }
 }

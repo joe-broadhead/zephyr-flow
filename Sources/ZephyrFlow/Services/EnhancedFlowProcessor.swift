@@ -42,6 +42,13 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
             request.text, style: request.style,
             language: request.language)
         let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
+        // Round-6 NIT 1: .clean/.raw delegate to the regex backend in
+        // enhancedRaw — an approved result must report the ACTUAL backend,
+        // never a hardcoded .enhanced.
+        let actualBackend: FlowBackend =
+            (request.style == .clean || request.style == .raw)
+            ? .regex
+            : .enhanced
         let loss = FlowOutcome.lossClass(for: request.style)
         let protectedSpanCount = FlowGuardrails.tokens(in: request.text).count
         // Evaluate guardrails on the enhanced output; fallback is explicit.
@@ -55,13 +62,13 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
         case .approved(let out):
             // Round-5 REQ-6: when the enhanced backend delivered the text the
             // resolved loss class is the requested class; a regex path that
-            // happened to approve reports its own class. (Enhanced approved
-            // output is genuinely enhanced here.)
+            // happened to approve reports its own class. (Round-6 NIT 1: the
+            // reported backend is the ACTUAL one — .regex for .clean/.raw.)
             return FlowOutcome(
                 text: out,
                 requestedStyle: request.style,
                 resolvedLossClass: loss,
-                backend: .enhanced,
+                backend: actualBackend,
                 capabilityID: "io.zephyr-flow.flow.rules.v1",
                 capabilityVersion: 1,
                 language: request.language,

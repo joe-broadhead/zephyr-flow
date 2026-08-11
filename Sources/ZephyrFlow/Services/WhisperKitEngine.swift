@@ -112,11 +112,17 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         // promoted artifact from the acquisition pipeline), NOT from
         // WhisperKit's own cache. Network is disabled: the verified
         // artifact is already on disk.
+        // Round-6 B4: stage + pass the verified TOKENIZER folder (a
+        // tokenizer/ subfolder of the verified artifact) so the pinned
+        // loader never falls back to a Hub tokenizer download.
         ZFLog.info("WhisperKit load model=\(model.rawValue) verifiedFolder=\(verifiedFolder)")
+        let tokenizerFolder = URL(fileURLWithPath: verifiedFolder)
+            .appendingPathComponent("tokenizer", isDirectory: true)
         do {
             let pipe = try await WhisperKit(
                 model: model.rawValue,
                 modelFolder: verifiedFolder,
+                tokenizerFolder: tokenizerFolder,
                 verbose: false,
                 logLevel: .error,
                 prewarm: true,
@@ -171,6 +177,9 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         language: SupportedLanguage,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws {
+        // Round-6 B4: localOnly is now enforced — a verified/local session
+        // must never trigger a Hub request (the tokenizer folder is staged
+        // and passed at load; there is no download path here).
         _ = localOnly
         guard isReady, kit != nil else { throw WhisperEngineError.notReady }
         guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }

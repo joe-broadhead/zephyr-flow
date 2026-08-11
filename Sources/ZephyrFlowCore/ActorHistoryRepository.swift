@@ -16,6 +16,10 @@ public enum HistoryStorageState: String, Codable, Sendable, Equatable, CaseItera
     /// Sealed data exists but the key is unavailable — never expose plaintext,
     /// refuse writes.
     case sealedKeyUnavailable
+    /// Round-6 REQ-2: the key EXISTS but decryption authentication failed —
+    /// distinct from a missing key (likely key-rotation/corruption; do NOT
+    /// quarantine the sealed data, never expose plaintext).
+    case sealedKeyAuthFailed
     /// The history file could not be READ (permission/I/O) — NOT corruption.
     case storageReadFailure
     /// Genuine corruption: the file was quarantined and a clean store started.
@@ -157,14 +161,21 @@ public actor ActorHistoryRepository: HistoryRepository {
                     storageState = .readyEncrypted
                 } else {
                     document = HistoryDocument(entries: [])
+                    // Round-6 REQ-2: separate "key unavailable" from "key
+                    // exists but authentication failed" — a wrong key is NOT
+                    // the same condition as no key.
+                    let keyExists = keyProvider() != nil
                     recoveryState =
-                        "history key missing or invalid — sealed content retained on disk, no plaintext exposed"
+                        keyExists
+                        ? "history key present but decryption failed — sealed content retained on disk, no plaintext exposed"
+                        : "history key missing — sealed content retained on disk, no plaintext exposed"
                     // Review R7: sealed data exists but the key is unavailable —
                     // writes MUST be refused, never overwrite with plaintext.
                     // Round-5 REQ-5: distinct state (never empty-in-memory
                     // admission; the controller surfaces it).
                     sealedDataUnreadable = true
-                    storageState = .sealedKeyUnavailable
+                    storageState =
+                        keyExists ? .sealedKeyAuthFailed : .sealedKeyUnavailable
                 }
             } else {
                 document = try decode(data)

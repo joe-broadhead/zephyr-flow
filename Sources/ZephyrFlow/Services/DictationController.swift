@@ -62,6 +62,11 @@ final class DictationController: ObservableObject {
     /// Shared monotonic identity source: successive sessions never collide.
     private let sessionIDFactory = SessionIDFactory()
     private var sessionTask: Task<Void, Never>?
+    /// Round-6 B2: quarantined shutdown owner — retains a session whose run
+    /// task did not quiesce so a late insertion/history mutation cannot be
+    /// lost after the handshake abandons.
+    private var shutdownQuarantineTask: Task<Void, Never>?
+    private var shutdownQuarantineSession: DictationSession?
     private var stateTask: Task<Void, Never>?
     private var reviewModel: InsertionReviewModel?
     private var reviewText: String?
@@ -119,10 +124,16 @@ final class DictationController: ObservableObject {
                     // writing).
                     self.historyReady = true
                 case .plaintextMigrationPending:
-                    // Data is safe (still plaintext on disk); writes are
-                    // permitted and migration retries next launch.
-                    self.historyReady = true
-                case .sealedKeyUnavailable, .storageReadFailure, .corruptQuarantined:
+                    // Round-6 REQ-2: with history ENABLED, at-rest encryption
+                    // has not actually been established — do NOT admit
+                    // history-enabled sessions (the migration persists
+                    // plaintext on disk; admitting would write new plaintext).
+                    // Surface the recovery action instead.
+                    ZFLog.error(
+                        "History migration pending — plaintext not yet encrypted; admission blocked")
+                    self.historyReady = false
+                case .sealedKeyUnavailable, .sealedKeyAuthFailed,
+                    .storageReadFailure, .corruptQuarantined:
                     ZFLog.error("History storage not ready: \(state.rawValue)")
                     self.historyReady = false
                 case .uninitialized, .historyDisabled:
@@ -247,24 +258,49 @@ final class DictationController: ObservableObject {
             await session.cancel()
             let joined = await session.awaitTerminalAndReleased(
                 deadlineNanosAhead: 2_000_000_000)
-            // Join the run task itself (bounded) so a suspended operation
-            // cannot mutate state after we clear the references.
-            if let task = sessionTask {
-                let taskDeadline = now() &+ 1_000_000_000
-                while !task.isCancelled, now() < taskDeadline {
-                    try? await Task.sleep(nanoseconds: 10_000_000)
+            // Round-6 B2: join the RUN TASK ITSELF with a bounded deadline by
+            // racing `task.value` against the deadline — NOT by polling
+            // `task.isCancelled` (a cancellation flag is not completion, so
+            // the old loop ran zero iterations). This proves run() actually
+            // returned and terminal cleanup finished.
+            var runExited = joined
+            if let task = sessionTask, !joined {
+                let taskJoined = await withTaskGroup(of: Bool.self) { group in
+                    group.addTask {
+                        await task.value
+                        return true
+                    }
+                    group.addTask {
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                        return false
+                    }
+                    let first = await group.next() ?? false
+                    group.cancelAll()
+                    return first
                 }
+                runExited = taskJoined
             }
-            sessionTask = nil
-            stateTask?.cancel()
-            stateTask = nil
-            self.session = nil
-            if !joined {
-                // No `abandon` API on the handshake: entering abandoned is a
-                // deadline decision. Mark it via the recovery marker path by
-                // not completing sessionFinished and letting finalize observe
-                // the expired deadline (recovery marker written next launch).
-                ZFLog.error("termination: session did not quiesce — sessionFinished NOT marked")
+            if runExited {
+                // Only clear ownership when the run task actually exited; a
+                // still-running task is moved to a quarantined shutdown owner
+                // so it cannot be lost while mutating insertion/history.
+                sessionTask = nil
+                stateTask?.cancel()
+                stateTask = nil
+                self.session = nil
+            } else {
+                ZFLog.error(
+                    "termination: session run task did not quiesce — retaining quarantined shutdown owner")
+                // Retain the task/session (quarantined shutdown owner) and
+                // abandon the handshake: do NOT claim sessionFinished,
+                // pasteboardResolved or sessionCompleted.
+                self.shutdownQuarantineTask = sessionTask
+                self.shutdownQuarantineSession = session
+                sessionTask = nil
+                stateTask?.cancel()
+                stateTask = nil
+                self.session = nil
+                _ = handshake.abandon(reason: "session run task did not quiesce")
             }
         }
         if handshake.state != .abandoned {
@@ -281,12 +317,22 @@ final class DictationController: ObservableObject {
         _ = handshake.completeStep(.enginesQuiesced, nowNanos: now())
 
         // 5. Pasteboard restoration resolved inside the insert transaction.
-        _ = handshake.completeStep(.pasteboardResolved, nowNanos: now())
+        //    Round-6 B2/NIT 5: when the handshake is abandoned (session did
+        //    not quiesce), do NOT claim pasteboard resolution — an insertion
+        //    may still be in flight.
+        if handshake.state != .abandoned {
+            _ = handshake.completeStep(.pasteboardResolved, nowNanos: now())
+        }
 
-        // 6. Flush settings/history/metrics.
+        // 6. Flush settings/history/metrics. Round-6 NIT 5: never emit
+        //    sessionCompleted as a generic storage-flush marker — it is a
+        //    session-outcome event; only emit it for a successfully completed
+        //    session handshake.
         settingsStore.save()
-        await environment.metrics.record(
-            MetricsEvent(kind: .sessionCompleted, value: 0, atNanos: now()))
+        if handshake.state == .completed {
+            await environment.metrics.record(
+                MetricsEvent(kind: .sessionCompleted, value: 0, atNanos: now()))
+        }
         _ = handshake.completeStep(.storageFlushed, nowNanos: now())
 
         // 7. Restore the retained Fn/global preference exactly.
@@ -510,6 +556,18 @@ final class DictationController: ObservableObject {
     }
 
     func toggleManualSession() {
+        // Round-6 B2: a second toggle while the first begin is STILL QUEUED
+        // (session nil, pending intent present) must PREEMPT it — cancel the
+        // existing intent instead of overwriting it (the old code replaced
+        // pendingIntent and queued a second operation, so intent 1 stayed
+        // valid and could start the microphone).
+        if self.session == nil, let existing = self.pendingIntent {
+            existing.cancel()
+            self.pendingIntent = nil
+            self.pendingBeginTask?.cancel()
+            ZFLog.info("toggle preempted pending begin (no new session)")
+            return
+        }
         // Review B2v2 (round 5): the manual toggle also creates an intent at
         // the action edge so a second toggle can preempt model work.
         let intent = PendingSessionIntent(

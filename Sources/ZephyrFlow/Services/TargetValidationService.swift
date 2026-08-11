@@ -220,9 +220,17 @@ final class TargetValidationService: TargetValidationProviding {
     }
 
     private func attr(_ element: AXUIElement, _ attribute: String) -> String? {
+        attrValue(element, attribute) as? String
+    }
+
+    /// Round-6 B3: raw AX attribute value (CFTypeRef). kAXPositionAttribute
+    /// and kAXSizeAttribute return AXValue, not String — the old code read
+    /// them through the String accessor, so window bounds were never captured
+    /// and the captured windowID was always nil.
+    private func attrValue(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value as? String
+        return value
     }
 
     private func axBool(_ element: AXUIElement, _ attribute: String) -> Bool {
@@ -253,16 +261,21 @@ final class TargetValidationService: TargetValidationProviding {
             CFGetTypeID(window) == AXUIElementGetTypeID()
         else { return nil }
         let windowElement = unsafeBitCast(window, to: AXUIElement.self)
-        // Read the AX window's bounds (position+size).
+        // Read the AX window's bounds (position+size) via the CFTypeRef
+        // accessor — these attributes return AXValue (round-6 B3).
         var position = CGPoint.zero
         var size = CGSize.zero
         var posOK = false
         var sizeOK = false
-        if let posRef = attr(windowElement, kAXPositionAttribute) {
+        if let posRef = attrValue(windowElement, kAXPositionAttribute as String),
+            CFGetTypeID(posRef) == AXValueGetTypeID()
+        {
             AXValueGetValue(unsafeBitCast(posRef, to: AXValue.self), .cgPoint, &position)
             posOK = true
         }
-        if let sizeRef = attr(windowElement, kAXSizeAttribute) {
+        if let sizeRef = attrValue(windowElement, kAXSizeAttribute as String),
+            CFGetTypeID(sizeRef) == AXValueGetTypeID()
+        {
             AXValueGetValue(unsafeBitCast(sizeRef, to: AXValue.self), .cgSize, &size)
             sizeOK = true
         }
