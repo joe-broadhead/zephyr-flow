@@ -486,19 +486,71 @@ final class InMemoryHistoryFS: HistoryFileSystem, @unchecked Sendable {
     func setPermissions(_ url: URL, mode: Int) throws {}
 }
 
+/// Round-6: concurrency-safe failure counter for the split test runner.
+private final class CoreTestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _value = 0
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _value
+    }
+    func bump() {
+        lock.lock()
+        _value += 1
+        lock.unlock()
+    }
+}
+
+/// Round-6: Sendable boxes so test Tasks do not mutate captured locals
+/// (Swift-6 diagnostics).
+private final class MutableArrayBox<T>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _values: [T] = []
+    var values: [T] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _values
+    }
+    func append(_ v: T) {
+        lock.lock()
+        _values.append(v)
+        lock.unlock()
+    }
+}
+
+private final class MutableSequencerBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seq = AudioChunkSequencer()
+    func accept(_ c: AudioChunk) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return seq.accept(c)
+    }
+    var seqIsDegraded: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return seq.isDegraded
+    }
+}
+
 @main
 struct CoreTests {
     /// Round-6: the original single 6,000-line main() function type-checked as
     /// one unit and peaked near the OS memory limit (jetsam killed
     /// swift-frontend mid-compile). Split into per-part functions below so
     /// each type-checks independently with a bounded peak.
-    static var failed = 0
+    /// Round-6: a static var would be a nonisolated mutable global under
+    /// Swift-6 diagnostics; box the counter in a small final class (sendable
+    /// by reference, no global mutable state).
+    private static let counter = CoreTestCounter()
+    static var failed: Int { counter.value }
     static func check(_ name: String, _ ok: Bool, _ detail: String = "") {
         if ok {
             print("  ✓ \(name)")
         } else {
             print("  ✗ \(name)\(detail.isEmpty ? "" : " — \(detail)")")
-            failed += 1
+            counter.bump()
         }
     }
 
@@ -1666,23 +1718,24 @@ struct CoreTests {
                 produced.append(chunk.sequence)
                 _ = ch.enqueue(chunk)
             }
-            var seen: [UInt64] = []
-            var seq = AudioChunkSequencer()
+            let seenBox = MutableArrayBox<UInt64>()
+            let seqBox = MutableSequencerBox()
             let consumer = Task {
                 for await c in ch.chunks {
-                    seen.append(c.sequence)
-                    _ = seq.accept(c)
+                    seenBox.append(c.sequence)
+                    _ = seqBox.accept(c)
                 }
             }
             ch.close()
             consumer.cancel()
+            _ = seenBox.values  // box retains delivered sequences for the check
             let stats = ch.stats()
             check(
                 "channel capacity respected (memory bounded)",
                 stats.capacity == 64 && stats.enqueued == 64
                     && ch.acceptedEnqueueCount == 64)
             // with no consumer, overflow must have dropped the excess (64 of them)
-            check("overflow counted not silent", stats.overflowDropped == 936 && !seq.isDegraded)
+            check("overflow counted not silent", stats.overflowDropped == 936 && !seqBox.seqIsDegraded)
         }
 
         // ===== JOE-2247 regression (review R1.1): capacity released on dequeue =====
@@ -4737,7 +4790,8 @@ struct CoreTests {
                 engineChoice: .whisper,
                 settings: settings(false))
             weak var weak7 = s7
-            let runTask7 = Task { await s7!.run() }
+            let s7copy = s7
+            let runTask7 = Task { await s7copy!.run() }
             try? await Task.sleep(nanoseconds: 50_000_000)
             await s7!.end()
             await runTask7.value
@@ -4999,7 +5053,7 @@ struct CoreTests {
             if let url = verifiedURL {
                 let tampered = url.appendingPathComponent("TextDecoder.mlmodelc")
                 try? fs2.remove(tampered)
-                try? fs2.writeRaw(
+                fs2.writeRaw(
                     tampered, data: Data(repeating: 0xEE, count: 500_000))
                 let after = await acq2.verifiedArtifact(for: .whisperTiny)
                 check("B5r5 tampered component invalidates readiness", after == nil)
@@ -5014,7 +5068,7 @@ struct CoreTests {
                 // Tamper with the config (the manifest carries its digest).
                 let cfg = url.appendingPathComponent("config.json")
                 try? fs3.remove(cfg)
-                try? fs3.writeRaw(cfg, data: Data(repeating: 0x77, count: 9_000))
+                fs3.writeRaw(cfg, data: Data(repeating: 0x77, count: 9_000))
                 check(
                     "B5r5 tampered config invalidates readiness",
                     await acq3.verifiedArtifact(for: .whisperTiny) == nil)
@@ -5039,7 +5093,7 @@ struct CoreTests {
                     .appendingPathComponent("TextDecoder.mlmodelc")
                     .appendingPathComponent("model.mlmodel")
                 try? fs.remove(inner)
-                try? fs.writeRaw(inner, data: Data(repeating: 0x77, count: 300_000))
+                fs.writeRaw(inner, data: Data(repeating: 0x77, count: 300_000))
                 check(
                     "B4r6 inner file tamper invalidates readiness",
                     await acq.verifiedArtifact(for: .whisperTiny) == nil)

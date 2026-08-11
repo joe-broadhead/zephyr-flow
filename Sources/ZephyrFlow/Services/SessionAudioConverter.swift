@@ -127,21 +127,23 @@ final class SessionAudioConverter {
                     pcmFormat: fmt, frameCapacity: capacity)
             else { break }
             var error: NSError?
-            var gotEndOfStream = false
             let status = converter.convert(to: outBuf, error: &error) { _, outStatus in
-                // Round-6 NIT 2: OBSERVE the converter's end-of-stream status
-                // (the old code set it but never read it back, so termination
-                // depended on a short-buffer heuristic).
-                if outStatus.pointee == .endOfStream {
-                    gotEndOfStream = true
-                }
+                // Round-6 NIT 2: tell the converter this is the final call so
+                // it drains buffered output and reports end-of-stream in its
+                // RETURN status (observed below).
+                outStatus.pointee = .endOfStream
                 return nil
             }
             if status == .error {
                 break
             }
-            if gotEndOfStream {
+            // Round-6 NIT 2: the converter's RETURN status is the real
+            // end-of-stream signal (AVAudioConverterOutputStatus.endOfStream).
+            if status == .endOfStream {
                 sawEndOfStream = true
+            }
+            if outBuf.frameLength < capacity / 2 || sawEndOfStream {
+                break
             }
             guard outBuf.frameLength > 0,
                 let channel = outBuf.floatChannelData?[0]
@@ -152,12 +154,6 @@ final class SessionAudioConverter {
             all.append(
                 contentsOf: UnsafeBufferPointer(
                     start: channel, count: Int(outBuf.frameLength)))
-            // Round-6 NIT 2: the converter reports end-of-stream via the
-            // status block — stop on that signal; a short final buffer is
-            // also treated as the natural end (both are bounded).
-            if outBuf.frameLength < capacity / 2 || sawEndOfStream {
-                break
-            }
         }
         return all
     }
