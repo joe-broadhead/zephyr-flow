@@ -78,7 +78,8 @@ actor NeuralFlowProcessor: FlowProcessorProtocol {
             .filter { !$0.isEmpty }
 
         if parts.count <= 1 {
-            let andSplit = cleaned
+            let andSplit =
+                cleaned
                 .replacingOccurrences(of: #"\s+and\s+"#, with: "\u{1e}", options: .regularExpression)
                 .split(separator: "\u{1e}")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -105,7 +106,8 @@ actor NeuralFlowProcessor: FlowProcessorProtocol {
         let cleaned = await regex.process(text, style: .clean)
         if Task.isCancelled { return await regex.process(text, style: .summary) }
 
-        let sentences = cleaned
+        let sentences =
+            cleaned
             .components(separatedBy: CharacterSet(charactersIn: ".!?"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }

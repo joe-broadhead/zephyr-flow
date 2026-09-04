@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-04
+
+### Added
+
+- **Hardened session lifecycle** — bounded audio channel with real admission, mono/rate-faithful accounting, drain-barrier finalization,and an immediate control plane so Release/Cancel preempts model preload (no more slow-stop races(.
+- **Legal session state machine** — `DictationSession` + authoritative terminal outcome (exactly-one terminal event(, identity-checked cleanup, crash-recovery markers,and rapid-control stress coverage. 
+- **Trusted target insertion** — validate+insert as one transaction against the same resolved element identity, AX write timeouts bound,and expired write budget never executes, revalidation immediately before mutation,and no auto-copy on secure/unknown/changed targets. 
+- **Verified model acquisition** — loads the exact verified artifact byte-for-byte((digest-verified(,, quarantines on mismatch,, readiness = "exact verified artifact loaded"(. Downloads now **default off** until explicit onboarding consent. 
+- **Encrypted local history** — at-rest Keychain-backed encryption,, single actor repository,, async UI view model,, every persistence error surfaced. Missing `saveHistory` decodes safe (false(. 
+- **Flow fidelity** — protected-span placeholders with per-line restore,, failed protected-span check rejects output and returns conservative fallback (never fail open(. Rejected Flow never auto-inserts. 
+- **Engine completeness** — Apple Speech bounded finalization with error provenance; WhisperKit chunked complete-audio finalization (or visible hard recording limit((,, safe decode ownership,, snapshot+apply language at session start. 
+- **Docs** — product/security contracts (threat model,, sensitivity policy,, target snapshot,, audio channel,…(,, per-session state machine ADR,, CI policy + coverage/sanitizer baselines,, evidence-registry claims index. 
+
 ## [0.0.1] - 2026-07-25
 
 ### Added
