@@ -1,7 +1,15 @@
-import Foundation
 import AVFoundation
 import Accelerate
+import Foundation
 import ZephyrFlowCore
+
+/// Mutable producer sequence state owned by the tap callout thread only.
+/// Isolated in a small box so the real-time path never touches actor state.
+final class AudioProducerState: @unchecked Sendable {
+    var sequence: UInt64 = 0
+    var startSample: UInt64 = 0
+    var overflowLogged = false
+}
 
 actor AudioCapture: AudioCaptureProtocol {
     static let shared = AudioCapture()
@@ -9,18 +17,20 @@ actor AudioCapture: AudioCaptureProtocol {
     private(set) var isCapturing = false
 
     private var engine: AVAudioEngine?
-    private var converter: AVAudioConverter?
-    private var onBuffer: (@Sendable ([Float]) -> Void)?
+    private var channel: BoundedAudioChannel?
+    private var sessionID: SessionID?
+    private var producerState: AudioProducerState?
     private var latestLevels: [Float] = Array(repeating: 0.05, count: 24)
-    private let targetSampleRate: Double = 16_000
-    private var framesDelivered: Int = 0
     private var peakRMS: Float = 0
 
     func levels() async -> [Float] { latestLevels }
 
-    /// Diagnostics from the current/last capture session.
-    func captureStats() async -> (frames: Int, peakRMS: Float) {
-        (framesDelivered, peakRMS)
+    /// Diagnostics from the current/last capture session (JOE-2247).
+    func captureStats() async -> (
+        enqueued: UInt64, overflowDropped: UInt64, wrongSessionRejected: UInt64, peakRMS: Float
+    ) {
+        let st = channel?.stats()
+        return (st?.enqueued ?? 0, st?.overflowDropped ?? 0, st?.wrongSessionRejected ?? 0, peakRMS)
     }
 
     func requestPermission() async -> Bool {
@@ -31,7 +41,7 @@ actor AudioCapture: AudioCaptureProtocol {
         }
     }
 
-    func start(onBuffer: @escaping @Sendable ([Float]) -> Void) async throws {
+    func start(sessionID: SessionID, channel: BoundedAudioChannel) async throws {
         if isCapturing {
             await stop()
         }
@@ -58,35 +68,50 @@ actor AudioCapture: AudioCaptureProtocol {
             "AudioCapture start sr=\(format.sampleRate) ch=\(format.channelCount) common=\(format.commonFormat.rawValue)"
         )
 
-        guard let targetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: targetSampleRate,
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw AudioCaptureError.engineStartFailed("Could not create 16 kHz mono float format")
-        }
-
-        guard let converter = AVAudioConverter(from: format, to: targetFormat) else {
-            throw AudioCaptureError.engineStartFailed(
-                "Could not convert \(format.sampleRate) Hz / \(format.channelCount) ch → 16 kHz mono"
-            )
-        }
-
-        self.converter = converter
-        self.onBuffer = onBuffer
+        // No conversion here: the producer only own-copies raw PCM into the
+        // bounded channel. Conversion happens in the exactly-one consumer in
+        // delivery order (JOE-2247), keeping this path real-time cheap.
+        self.channel = channel
+        self.sessionID = sessionID
         self.engine = engine
-        self.framesDelivered = 0
+        self.producerState = AudioProducerState()
         self.peakRMS = 0
 
         let bufferSize: AVAudioFrameCount = 4096
+        let sessionID = sessionID
+        let boundChannel = channel
+        let producer = producerState
 
         input.installTap(onBus: 0, bufferSize: bufferSize, format: format) { [weak self] buffer, _ in
-            // AVAudioEngine reuses the tap buffer after this callback returns.
-            // Own the PCM before any async hop or the samples are garbage/silence.
+            // AVAudioEngine reuses the tap buffer after this callback returns:
+            // deep-copy first (owned samples), then enqueue the chunk. The
+            // enqueue is lock-guarded and bounded; the callback never blocks
+            // on engine/inference scheduling.
             guard let copy = Self.copyPCMBuffer(buffer) else { return }
             guard let self else { return }
-            Task { await self.handleOwnedBuffer(copy) }
+            // Real-time safe: push owned samples into the bounded ring with NO
+            // actor hop, then a Task hop only for level polling.
+            if let producer {
+                let seq = producer.sequence
+                let start = producer.startSample
+                producer.sequence &+= 1
+                producer.startSample += UInt64(copy.frameLength)
+                // Review R1.2: makeFloatArray captures ONLY channel 0 into a
+                // flat mono array. Label the chunk mono (channelCount: 1) so
+                // the converter never misreads the flat array as interleaved
+                // multichannel (which would halve the frame count and reshape
+                // alternating samples into synthetic channels).
+                let chunk = AudioChunk(
+                    sessionID: sessionID, sequence: seq, startSample: start,
+                    sampleRate: copy.format.sampleRate,
+                    channelCount: 1,
+                    samples: Self.makeFloatArray(copy))
+                if boundChannel.enqueue(chunk) != .accepted, !producer.overflowLogged {
+                    producer.overflowLogged = true
+                    ZFLog.info("AudioCapture channel non-enqueue (overflow/cross-session) — degraded")
+                }
+            }
+            Task { await self.noteLevels(copy) }
         }
 
         engine.prepare()
@@ -96,8 +121,9 @@ actor AudioCapture: AudioCaptureProtocol {
         } catch {
             input.removeTap(onBus: 0)
             self.engine = nil
-            self.converter = nil
-            self.onBuffer = nil
+            self.channel = nil
+            self.sessionID = nil
+            self.producerState = nil
             throw AudioCaptureError.engineStartFailed(error.localizedDescription)
         }
     }
@@ -110,13 +136,14 @@ actor AudioCapture: AudioCaptureProtocol {
             }
         }
         engine = nil
-        converter = nil
-        onBuffer = nil
+        // Closing the channel ends the consumer stream exactly once; any
+        // late producer attempt is counted, never delivered.
+        channel?.close()
+        channel = nil
+        sessionID = nil
+        producerState = nil
         isCapturing = false
         latestLevels = Array(repeating: 0.05, count: 24)
-        ZFLog.info(
-            "AudioCapture stop frames16k=\(framesDelivered) peakRMS=\(String(format: "%.5f", peakRMS))"
-        )
     }
 
     // MARK: - Private
@@ -168,68 +195,41 @@ actor AudioCapture: AudioCaptureProtocol {
         return copy
     }
 
-    private func handleOwnedBuffer(_ buffer: AVAudioPCMBuffer) {
-        guard let converter, let onBuffer else { return }
+    /// Level metering from the owned raw copy (first channel downmix); the
+    /// UI meter never touches payload buffers beyond summary statistics.
+    private func noteLevels(_ buffer: AVAudioPCMBuffer) {
         guard buffer.frameLength > 0 else { return }
-
-        let ratio = targetSampleRate / buffer.format.sampleRate
-        let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 32
-        guard let converted = AVAudioPCMBuffer(
-            pcmFormat: AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: targetSampleRate,
-                channels: 1,
-                interleaved: false
-            )!,
-            frameCapacity: capacity
-        ) else { return }
-
-        var error: NSError?
-        var consumed = false
-        let status = converter.convert(to: converted, error: &error) { _, outStatus in
-            if consumed {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-            consumed = true
-            outStatus.pointee = .haveData
-            return buffer
-        }
-
-        if status == .error {
-            ZFLog.debug("Audio converter error: \(error?.localizedDescription ?? "unknown")")
-            return
-        }
-
-        guard let channel = converted.floatChannelData?[0] else { return }
-        let frameCount = Int(converted.frameLength)
-        guard frameCount > 0 else { return }
-
-        var samples = [Float](repeating: 0, count: frameCount)
-        samples.withUnsafeMutableBufferPointer { dest in
-            dest.baseAddress!.update(from: channel, count: frameCount)
-        }
-
-        framesDelivered += frameCount
-        updateLevels(from: samples)
-        onBuffer(samples)
-    }
-
-    private func updateLevels(from samples: [Float]) {
+        let samples = Self.makeFloatArray(buffer)
         guard !samples.isEmpty else { return }
-
         var rms: Float = 0
         vDSP_rmsqv(samples, 1, &rms, vDSP_Length(samples.count))
         if rms > peakRMS { peakRMS = rms }
-
         let level = min(1.0, max(0.03, rms * 8))
         var next = latestLevels
         next.removeFirst()
         next.append(level)
-        if next.count >= 2 {
-            let i = next.count - 1
-            next[i] = next[i] * 0.7 + next[i - 1] * 0.3
-        }
         latestLevels = next
     }
+
+    /// Copy a tap buffer into a flat mono float array (downmix by first
+    /// channel for the meter / engine path).
+    static func makeFloatArray(_ buffer: AVAudioPCMBuffer) -> [Float] {
+        let frames = Int(buffer.frameLength)
+        guard frames > 0 else { return [] }
+        if let ch = buffer.floatChannelData?[0] {
+            return Array(UnsafeBufferPointer(start: ch, count: frames))
+        }
+        if let ch = buffer.int16ChannelData?[0] {
+            var out = [Float](repeating: 0, count: frames)
+            for i in 0..<frames { out[i] = Float(ch[i]) / 32768.0 }
+            return out
+        }
+        if let ch = buffer.int32ChannelData?[0] {
+            var out = [Float](repeating: 0, count: frames)
+            for i in 0..<frames { out[i] = Float(ch[i]) / 2147483648.0 }
+            return out
+        }
+        return []
+    }
+
 }

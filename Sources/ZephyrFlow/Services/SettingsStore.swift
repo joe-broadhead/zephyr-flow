@@ -1,6 +1,6 @@
+import Combine
 import Foundation
 import SwiftUI
-import Combine
 import ZephyrFlowCore
 
 @MainActor
@@ -9,26 +9,64 @@ final class SettingsStore: ObservableObject {
 
     @Published var settings: AppSettings {
         didSet {
-            save()
+            _ = commit()
             ZFLog.debugEnabled = settings.debugLogging
         }
     }
 
+    @Published var recoveryState: SettingsRecoveryState = .ok
+
     private let defaultsKey = "zephyrflow.settings"
-    private let encoder = JSONEncoder()
-    private let decoder = JSONDecoder()
+    private let quarantinePrefix = "zephyrflow.settings.quarantine"
+    private var provenance: [String] = []
+
+    enum SettingsRecoveryState: Equatable {
+        case ok
+        case recoveredFromCorruption
+        case unknownSchema(Int)
+    }
 
     private init() {
-        if let data = UserDefaults.standard.data(forKey: defaultsKey),
-           let decoded = try? decoder.decode(AppSettings.self, from: data) {
-            self.settings = decoded
-        } else if let data = UserDefaults.standard.data(forKey: defaultsKey),
-                  let migrated = Self.migrate(data) {
-            self.settings = migrated
+        let data = UserDefaults.standard.data(forKey: defaultsKey)
+        let result = SettingsStorageCoordinator.load(data: data)
+        if result.recoveredFromCorruption {
+            // Quarantine the ORIGINAL bytes for recovery, then safe baseline.
+            if let data {
+                UserDefaults.standard.set(data, forKey: result.quarantinePath ?? "\(quarantinePrefix).1")
+            }
+            if let unknown = result.unknownSchemaVersion {
+                recoveryState = .unknownSchema(unknown)
+            } else {
+                recoveryState = .recoveredFromCorruption
+            }
+            self.settings = result.settings
+            ZFLog.info("Settings recovered from corruption — safe baseline active")
         } else {
-            self.settings = .default
+            recoveryState = .ok
+            self.settings = result.settings
+        }
+        if let from = result.migratedFromVersion {
+            provenance = ["v\(from)-migrated"]
+        } else {
+            provenance = ["v\(SettingsStorageCoordinator.currentSchemaVersion)"]
         }
         ZFLog.debugEnabled = settings.debugLogging
+    }
+
+    /// Atomic commit; returns success so UI never claims a change that was
+    /// not durably written.
+    @discardableResult
+    func commit() -> Bool {
+        do {
+            let data = try SettingsStorageCoordinator.encode(
+                settings: settings,
+                provenance: provenance)
+            UserDefaults.standard.set(data, forKey: defaultsKey)
+            return true
+        } catch {
+            ZFLog.error("Settings commit failed")
+            return false
+        }
     }
 
     /// Forward-compatible decode: fill new keys with defaults when missing.
@@ -43,18 +81,26 @@ final class SettingsStore: ObservableObject {
         if obj["flowBackend"] == nil { obj["flowBackend"] = defaults.flowBackend.rawValue }
         if obj["insertionMode"] == nil { obj["insertionMode"] = defaults.insertionMode.rawValue }
         if obj["panelPositionLocked"] == nil { obj["panelPositionLocked"] = defaults.panelPositionLocked }
+        if obj["copyOnlyOverrideBundleIDs"] == nil {
+            obj["copyOnlyOverrideBundleIDs"] = defaults.copyOnlyOverrideBundleIDs
+        }
+        // JOE-2254: legacy free-form language string -> validated model.
+        if let legacy = obj["language"] as? String, SupportedLanguage(rawValue: legacy) == nil {
+            obj["language"] = SupportedLanguage.fromLegacy(legacy).rawValue
+        }
+        if obj["language"] == nil { obj["language"] = defaults.language.rawValue }
         // Drop legacy no-op key if present
         obj.removeValue(forKey: "playSounds")
         guard let fixed = try? JSONSerialization.data(withJSONObject: obj),
-              let decoded = try? JSONDecoder().decode(AppSettings.self, from: fixed) else {
+            let decoded = try? JSONDecoder().decode(AppSettings.self, from: fixed)
+        else {
             return nil
         }
         return decoded
     }
 
-    private func save() {
-        guard let data = try? encoder.encode(settings) else { return }
-        UserDefaults.standard.set(data, forKey: defaultsKey)
+    func save() {
+        _ = commit()
     }
 
     func update(_ mutate: (inout AppSettings) -> Void) {
@@ -64,8 +110,9 @@ final class SettingsStore: ObservableObject {
     }
 
     func resetToDefaults() {
-        let onboarding = settings.hasCompletedOnboarding
-        settings = .default
-        settings.hasCompletedOnboarding = onboarding
+        // JOE-2263: transactional reset preserving only documented fields.
+        let next = SettingsStorageCoordinator.resetPayload(current: settings)
+        settings = next
+        _ = commit()
     }
 }

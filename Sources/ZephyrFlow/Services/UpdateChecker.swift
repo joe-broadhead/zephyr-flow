@@ -1,5 +1,5 @@
-import Foundation
 import AppKit
+import Foundation
 import ZephyrFlowCore
 
 /// Manual / optional GitHub Releases update check (no background telemetry).
@@ -71,7 +71,8 @@ final class UpdateChecker: ObservableObject {
                 return
             }
 
-            let download = release.assets
+            let download =
+                release.assets
                 .first { $0.name.lowercased().hasSuffix(".zip") && $0.name.lowercased().contains("macos") }
                 .map(\.browserDownloadURL)
                 ?? release.assets.first { $0.name.lowercased().hasSuffix(".zip") }.map(\.browserDownloadURL)

@@ -38,11 +38,13 @@ public enum WhisperModelLocator: Sendable {
 
     public static func directorySize(_ url: URL) -> Int64 {
         let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: url,
-            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else { return 0 }
+        guard
+            let enumerator = fm.enumerator(
+                at: url,
+                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            )
+        else { return 0 }
 
         var total: Int64 = 0
         for case let fileURL as URL in enumerator {
@@ -86,11 +88,13 @@ public enum WhisperModelLocator: Sendable {
     }
 
     private static func findNamedFolder(named: String, under root: URL, fm: FileManager) -> URL? {
-        guard let enumerator = fm.enumerator(
-            at: root,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return nil }
+        guard
+            let enumerator = fm.enumerator(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: [.skipsHiddenFiles]
+            )
+        else { return nil }
 
         var depth = 0
         for case let url as URL in enumerator {

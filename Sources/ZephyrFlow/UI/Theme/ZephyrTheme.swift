@@ -31,7 +31,7 @@ enum ZephyrTheme {
         LinearGradient(
             colors: [
                 Color(red: 0.12, green: 0.14, blue: 0.20).opacity(0.94),
-                Color(red: 0.06, green: 0.07, blue: 0.11).opacity(0.96)
+                Color(red: 0.06, green: 0.07, blue: 0.11).opacity(0.96),
             ],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
@@ -67,7 +67,11 @@ struct ZephyrPrimaryButtonStyle: ButtonStyle {
             .padding(.vertical, 9)
             .background(
                 Capsule(style: .continuous)
-                    .fill(enabled ? ZephyrTheme.brandGradient : LinearGradient(colors: [ZephyrTheme.bgElevated], startPoint: .leading, endPoint: .trailing))
+                    .fill(
+                        enabled
+                            ? ZephyrTheme.brandGradient
+                            : LinearGradient(
+                                colors: [ZephyrTheme.bgElevated], startPoint: .leading, endPoint: .trailing))
             )
             .opacity(configuration.isPressed ? 0.85 : 1)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)

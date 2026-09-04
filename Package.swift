@@ -8,7 +8,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "ZephyrFlow", targets: ["ZephyrFlow"]),
-        .library(name: "ZephyrFlowCore", targets: ["ZephyrFlowCore"])
+        .library(name: "ZephyrFlowCore", targets: ["ZephyrFlowCore"]),
     ],
     dependencies: [
         // Pin to current major line used in Package.resolved (avoid silent major drift).
@@ -26,13 +26,16 @@ let package = Package(
             name: "ZephyrFlow",
             dependencies: [
                 "ZephyrFlowCore",
-                .product(name: "WhisperKit", package: "WhisperKit")
+                .product(name: "WhisperKit", package: "WhisperKit"),
             ],
             path: "Sources/ZephyrFlow"
         ),
         .testTarget(
             name: "ZephyrFlowTests",
-            dependencies: ["ZephyrFlowCore"],
+            // Review REQ-2 (round 5): the authoritative XCTest target must
+            // cover the production paths (session stages, controller, engine,
+            // insertion). It depends on the app target for those types.
+            dependencies: ["ZephyrFlowCore", "ZephyrFlow"],
             path: "Tests/ZephyrFlowTests"
         ),
         // CLT-friendly runner (no XCTest / full Xcode required)
@@ -40,6 +43,6 @@ let package = Package(
             name: "ZephyrFlowCoreTests",
             dependencies: ["ZephyrFlowCore"],
             path: "Tests/ZephyrFlowCoreTests"
-        )
+        ),
     ]
 )

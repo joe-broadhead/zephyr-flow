@@ -1,13 +1,13 @@
-import SwiftUI
-import ServiceManagement
 import AppKit
 import CoreGraphics
+import ServiceManagement
+import SwiftUI
 import ZephyrFlowCore
 
 struct SettingsView: View {
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject private var privacy = PrivacyService.shared
-    @ObservedObject private var history = HistoryStore.shared
+    @ObservedObject private var history = HistoryViewModel.shared
     @ObservedObject private var controller = DictationController.shared
     @ObservedObject private var modelReadiness = ModelReadinessStore.shared
     @ObservedObject private var updates = UpdateChecker.shared
@@ -41,6 +41,15 @@ struct SettingsView: View {
         }
     }
 
+    @State private var copyOnlyOverridesText = ""
+
+    private var languageBinding: Binding<SupportedLanguage> {
+        Binding(
+            get: { settings.settings.language },
+            set: { newValue in settings.update { $0.language = newValue } }
+        )
+    }
+
     var body: some View {
         NavigationSplitView {
             List(Tab.allCases, selection: $selectedTab) { tab in
@@ -69,6 +78,10 @@ struct SettingsView: View {
         .onAppear {
             privacy.refresh()
             NSApp.appearance = NSAppearance(named: .darkAqua)
+            copyOnlyOverridesText = settings.settings.copyOnlyOverrideBundleIDs.joined(separator: ", ")
+            // Review R4.1: load history from the actor repository (single
+            // source of truth) before the pane is shown.
+            history.start()
         }
     }
 
@@ -77,7 +90,7 @@ struct SettingsView: View {
     private var generalPane: some View {
         Form {
             Section("Dictation") {
-                Picker("Listening mode", selection: binding(\.listeningMode)) {
+                Picker(AppStrings.key("settings.picker.listeningMode"), selection: binding(\.listeningMode)) {
                     ForEach(ListeningMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
                     }
@@ -86,7 +99,7 @@ struct SettingsView: View {
                     controller.reloadHotkey()
                 }
 
-                Picker("Default flow style", selection: binding(\.defaultFlowStyle)) {
+                Picker(AppStrings.key("settings.picker.flowStyle"), selection: binding(\.defaultFlowStyle)) {
                     ForEach(FlowStyle.allCases) { style in
                         Label(style.displayName, systemImage: style.systemImage).tag(style)
                     }
@@ -94,7 +107,7 @@ struct SettingsView: View {
             }
 
             Section("Startup") {
-                Toggle("Launch at login", isOn: binding(\.launchAtLogin))
+                Toggle(AppStrings.key("settings.toggle.launchAtLogin"), isOn: binding(\.launchAtLogin))
                     .onChange(of: settings.settings.launchAtLogin) { _, enabled in
                         setLaunchAtLogin(enabled)
                     }
@@ -102,6 +115,18 @@ struct SettingsView: View {
 
             Section("Engine") {
                 LabeledContent("Active engine", value: controller.engineLabel)
+                // JOE-2254: validated language selection (auto + supported
+                // BCP-47 matrix); affects the NEXT session, never the active one.
+                Picker(AppStrings.key("settings.picker.language"), selection: languageBinding) {
+                    ForEach(SupportedLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang)
+                    }
+                }
+                Text(
+                    "Auto-detect uses the engine's detection. Fixed languages are preflighted for on-device support before capture (Local Only never falls back to network)."
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 if controller.isModelLoading {
                     ProgressView("Loading model…")
                 }
@@ -113,18 +138,18 @@ struct SettingsView: View {
             }
 
             Section("Insertion") {
-                Picker("Mode", selection: binding(\.insertionMode)) {
+                Picker(AppStrings.key("settings.picker.mode"), selection: binding(\.insertionMode)) {
                     ForEach(InsertionMode.allCases) { mode in
                         Text(mode.displayName).tag(mode)
                     }
                 }
-                Text("Automatic picks paste vs Accessibility per app. Copy only never types keystrokes.")
+                Text(AppStrings.key("settings.insertionAutoNote"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
 
             Section("Panel") {
-                Button("Reset panel position") {
+                Button(AppStrings.key("settings.resetPanelPosition")) {
                     settings.update {
                         $0.panelOriginX = nil
                         $0.panelOriginY = nil
@@ -134,7 +159,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("General")
+        .navigationTitle(AppStrings.key("settings.section.general"))
     }
 
     // MARK: - Hotkey
@@ -142,33 +167,37 @@ struct SettingsView: View {
     private var hotkeyPane: some View {
         Form {
             Section("Global Hotkey") {
-                Picker("Hotkey", selection: hotkeySelection) {
-                    Text("Fn").tag(HotkeyChoice.fn)
-                    Text("Right Option (⌥)").tag(HotkeyChoice.rightOption)
-                    Text("Right Command (⌘)").tag(HotkeyChoice.rightCommand)
-                    Text("Control + Space").tag(HotkeyChoice.controlSpace)
-                    Text("Option + Space").tag(HotkeyChoice.optionSpace)
+                Picker(AppStrings.key("settings.picker.hotkey"), selection: hotkeySelection) {
+                    Text(AppStrings.key("settings.hotkey.fn")).tag(HotkeyChoice.fn)
+                    Text(AppStrings.key("settings.hotkey.rightOption")).tag(HotkeyChoice.rightOption)
+                    Text(AppStrings.key("settings.hotkey.rightCommand")).tag(HotkeyChoice.rightCommand)
+                    Text(AppStrings.key("settings.hotkey.controlSpace")).tag(HotkeyChoice.controlSpace)
+                    Text(AppStrings.key("settings.hotkey.optionSpace")).tag(HotkeyChoice.optionSpace)
                 }
                 .onChange(of: settings.settings.hotkey) { _, _ in
                     controller.reloadHotkey()
                 }
 
-                Text("Hold the key to talk (or toggle, depending on mode). Release to insert polished text at your cursor.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Hold the key to talk (or toggle, depending on mode). Release to insert polished text at your cursor."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
 
             Section("Tips") {
-                Text("Fn works like Wispr Flow: hold to talk, release to insert. ZephyrFlow sets the Globe key action to “Do Nothing” while running so the emoji picker doesn’t steal the key. If Fn still misbehaves, use **Right Option** instead.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Text("Requires Accessibility permission. After enabling it, quit and reopen ZephyrFlow.")
+                Text(
+                    "Fn works like Wispr Flow: hold to talk, release to insert. ZephyrFlow sets the Globe key action to “Do Nothing” while running so the emoji picker doesn’t steal the key. If Fn still misbehaves, use **Right Option** instead."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                Text(AppStrings.key("settings.axNote"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Hotkey")
+        .navigationTitle(AppStrings.key("settings.section.hotkey"))
     }
 
     // MARK: - Model
@@ -205,38 +234,42 @@ struct SettingsView: View {
 
             Section {
                 if settings.settings.allowModelDownloads {
-                    Text("Default is Whisper Tiny. Models download once and run on-device. Status reflects local cache.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    Text(
+                        "Default is Whisper Tiny. Models download once and run on-device. Status reflects local cache."
+                    )
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
                 } else {
-                    Text("Model downloads are off — Whisper needs a cached model, or pick Apple Speech.")
+                    Text(AppStrings.key("settings.modelDownloadsOff"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
-                Button("Refresh model status") {
+                Button(AppStrings.key("settings.refreshModelStatus")) {
                     modelReadiness.refreshAll()
                 }
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Model")
+        .navigationTitle(AppStrings.key("settings.section.model"))
         .onAppear { modelReadiness.refreshAll() }
     }
 
     private var flowPane: some View {
         Form {
             Section("Cleanup backend") {
-                Picker("Flow backend", selection: binding(\.flowBackend)) {
+                Picker(AppStrings.key("settings.picker.flowBackend"), selection: binding(\.flowBackend)) {
                     ForEach(FlowBackend.allCases) { backend in
                         Text(backend.displayName).tag(backend)
                     }
                 }
-                Text("Classic is instant regex (default). Enhanced adds extra on-device rule cleanup for Professional / Bullets / Summary (not a language model). Clean and Raw always stay Classic.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Classic is instant regex (default). Enhanced adds extra on-device rule cleanup for Professional / Bullets / Summary (not a language model). Clean and Raw always stay Classic."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
             Section("Default style") {
-                Picker("Style", selection: binding(\.defaultFlowStyle)) {
+                Picker(AppStrings.key("settings.picker.style"), selection: binding(\.defaultFlowStyle)) {
                     ForEach(FlowStyle.allCases) { style in
                         Label(style.displayName, systemImage: style.systemImage).tag(style)
                     }
@@ -244,7 +277,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Flow")
+        .navigationTitle(AppStrings.key("settings.section.flow"))
     }
 
     // MARK: - Privacy
@@ -252,15 +285,19 @@ struct SettingsView: View {
     private var privacyPane: some View {
         Form {
             Section("Local Only") {
-                Toggle("Local Only mode", isOn: binding(\.localOnlyMode))
-                Text("Default on. Your voice and transcripts stay on this Mac (no analytics). Optional Whisper model downloads are separate.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Toggle(AppStrings.key("settings.toggle.localOnly"), isOn: binding(\.localOnlyMode))
+                Text(
+                    "Default on. Your voice and transcripts stay on this Mac (no analytics). Optional Whisper model downloads are separate."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
 
-                Toggle("Allow Whisper model downloads", isOn: binding(\.allowModelDownloads))
-                Text("One-time model file download only (default on for Whisper Tiny). Never uploads your audio. Files stay in Application Support and run on-device.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Toggle(AppStrings.key("settings.toggle.allowDownloads"), isOn: binding(\.allowModelDownloads))
+                Text(
+                    "One-time model file download only (default on for Whisper Tiny). Never uploads your audio. Files stay in Application Support and run on-device."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
 
             Section("Permissions") {
@@ -273,40 +310,47 @@ struct SettingsView: View {
                 statusRow("Speech Recognition", ok: privacy.status.speechRecognition) {
                     privacy.openSpeechSettings()
                 }
-                Button("Refresh status") { privacy.refresh() }
+                Button(AppStrings.key("settings.refreshStatus")) { privacy.refresh() }
             }
 
             Section("History") {
-                Toggle("Save transcription history", isOn: binding(\.saveHistory))
-                Text("When on, recent dictations are stored locally in Application Support (plaintext on disk). Logs never store transcript text.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                Button("Clear local history", role: .destructive) {
+                Toggle(AppStrings.key("settings.toggle.saveHistory"), isOn: binding(\.saveHistory))
+                // JOE-2262: honest defense-in-depth wording — encrypted at
+                // rest with a per-installation Keychain key; metadata (id,
+                // timestamp, model) remains visible for the list UI.
+                Text(
+                    "When on, recent dictations are stored locally in Application Support, encrypted at rest (AES-256-GCM) with a per-installation Keychain key. Metadata for the list UI stays visible; transcript bodies are sealed. This is app-level protection, not a substitute for FileVault."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                Button(AppStrings.key("settings.clearHistory"), role: .destructive) {
                     history.clear()
                 }
             }
 
             Section("Diagnostics") {
-                Toggle("Debug logging", isOn: binding(\.debugLogging))
+                Toggle(AppStrings.key("settings.toggle.debug"), isOn: binding(\.debugLogging))
                     .onChange(of: settings.settings.debugLogging) { _, on in
                         ZFLog.debugEnabled = on
                     }
-                Text("Writes extra hotkey/engine detail to ~/Library/Logs/ZephyrFlow/ (local only, rotated).")
+                Text(AppStrings.key("settings.debugNote"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                Button("Reset system Fn / Globe key preference") {
+                Button(AppStrings.key("settings.resetFnPreference")) {
                     HotkeyService.shared.resetSystemFnPreferenceNow()
                 }
             }
 
             Section("Audit") {
-                Text("No analytics, telemetry, or crash reporter. Diagnostic logs record lengths and events only — never transcript text.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "No analytics, telemetry, or crash reporter. Diagnostic logs record lengths and events only — never transcript text."
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("Privacy")
+        .navigationTitle(AppStrings.key("settings.section.privacy"))
         .onAppear {
             privacy.refresh()
             ZFLog.debugEnabled = settings.settings.debugLogging
@@ -318,9 +362,9 @@ struct SettingsView: View {
     private var historyPane: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("History").font(.title2.bold())
+                Text(AppStrings.key("settings.history")).font(.title2.bold())
                 Spacer()
-                Button("Clear All", role: .destructive) {
+                Button(AppStrings.key("settings.clearAll"), role: .destructive) {
                     history.clear()
                 }
                 .disabled(history.entries.isEmpty)
@@ -330,7 +374,7 @@ struct SettingsView: View {
                 ContentUnavailableView(
                     "No transcriptions yet",
                     systemImage: "text.bubble",
-                    description: Text("Your recent dictations will appear here.")
+                    description: Text(AppStrings.key("settings.emptyHistory"))
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -350,11 +394,11 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                         }
                         .contextMenu {
-                            Button("Copy") {
+                            Button(AppStrings.key("settings.copy")) {
                                 NSPasteboard.general.clearContents()
                                 NSPasteboard.general.setString(entry.finalText, forType: .string)
                             }
-                            Button("Delete", role: .destructive) {
+                            Button(AppStrings.key("settings.delete"), role: .destructive) {
                                 history.delete(entry.id)
                             }
                         }
@@ -368,7 +412,7 @@ struct SettingsView: View {
                 .listStyle(.inset)
             }
         }
-        .navigationTitle("History")
+        .navigationTitle(AppStrings.key("settings.section.history"))
     }
 
     // MARK: - About
@@ -378,8 +422,8 @@ struct SettingsView: View {
             HStack(spacing: 16) {
                 ZephyrMarkBadge(size: 64)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("ZephyrFlow").font(.title.bold())
-                    Text("Private voice-to-text that appears at your cursor")
+                    Text(AppStrings.key("settings.aboutTitle")).font(.title.bold())
+                    Text(AppStrings.key("settings.aboutSubtitle"))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -402,28 +446,29 @@ struct SettingsView: View {
                             if case .checking = updates.status {
                                 ProgressView()
                                     .controlSize(.small)
-                                Text("Checking…")
+                                Text(AppStrings.key("settings.checking"))
                             } else {
-                                Text("Check for Updates")
+                                Text(AppStrings.key("settings.checkForUpdates"))
                             }
                         }
-                        .disabled({
-                            if case .checking = updates.status { return true }
-                            return false
-                        }())
+                        .disabled(
+                            {
+                                if case .checking = updates.status { return true }
+                                return false
+                            }())
 
                         if case .updateAvailable = updates.status {
-                            Button("Download") {
+                            Button(AppStrings.key("settings.download")) {
                                 updates.openDownload()
                             }
                             .keyboardShortcut(.defaultAction)
-                            Button("Release Notes") {
+                            Button(AppStrings.key("settings.releaseNotes")) {
                                 updates.openReleasePage()
                             }
                         }
                     }
 
-                    Text("Checks GitHub Releases only when you click the button. No background update pings.")
+                    Text(AppStrings.key("settings.updatePrivacyNote"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -435,14 +480,16 @@ struct SettingsView: View {
             Link("Report an Issue", destination: URL(string: "https://github.com/joe-broadhead/zephyr-flow/issues")!)
             Link("All Releases", destination: ZephyrFlowConstants.releasesURL)
 
-            Text("Built for privacy-conscious knowledge workers and developers. Whisper Tiny on-device after a one-time model download; Local Only keeps your audio here.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .padding(.top, 8)
+            Text(
+                "Built for privacy-conscious knowledge workers and developers. Whisper Tiny on-device after a one-time model download; Local Only keeps your audio here."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .padding(.top, 8)
 
             Spacer()
         }
-        .navigationTitle("About")
+        .navigationTitle(AppStrings.key("settings.section.about"))
     }
 
     private var updateStatusText: String {
@@ -455,7 +502,8 @@ struct SettingsView: View {
             return "You’re on the latest version (\(current))."
         case .updateAvailable(let latest, let notes, _, _):
             if let notes, !notes.isEmpty {
-                let preview = notes
+                let preview =
+                    notes
                     .components(separatedBy: .newlines)
                     .prefix(4)
                     .joined(separator: "\n")
@@ -494,6 +542,10 @@ struct SettingsView: View {
                 return "Ready · \(ByteCountFormatter.string(fromByteCount: b, countStyle: .file))"
             }
             return "Ready"
+        case .queued: return "Queued…"
+        case .verifying: return "Verifying…"
+        case .cancelled: return "Cancelled"
+        case .quarantined: return "Quarantined — corrupt content"
         case .failed(let m): return "Failed — \(m)"
         }
     }
@@ -511,6 +563,12 @@ struct SettingsView: View {
             Image(systemName: "arrow.down.circle").foregroundStyle(.secondary)
         case .notApplicable:
             EmptyView()
+        case .queued, .verifying:
+            ProgressView().controlSize(.small)
+        case .cancelled:
+            Image(systemName: "xmark.circle").foregroundStyle(.secondary)
+        case .quarantined:
+            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         }
     }
 
@@ -529,21 +587,44 @@ struct SettingsView: View {
             Text(ok ? "Granted" : "Missing")
                 .foregroundStyle(.secondary)
             if !ok {
-                Button("Open Settings", action: open)
+                Button(AppStrings.key("settings.openSettings"), action: open)
             }
         }
     }
 
+    @State private var launchLoginPending = false
+    @State private var launchLoginError: String?
+
+    /// JOE-2290: transactional toggle — pending -> external change -> verify ->
+    /// commit settings only on convergence; roll back + persistent error on
+    /// failure; approval/not-found states explain availability.
     private func setLaunchAtLogin(_ enabled: Bool) {
-        do {
-            if enabled {
-                try SMAppService.mainApp.register()
-            } else {
-                try SMAppService.mainApp.unregister()
+        guard !launchLoginPending else { return }
+        launchLoginPending = true
+        launchLoginError = nil
+        Task { @MainActor in
+            let state = await LaunchAtLoginService.shared.apply(enabled: enabled)
+            launchLoginPending = false
+            switch state {
+            case .applied:
+                // Converged with verified system status — commit settings.
+                settings.update { $0.launchAtLogin = enabled }
+                launchLoginError = nil
+            case .rolledBack:
+                // Failed: settings JSON keeps the VERIFIED system state.
+                let status = LaunchAtLoginService.shared.authoritativeStatus()
+                settings.update { $0.launchAtLogin = (status == .registered) }
+                launchLoginError =
+                    LaunchAtLoginService.shared.availabilityMessage()
+                    ?? "Could not change Launch at Login. Open Login Items settings to fix."
+            default:
+                break
             }
-        } catch {
-            // Non-fatal when running unpackaged from build/
         }
+    }
+
+    private func openLoginItemsSettings() {
+        LaunchAtLoginService.shared.openLoginItemsSettings()
     }
 
     // Hotkey picker bridge
@@ -562,11 +643,13 @@ struct SettingsView: View {
                     return .fn
                 case .none:
                     if settings.settings.hotkey.keyCode == 49,
-                       settings.settings.hotkey.modifiers == CGEventFlags.maskControl.rawValue {
+                        settings.settings.hotkey.modifiers == CGEventFlags.maskControl.rawValue
+                    {
                         return .controlSpace
                     }
                     if settings.settings.hotkey.keyCode == 49,
-                       settings.settings.hotkey.modifiers == CGEventFlags.maskAlternate.rawValue {
+                        settings.settings.hotkey.modifiers == CGEventFlags.maskAlternate.rawValue
+                    {
                         return .optionSpace
                     }
                     return .fn
@@ -580,19 +663,21 @@ struct SettingsView: View {
                 case .rightOption:
                     config = .rightOption
                 case .rightCommand:
-                    config = HotkeyConfig(keyCode: nil, modifiers: 0, displayName: "Right Command (⌘)", specialKey: .rightCommand)
+                    config = HotkeyConfig(
+                        keyCode: nil, modifiers: 0, displayName: AppStrings.key("settings.hotkey.rightCommand"),
+                        specialKey: .rightCommand)
                 case .controlSpace:
                     config = HotkeyConfig(
                         keyCode: 49,
                         modifiers: UInt(CGEventFlags.maskControl.rawValue),
-                        displayName: "Control + Space",
+                        displayName: AppStrings.key("settings.hotkey.controlSpace"),
                         specialKey: nil
                     )
                 case .optionSpace:
                     config = HotkeyConfig(
                         keyCode: 49,
                         modifiers: UInt(CGEventFlags.maskAlternate.rawValue),
-                        displayName: "Option + Space",
+                        displayName: AppStrings.key("settings.hotkey.optionSpace"),
                         specialKey: nil
                     )
                 }

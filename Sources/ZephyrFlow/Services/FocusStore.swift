@@ -86,13 +86,15 @@ final class FocusStore {
     private func focusedApplication() -> NSRunningApplication? {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-            systemWide,
-            kAXFocusedApplicationAttribute as CFString,
-            &focusedRef
-        ) == .success,
-              let focused = focusedRef,
-              CFGetTypeID(focused) == AXUIElementGetTypeID() else {
+        guard
+            AXUIElementCopyAttributeValue(
+                systemWide,
+                kAXFocusedApplicationAttribute as CFString,
+                &focusedRef
+            ) == .success,
+            let focused = focusedRef,
+            CFGetTypeID(focused) == AXUIElementGetTypeID()
+        else {
             return nil
         }
         let element = unsafeBitCast(focused, to: AXUIElement.self)

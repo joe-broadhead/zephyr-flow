@@ -74,8 +74,9 @@ final class FloatingPanelController {
 
         // Honor user-dragged position when locked
         if settings.panelPositionLocked,
-           let x = settings.panelOriginX,
-           let y = settings.panelOriginY {
+            let x = settings.panelOriginX,
+            let y = settings.panelOriginY
+        {
             var origin = NSPoint(x: x, y: y)
             origin = clamp(origin, size: size, margin: margin)
             panel.setFrameOrigin(origin)
@@ -83,7 +84,8 @@ final class FloatingPanelController {
         }
 
         let mouse = point ?? NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
+        let screen =
+            NSScreen.screens.first { NSMouseInRect(mouse, $0.frame, false) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
 
@@ -110,7 +112,8 @@ final class FloatingPanelController {
     @MainActor
     private func clamp(_ origin: NSPoint, size: NSSize, margin: CGFloat) -> NSPoint {
         var o = origin
-        let screen = NSScreen.screens.first { NSMouseInRect(o, $0.frame, false) }
+        let screen =
+            NSScreen.screens.first { NSMouseInRect(o, $0.frame, false) }
             ?? NSScreen.main
             ?? NSScreen.screens.first
         guard let visible = screen?.visibleFrame else { return o }
@@ -132,7 +135,8 @@ final class FloatingPanelController {
         // Skip no-op writes when still at auto-placed first show without drag history
         // and nothing was ever locked — still save so next show can restore after move.
         if SettingsStore.shared.settings.panelPositionLocked,
-           prevX == origin.x, prevY == origin.y {
+            prevX == origin.x, prevY == origin.y
+        {
             return
         }
         SettingsStore.shared.update {
@@ -167,10 +171,18 @@ struct FloatingPanelRoot: View {
     @State private var keyMonitor: Any?
 
     var body: some View {
-        Group {
+        ZStack {
             switch controller.panelState {
             case .hidden:
                 Color.clear.frame(width: 1, height: 1)
+            case .warning:
+                PanelWarningView(
+                    text: controller.interimText,
+                    message: controller.statusMessage ?? "",
+                    onDiscard: {
+                        controller.clearStatusLater()
+                        controller.panelState = .hidden
+                    })
             default:
                 FloatingPanelView(
                     state: controller.panelState,
@@ -179,7 +191,16 @@ struct FloatingPanelRoot: View {
                     activeStyle: controller.activeFlowStyle,
                     onStyle: { controller.applyQuickAction($0) },
                     onStop: { controller.stopAndInsert() },
-                    onCancel: { controller.cancelSession() }
+                    onCancel: { controller.cancelSession() },
+                    onReviewCopy: { controller.copyReviewContent() },
+                    onReviewRetry: { controller.retryReview() },
+                    onReviewDiscard: { controller.discardReview() },
+                    onReviewSettings: { controller.openAccessibilitySettings() },
+                    reviewTitle: controller.reviewTitle,
+                    reviewDetail: controller.reviewDetail,
+                    reviewAllowsRetry: controller.reviewAllowsRetry,
+                    reviewWarnsCopy: controller.reviewWarnsCopy,
+                    reviewAllowsSettings: controller.reviewAllowsSettings
                 )
                 .transition(.scale(scale: 0.88).combined(with: .opacity))
             }
@@ -199,22 +220,39 @@ struct FloatingPanelRoot: View {
         removePanelKeyMonitor()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let controller = DictationController.shared
-            guard controller.panelState == .listening
+            guard
+                controller.panelState == .listening
                     || controller.panelState == .processing
+                    || controller.panelState == .reviewing
+                    || controller.panelState == .warning
                     || {
                         if case .error = controller.panelState { return true }
                         return false
-                    }() else {
+                    }()
+            else {
                 return event
             }
-            // Esc or ⌘.
-            if event.keyCode == 53 || (event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == ".") {
-                controller.cancelSession()
+            // Esc or ⌘. clears review / cancels session
+            if event.keyCode == 53
+                || (event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == ".")
+            {
+                if controller.panelState == .reviewing {
+                    controller.discardReview()  // JOE-2272: discard clears text + model
+                } else if controller.panelState == .warning {
+                    controller.clearStatusLater()
+                    controller.panelState = .hidden
+                } else {
+                    controller.cancelSession()
+                }
                 return nil
             }
-            // Return / ⌘Return → stop & insert
+            // Return / ⌘Return → stop & insert; in review it is the explicit copy.
             if event.keyCode == 36 {
-                controller.stopAndInsert()
+                if controller.panelState == .reviewing {
+                    controller.copyReviewContent()
+                } else {
+                    controller.stopAndInsert()
+                }
                 return nil
             }
             return event
@@ -234,7 +272,7 @@ struct FloatingPanelRoot: View {
             FloatingPanelController.shared.persistPositionIfNeeded()
             FloatingPanelController.shared.hide()
             removePanelKeyMonitor()
-        case .listening, .processing, .success, .error:
+        case .listening, .processing, .reviewing, .success, .warning, .error:
             FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
             installPanelKeyMonitor()
             DispatchQueue.main.async {
@@ -254,11 +292,48 @@ struct FloatingPanelView: View {
     let onStyle: (FlowStyle) -> Void
     let onStop: () -> Void
     let onCancel: () -> Void
+    let onReviewCopy: () -> Void
+
+    let onReviewRetry: () -> Void
+    let onReviewDiscard: () -> Void
+    let onReviewSettings: () -> Void
+    let reviewTitle: String?
+    let reviewDetail: String?
+    let reviewAllowsRetry: Bool
+    let reviewWarnsCopy: Bool
+    let reviewAllowsSettings: Bool
+
+    init(
+        state: PanelState, text: String, levels: [Float], activeStyle: FlowStyle,
+        onStyle: @escaping (FlowStyle) -> Void, onStop: @escaping () -> Void,
+        onCancel: @escaping () -> Void, onReviewCopy: @escaping () -> Void,
+        onReviewRetry: @escaping () -> Void, onReviewDiscard: @escaping () -> Void,
+        onReviewSettings: @escaping () -> Void,
+        reviewTitle: String?, reviewDetail: String?,
+        reviewAllowsRetry: Bool, reviewWarnsCopy: Bool, reviewAllowsSettings: Bool
+    ) {
+        self.state = state
+        self.text = text
+        self.levels = levels
+        self.activeStyle = activeStyle
+        self.onStyle = onStyle
+        self.onStop = onStop
+        self.onCancel = onCancel
+        self.onReviewCopy = onReviewCopy
+        self.onReviewRetry = onReviewRetry
+        self.onReviewDiscard = onReviewDiscard
+        self.onReviewSettings = onReviewSettings
+        self.reviewTitle = reviewTitle
+        self.reviewDetail = reviewDetail
+        self.reviewAllowsRetry = reviewAllowsRetry
+        self.reviewWarnsCopy = reviewWarnsCopy
+        self.reviewAllowsSettings = reviewAllowsSettings
+    }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var showText: Bool {
-        !text.isEmpty || state == .processing || isError
+        !text.isEmpty || state == .processing || state == .reviewing || isError
     }
 
     private var isError: Bool {
@@ -275,6 +350,10 @@ struct FloatingPanelView: View {
 
             if state == .listening || state == .processing {
                 quickActions
+            }
+
+            if state == .reviewing {
+                reviewActions
             }
         }
         .padding(.horizontal, showText ? 18 : 14)
@@ -359,11 +438,17 @@ struct FloatingPanelView: View {
     private var orbGradient: LinearGradient {
         switch state {
         case .success:
-            return LinearGradient(colors: [ZephyrTheme.mint, Color.green.opacity(0.85)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            return LinearGradient(
+                colors: [ZephyrTheme.mint, Color.green.opacity(0.85)], startPoint: .topLeading,
+                endPoint: .bottomTrailing)
         case .error:
-            return LinearGradient(colors: [ZephyrTheme.danger, Color.orange.opacity(0.85)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            return LinearGradient(
+                colors: [ZephyrTheme.danger, Color.orange.opacity(0.85)], startPoint: .topLeading,
+                endPoint: .bottomTrailing)
         case .processing:
-            return LinearGradient(colors: [ZephyrTheme.violet, ZephyrTheme.cyan.opacity(0.7)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            return LinearGradient(
+                colors: [ZephyrTheme.violet, ZephyrTheme.cyan.opacity(0.7)], startPoint: .topLeading,
+                endPoint: .bottomTrailing)
         default:
             return ZephyrTheme.brandGradient
         }
@@ -408,16 +493,16 @@ struct FloatingPanelView: View {
                     .frame(maxWidth: 260, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
                 if message.localizedCaseInsensitiveContains("microphone") {
-                    Text("Open Microphone settings from the menu bar → Setup")
+                    Text(AppStrings.key("panel.openMicSettings"))
                         .font(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundStyle(ZephyrTheme.textSecondary)
                 } else if message.localizedCaseInsensitiveContains("accessib") {
-                    Text("Open Accessibility settings from the menu bar → Setup")
+                    Text(AppStrings.key("panel.openAXSettings"))
                         .font(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundStyle(ZephyrTheme.textSecondary)
                 }
             } else if state == .processing && text.isEmpty {
-                Text("Processing…")
+                Text(AppStrings.key("panel.processing"))
                     .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(ZephyrTheme.textSecondary)
             } else {
@@ -430,6 +515,82 @@ struct FloatingPanelView: View {
                     .animation(.easeOut(duration: 0.12), value: text)
                     .accessibilityLabel(text.isEmpty ? "Listening" : "Interim transcription")
             }
+        }
+    }
+
+    private var reviewActions: some View {
+        VStack(spacing: 10) {
+            if let reviewTitle {
+                Text(reviewTitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(ZephyrTheme.warning)
+                    .multilineTextAlignment(.center)
+                    .accessibilityLabel(AppStrings.format("panel.reviewTitle", reviewTitle))
+            }
+            if let reviewDetail {
+                Text(reviewDetail)
+                    .font(.system(size: 11))
+                    .foregroundColor(ZephyrTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .accessibilityLabel(reviewDetail)
+            }
+            HStack(spacing: 8) {
+                if reviewAllowsRetry {
+                    Button(action: onReviewRetry) {
+                        Label(AppStrings.key("panel.retry"), systemImage: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(ZephyrTheme.bgElevated, in: Capsule())
+                            .foregroundColor(ZephyrTheme.textPrimary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(AppStrings.key("panel.retryHint"))
+                    .keyboardShortcut("r", modifiers: .command)
+                }
+                Button(action: onReviewCopy) {
+                    Label(reviewWarnsCopy ? "Copy to Clipboard" : "Copy", systemImage: "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(ZephyrTheme.warning.opacity(0.9), in: Capsule())
+                        .foregroundColor(.black)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    reviewWarnsCopy
+                        ? "Copy to clipboard — this places the text on the global clipboard"
+                        : "Copy text to clipboard"
+                )
+                .keyboardShortcut(.return, modifiers: [])
+                if reviewAllowsSettings {
+                    Button(action: onReviewSettings) {
+                        Label(AppStrings.key("panel.settings"), systemImage: "gearshape")
+                            .font(.system(size: 12, weight: .semibold))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(ZephyrTheme.bgElevated, in: Capsule())
+                            .foregroundColor(ZephyrTheme.textPrimary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(AppStrings.key("panel.openAX"))
+                }
+                Button(action: onReviewDiscard) {
+                    Label(AppStrings.key("panel.discard"), systemImage: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(ZephyrTheme.bgElevated, in: Capsule())
+                        .foregroundColor(ZephyrTheme.danger)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AppStrings.key("panel.discardHint"))
+                .keyboardShortcut(.escape, modifiers: [])
+            }
+            Text(AppStrings.key("panel.autoClear"))
+                .font(.system(size: 9))
+                .foregroundColor(ZephyrTheme.textMuted)
         }
     }
 
@@ -466,8 +627,8 @@ struct FloatingPanelView: View {
                     .background(Circle().fill(ZephyrTheme.mint))
             }
             .buttonStyle(.plain)
-            .help("Stop & Insert")
-            .accessibilityLabel("Stop and insert")
+            .help(AppStrings.key("panel.help.stopInsert"))
+            .accessibilityLabel(AppStrings.key("panel.stopAndInsert"))
 
             Button(action: onCancel) {
                 Image(systemName: "xmark")
@@ -477,8 +638,8 @@ struct FloatingPanelView: View {
                     .background(Circle().fill(ZephyrTheme.bgElevated))
             }
             .buttonStyle(.plain)
-            .help("Cancel (discard)")
-            .accessibilityLabel("Cancel")
+            .help(AppStrings.key("panel.help.cancelDiscard"))
+            .accessibilityLabel(AppStrings.key("panel.cancel"))
         }
     }
 
@@ -499,5 +660,47 @@ struct FloatingPanelView: View {
                     )
                 )
         }
+    }
+}
+
+/// JOE-2284: persistent warning presentation (amber, no green, no auto
+/// dismiss) with a VoiceOver label; discard is explicit.
+struct PanelWarningView: View {
+    let text: String
+    let message: String
+    let onDiscard: () -> Void
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 18))
+                .foregroundColor(ZephyrTheme.warning)
+            if !text.isEmpty {
+                Text(text)
+                    .font(.system(size: 12))
+                    .foregroundColor(ZephyrTheme.textPrimary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(4)
+            }
+            if !message.isEmpty {
+                Text(message)
+                    .font(.system(size: 11))
+                    .foregroundColor(ZephyrTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+            Button(AppStrings.key("panel.dismiss"), action: onDiscard)
+                .font(.system(size: 12, weight: .semibold))
+                .buttonStyle(.plain)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+                .background(ZephyrTheme.bgElevated, in: Capsule())
+                .foregroundColor(ZephyrTheme.textPrimary)
+                .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityLabel(AppStrings.key("panel.dismissWarning"))
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(message.isEmpty ? "Warning" : "Warning: \(message)")
     }
 }

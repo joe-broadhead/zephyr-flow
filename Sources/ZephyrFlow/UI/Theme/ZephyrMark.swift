@@ -67,7 +67,8 @@ struct ZephyrMark: View {
                 for i in 0...steps {
                     let t = CGFloat(i) / CGFloat(steps)
                     let x = x0 + (x1 - x0) * t
-                    let y = canvasSize.height * ribbon.yMid
+                    let y =
+                        canvasSize.height * ribbon.yMid
                         + s * ribbon.amp * sin(t * .pi * 2.1 + ribbon.phase)
                         + s * 0.02 * sin(t * .pi)
                     if i == 0 {
