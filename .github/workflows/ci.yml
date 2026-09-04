@@ -24,7 +24,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
@@ -53,12 +53,61 @@ jobs:
           codesign -dv Dist/ZephyrFlow.app 2>&1 | head -20
 
       - name: Upload app artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ZephyrFlow-macos-arm64-ci
           path: Dist/ZephyrFlow.app
           if-no-files-found: error
           retention-days: 7
+
+  gates:
+    name: Gates (XCTest, strict concurrency, lint, format, docs, version, drift, coverage)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Show toolchain
+        run: |
+          set -euo pipefail
+          swift --version
+          xcodebuild -version || true
+
+      - name: Install gate dependencies (ShellCheck, PyYAML)
+        run: |
+          set -euo pipefail
+          brew install shellcheck || true
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pyyaml || true
+
+      - name: Run all gates (fail closed)
+        run: |
+          set -euo pipefail
+          chmod +x Scripts/ci_checks.sh
+          ./Scripts/ci_checks.sh
+
+      - name: Upload gate report (success)
+        if: success()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-gates-report
+          path: /tmp/zephyr-flow-coverage-baseline-report.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload gate report (failure)
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ci-gates-failure-log
+          path: |
+            /tmp/zephyr-flow-coverage-baseline-report.txt
+          if-no-files-found: ignore
+          retention-days: 30
+
 
   docs:
     name: Docs
@@ -66,12 +115,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
           cache: pip
@@ -91,7 +140,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
