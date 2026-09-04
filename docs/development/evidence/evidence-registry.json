@@ -1,0 +1,71 @@
+{
+ "schema_version": 1,
+ "updated": "2026-08-08",
+ "policy": "Every production claim in README/docs/UI must map to a registry row. Missing rows are unclaimed. Candidate-changing fixes invalidate affected rows (JOE-2305).",
+ "claims": [
+  {
+   "claim": "Local Only audio never leaves device",
+   "kind": "external",
+   "status": "pending",
+   "owner": "JOE-2297",
+   "evidence": "docs/development/evidence/privacy-canaries (planned)"
+  },
+  {
+   "claim": "Local Only defaults true",
+   "kind": "test",
+   "status": "retained",
+   "evidence": "Tests/ZephyrFlowCoreTests settings block",
+   "test": "local only default"
+  },
+  {
+   "claim": "Whisper Tiny default model",
+   "kind": "test",
+   "status": "retained",
+   "evidence": "Tests/ZephyrFlowCoreTests settings block",
+   "test": "default model whisper tiny"
+  },
+  {
+   "claim": "Protected spans survive Flow conservative path",
+   "kind": "planned",
+   "status": "planned",
+   "owner": "JOE-2278/JOE-2280",
+   "evidence": "Flow fidelity corpus (planned)"
+  },
+  {
+   "claim": "Terminal outcomes exactly-once",
+   "kind": "test",
+   "status": "retained",
+   "owner": "JOE-2240",
+   "evidence": "SessionTerminalGate tests",
+   "test": "exactly-once terminal gate"
+  },
+  {
+   "claim": "Secure/unknown targets get no automatic clipboard/history",
+   "kind": "planned",
+   "status": "planned",
+   "owner": "JOE-2258/2259/2260",
+   "evidence": "privacy canaries (planned)"
+  },
+  {
+   "claim": "Insertion verified vs unverified distinguished",
+   "kind": "planned",
+   "status": "planned",
+   "owner": "JOE-2269",
+   "evidence": "typed outcome tests (planned)"
+  },
+  {
+   "claim": "Supported macOS 14+, arm64",
+   "kind": "external",
+   "status": "pending",
+   "owner": "JOE-2245 human approval + M4",
+   "evidence": "supported-platform-matrix.md"
+  },
+  {
+   "claim": "1,000-session stability",
+   "kind": "external",
+   "status": "pending",
+   "owner": "JOE-2296",
+   "evidence": "soak reports (human/hardware)"
+  }
+ ]
+}

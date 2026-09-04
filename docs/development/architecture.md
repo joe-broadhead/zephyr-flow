@@ -49,7 +49,7 @@ Local Only does **not** block model-file downloads. WhisperKit is constructed wi
 | FocusStore | Frontmost app memory |
 | DictationController | Orchestrator |
 | FlowRouter + FlowProcessor | Post-STT cleanup (classic default) |
-| NeuralFlowProcessor | Opt-in enhanced **rules** (not an LLM) |
+| EnhancedFlowProcessor | Opt-in enhanced deterministic **rules** (no LLM, no weights, no network) |
 | FlowGuardrails | Reject novel numbers / preambles on Enhanced output |
 | ModelReadinessStore / WhisperModelLocator | Cache status |
 | UpdateChecker | On-demand GitHub Releases check |
