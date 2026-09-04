@@ -115,6 +115,41 @@ extension FlowProcessorProtocol {
         await process(text, style: style)
     }
 
+    /// Default typed entry for backends that only implement the legacy string
+    /// API (e.g. NeuralFlowProcessor). Wraps the legacy output in a typed
+    /// FlowOutcome using the same guardrail semantics as the deterministic
+    /// backend so the protocol is satisfied in Swift 6 language mode.
+    public func process(_ request: FlowRequest) async -> FlowOutcome {
+        let started = Date()
+        let output = await process(request.text, style: request.style, language: request.language)
+        let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
+        let loss = FlowOutcome.lossClass(for: request.style)
+        let inTokens = FlowGuardrails.tokens(in: request.text)
+        let outTokens = FlowGuardrails.tokens(in: output)
+        let covered = FlowGuardrails.inputCovered(input: inTokens, output: outTokens)
+        let preserved = covered.ok
+        let status: FlowOutcomeStatus = preserved ? .accepted : .rejected
+        let warnings: [FlowWarning] = preserved ? [] : [.guardrailRejected]
+        let fallbackReason: String? = preserved ? nil : "protected spans not preserved; original text returned (conservative)"
+        let changed = (preserved && request.text != output) ? 1 : 0
+        return FlowOutcome(
+            text: preserved ? output : request.text,
+            requestedStyle: request.style,
+            resolvedLossClass: loss,
+            backend: .regex,
+            capabilityID: "io.zephyr-flow.flow.rules.v1",
+            capabilityVersion: 1,
+            language: request.language,
+            changedRangeCount: changed,
+            protectedSpanCount: inTokens.count,
+            protectedSpansPreserved: preserved,
+            status: status,
+            warnings: warnings,
+            fallbackReason: fallbackReason,
+            durationNanos: duration,
+            termination: .completed)
+    }
+
     /// Convenience: build a request with default context (tests/utilities).
     public func process(
         _ text: String, style: FlowStyle, language: SupportedLanguage,

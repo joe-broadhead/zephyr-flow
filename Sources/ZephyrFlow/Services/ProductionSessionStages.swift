@@ -58,7 +58,7 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         self.callbackGate = CallbackGate()
         // JOE-2268: capture the immutable target snapshot (AX evidence).
         // Missing AX permission => nil => session stays .unknown (fail closed).
-        self.targetSnapshot = environment.targetValidation.captureSnapshot(
+        self.targetSnapshot = await environment.targetValidation.captureSnapshot(
             sessionID: sessionID,
             nowNanos: environment.clock.nowNanos())
     }
@@ -359,7 +359,7 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // Bounded, observable restore (never a blind sleep).
         let monitor = await environment.targetValidation.restoreToCapturedTarget(
             snapshot: snapshot, deadlineNanosAhead: 2_000_000_000)
-        let context = environment.targetValidation.currentContext(
+        let context = await environment.targetValidation.currentContext(
             nowNanos: environment.clock.nowNanos())
         let outcome = validation.validate(
             context: context,

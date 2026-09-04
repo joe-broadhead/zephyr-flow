@@ -84,8 +84,8 @@ public protocol PermissionProviding: Sendable {
 
 /// Target validation service boundary (JOE-2268/2249).
 public protocol TargetValidationProviding: Sendable {
-    func captureSnapshot(sessionID: SessionID, nowNanos: UInt64) -> TargetSnapshot?
-    func currentContext(nowNanos: UInt64) -> TargetValidationContext?
+    func captureSnapshot(sessionID: SessionID, nowNanos: UInt64) async -> TargetSnapshot?
+    func currentContext(nowNanos: UInt64) async -> TargetValidationContext?
     func restoreToCapturedTarget(
         snapshot: TargetSnapshot,
         deadlineNanosAhead: UInt64
@@ -309,8 +309,8 @@ public struct FakeTargetValidation: TargetValidationProviding {
         self.snapshot = snapshot
         self.context = context
     }
-    public func captureSnapshot(sessionID: SessionID, nowNanos: UInt64) -> TargetSnapshot? { snapshot }
-    public func currentContext(nowNanos: UInt64) -> TargetValidationContext? { context }
+    public func captureSnapshot(sessionID: SessionID, nowNanos: UInt64) async -> TargetSnapshot? { snapshot }
+    public func currentContext(nowNanos: UInt64) async -> TargetValidationContext? { context }
     public func restoreToCapturedTarget(
         snapshot: TargetSnapshot,
         deadlineNanosAhead: UInt64

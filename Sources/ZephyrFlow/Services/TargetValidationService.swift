@@ -32,7 +32,7 @@ final class TargetValidationService: TargetValidationProviding {
 
     // MARK: capture (session start)
 
-    func captureSnapshot(sessionID: SessionID, nowNanos: UInt64) -> TargetSnapshot? {
+    func captureSnapshot(sessionID: SessionID, nowNanos: UInt64) async -> TargetSnapshot? {
         guard isAxTrusted else {
             ZFLog.info("revalidate: capture skipped (AX untrusted) sid=\(sessionID.token)")
             return nil
@@ -98,7 +98,7 @@ final class TargetValidationService: TargetValidationProviding {
 
     // MARK: re-resolution (immediately before insertion)
 
-    func currentContext(nowNanos: UInt64) -> TargetValidationContext? {
+    func currentContext(nowNanos: UInt64) async -> TargetValidationContext? {
         guard isAxTrusted else { return nil }
         guard let app = focusedAXApplication() else { return nil }
         let pid = app.processIdentifier
