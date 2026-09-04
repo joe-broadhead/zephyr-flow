@@ -1,6 +1,6 @@
+import Combine
 import Foundation
 import SwiftUI
-import Combine
 import ZephyrFlowCore
 
 @MainActor
@@ -51,8 +51,9 @@ final class HistoryStore: ObservableObject {
 
     private func load() {
         guard FileManager.default.fileExists(atPath: fileURL.path),
-              let data = try? Data(contentsOf: fileURL),
-              let decoded = try? decoder.decode([HistoryEntry].self, from: data) else {
+            let data = try? Data(contentsOf: fileURL),
+            let decoded = try? decoder.decode([HistoryEntry].self, from: data)
+        else {
             entries = []
             return
         }
