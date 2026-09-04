@@ -1,6 +1,6 @@
-import SwiftUI
 import AppKit
 import ApplicationServices
+import SwiftUI
 import ZephyrFlowCore
 
 @main
@@ -76,7 +76,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Poll stage file for next surface
         Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { timer in
             Task { @MainActor in
-                let stage = (try? String(contentsOf: stageURL)).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
+                let stage =
+                    (try? String(contentsOf: stageURL)).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
                 switch stage {
                 case "settings":
                     WindowRouter.closeOnboarding()
@@ -91,7 +92,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     DictationController.shared.clearDemoPanelForScreenshot()
                     WindowRouter.closeOnboarding()
                     // Leave settings closed for a clean quit
-                    NSApp.windows.filter { $0.title.contains("Settings") }.forEach { $0.close() }
+                    for window in NSApp.windows where window.title.contains("Settings") {
+                        window.close()
+                    }
                 default:
                     break
                 }
@@ -102,6 +105,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         privacyTimer?.invalidate()
         DictationController.shared.stop()
+    }
+
+    /// JOE-2266: macOS asynchronous termination — the process does not exit
+    /// until the handshake resolves (or the hard deadline abandons it with a
+    /// recovery marker for the next launch).
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let controller = DictationController.shared
+        sender.reply(toApplicationShouldTerminate: false)
+        Task { @MainActor in
+            let state = await controller.terminate(deadlineNanosAhead: 3_000_000_000)
+            ZFLog.info("termination handshake state=\(state.rawValue) marker=\(state == .abandoned ? "yes" : "none")")
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

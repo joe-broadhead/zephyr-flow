@@ -81,8 +81,7 @@ enum ZephyrMenuBarIcon {
                 let t = CGFloat(i) / CGFloat(steps)
                 let x = 0.12 + 0.76 * t
                 let y = yMid + amp * sin(t * .pi * 2.1 + phase) + 0.015 * sin(t * .pi)
-                if i == 0 { ctx.move(to: CGPoint(x: x, y: y)) }
-                else { ctx.addLine(to: CGPoint(x: x, y: y)) }
+                if i == 0 { ctx.move(to: CGPoint(x: x, y: y)) } else { ctx.addLine(to: CGPoint(x: x, y: y)) }
             }
             ctx.strokePath()
         }

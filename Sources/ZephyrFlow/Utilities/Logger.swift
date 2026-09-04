@@ -36,7 +36,8 @@ enum ZFLog {
             rotateIfNeeded()
             guard let data = lineOut.data(using: .utf8) else { return }
             if FileManager.default.fileExists(atPath: url.path),
-               let handle = try? FileHandle(forWritingTo: url) {
+                let handle = try? FileHandle(forWritingTo: url)
+            {
                 defer { try? handle.close() }
                 _ = try? handle.seekToEnd()
                 try? handle.write(contentsOf: data)
@@ -45,14 +46,15 @@ enum ZFLog {
             }
         }
         #if DEBUG
-        print(lineOut, terminator: "")
+            print(lineOut, terminator: "")
         #endif
     }
 
     private static func rotateIfNeeded() {
         guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? UInt64,
-              size >= maxBytes else { return }
+            let size = attrs[.size] as? UInt64,
+            size >= maxBytes
+        else { return }
         let backup = url.deletingLastPathComponent().appendingPathComponent("zephyrflow.log.1")
         try? FileManager.default.removeItem(at: backup)
         try? FileManager.default.moveItem(at: url, to: backup)
