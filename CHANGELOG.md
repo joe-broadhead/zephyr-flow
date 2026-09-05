@@ -7,18 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-09-04
+## [0.1.0] — proposed, unreleased
+
+This version is proposed stack metadata, not a published release or production
+approval. The entries below describe implementation work; supported-device and
+app qualification, independent review, Developer ID/notarized distribution and
+explicit human approval remain outstanding. Historical entries do not establish
+acceptance of the current candidate.
 
 ### Added
 
-- **Hardened session lifecycle** — bounded audio channel with real admission, mono/rate-faithful accounting, drain-barrier finalization,and an immediate control plane so Release/Cancel preempts model preload (no more slow-stop races(.
-- **Legal session state machine** — `DictationSession` + authoritative terminal outcome (exactly-one terminal event(, identity-checked cleanup, crash-recovery markers,and rapid-control stress coverage. 
-- **Trusted target insertion** — validate+insert as one transaction against the same resolved element identity, AX write timeouts bound,and expired write budget never executes, revalidation immediately before mutation,and no auto-copy on secure/unknown/changed targets. 
-- **Verified model acquisition** — loads the exact verified artifact byte-for-byte((digest-verified(,, quarantines on mismatch,, readiness = "exact verified artifact loaded"(. Downloads now **default off** until explicit onboarding consent. 
-- **Encrypted local history** — at-rest Keychain-backed encryption,, single actor repository,, async UI view model,, every persistence error surfaced. Missing `saveHistory` decodes safe (false(. 
-- **Flow fidelity** — protected-span placeholders with per-line restore,, failed protected-span check rejects output and returns conservative fallback (never fail open(. Rejected Flow never auto-inserts. 
-- **Engine completeness** — Apple Speech bounded finalization with error provenance; WhisperKit chunked complete-audio finalization (or visible hard recording limit((,, safe decode ownership,, snapshot+apply language at session start. 
-- **Docs** — product/security contracts (threat model,, sensitivity policy,, target snapshot,, audio channel,…(,, per-session state machine ADR,, CI policy + coverage/sanitizer baselines,, evidence-registry claims index. 
+- **Session and audio controls** — per-session actors, bounded audio delivery, frame accounting, converter-tail retention, terminal outcomes and cancellation-aware engine preparation. Automated tests do not qualify every native callback, rapid-control or cleanup path.
+- **Target and clipboard checks** — process-start identity, target revalidation, lossless bounded clipboard snapshots and marker-plus-generation restoration ownership. Secure subroles and failed sensitivity reads are confined. AX IPC deadlines, live focus races, crash recovery and the six-app insertion matrix remain qualification work.
+- **Engine preparation** — separate verified files, acquisition consent, loaded engines and capability preflight; Retry/Cancel and explicit Apple continuation. Local Only remains on, model downloads remain off until consent, and history remains off by default. Local tokenizer loading is checked without a remote fallback; digest integrity is not pinned artifact authenticity or real-model inference qualification.
+- **History and settings** — a single opt-in actor history repository with Keychain-backed encryption preparation; settings publish after persistence acknowledgment. Login registration is verified before saving its desired value. Reboot/power-loss, Keychain, storage recovery and login-item behavior require device evidence.
+- **Flow outcomes** — protected-span checks, typed fallback and bounded callers that do not join a noncooperative backend. The inherited fidelity corpus is incomplete: Raw statistics are missing from the release gate. Passing implementation tests is not Flow qualification.
+- **Engine completeness reporting** — WhisperKit retains a rolling approximately 60-second input window and reports discarded prefix samples as truncation. Complete-audio chunking/stitching and a supported long-dictation policy are **not implemented or qualified**. Apple finalization/preflight is implemented; real-device Speech lifecycle and language-pack behavior remain unqualified.
+- **Validation tooling** — required XCTest execution, strict-concurrency warning checks, preserved command exits/artifacts and unchanged coverage thresholds. Device runbook helpers now report NOT RUN/INCOMPLETE instead of treating prepared checklists or no-op loops as qualification passes. Signed distribution tooling remains incomplete.
+
+### Removed
+
+- Unreferenced legacy plaintext `HistoryStore` and duplicate `NeuralFlowProcessor` implementations. Active paths use `ActorHistoryRepository` and the deterministic `EnhancedFlowProcessor`; Enhanced rules is not an LLM.
 
 ## [0.0.1] - 2026-07-25
 

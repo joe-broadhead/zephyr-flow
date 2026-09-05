@@ -72,7 +72,7 @@ public protocol SettingsRepository: Sendable {
     var current: AppSettings { get async }
 }
 
-/// History repository (production = HistoryStore; fakes = in-memory).
+/// History repository (production bridges ActorHistoryRepository; fakes are in-memory).
 public protocol HistoryRepository: Sendable {
     func prepareForSession(saveHistory: Bool) async -> Bool
     func add(_ entry: HistoryEntry) async

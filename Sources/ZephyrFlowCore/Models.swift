@@ -439,7 +439,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var launchAtLogin: Bool
     public var listeningMode: ListeningMode
     public var hasCompletedOnboarding: Bool
-    /// When false, dictations are not written to HistoryStore.
+    /// When false, dictations are not written to the history repository.
     public var saveHistory: Bool
     /// Verbose hotkey/engine diagnostics written to the local log file.
     public var debugLogging: Bool

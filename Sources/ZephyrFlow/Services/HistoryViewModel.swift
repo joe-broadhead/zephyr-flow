@@ -4,7 +4,7 @@ import ZephyrFlowCore
 
 /// Review R4.1: single source of truth for history is the actor repository.
 /// The Settings UI observes this async view model instead of the legacy
-/// plaintext HistoryStore, so production history is never written by two
+/// removed plaintext store, so production history is never written by two
 /// incompatible stores to the same file.
 @MainActor
 final class HistoryViewModel: ObservableObject {

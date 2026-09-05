@@ -128,7 +128,7 @@ extension FlowProcessorProtocol {
     }
 
     /// Default typed entry for backends that only implement the legacy string
-    /// API (e.g. NeuralFlowProcessor). Wraps the legacy output in a typed
+    /// API (e.g. a string-only test fixture). Wraps the output in a typed
     /// FlowOutcome using the same guardrail semantics as the deterministic
     /// backend so the protocol is satisfied in Swift 6 language mode.
     public func process(_ request: FlowRequest) async -> FlowOutcome {
