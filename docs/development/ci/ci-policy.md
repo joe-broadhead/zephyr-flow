@@ -204,6 +204,15 @@ production release approval.
     are monotonic; inference-only duration and detected language are unknown,
     not fabricated from capture elapsed time or the requested locale. Native
     Speech accounting, cancellation/cleanup and device qualification remain open.
+    `SpeechFinalizationSignalTests` exercises the actual per-recognition waiter:
+    buffered early callbacks, one terminal winner, deadline, caller cancellation
+    and independent signals. Cancellation never reaches through a mutable actor
+    continuation into a later run. Apple holds a finalization token through unwind,
+    rejects concurrent finalize/reload, stops capture before requesting endAudio,
+    binds meter updates to the recognition token, and observes cancellation after
+    the wait. These are Core signal tests, not native Speech lifecycle tests:
+    outstanding callback/append shutdown ordering, early terminal capture signals,
+    frame evidence and real native cancellation/resource cleanup remain open.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

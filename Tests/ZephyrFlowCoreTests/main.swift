@@ -6470,6 +6470,32 @@ struct CoreTests {
             } catch { check("2286 typed snapshot encoding", false) }
         }
 
+        do {
+            let signal = SpeechFinalizationSignal()
+            check(
+                "2253 buffered final wins once",
+                signal.complete(.finalResult(hasText: true)) && !signal.complete(.cancelled))
+            do {
+                let event = try await signal.wait(deadlineNanosAhead: 1_000_000_000)
+                check("2253 pre-wait final is retained", event == .finalResult(hasText: true))
+                let deadline = SpeechFinalizationSignal()
+                let timedOut = try await deadline.wait(deadlineNanosAhead: 1_000_000)
+                check(
+                    "2253 final wait deadline",
+                    timedOut == .deadlineExceeded && !deadline.complete(.finalResult(hasText: true)))
+            } catch { check("2253 final signal unexpected error", false) }
+            let cancelled = SpeechFinalizationSignal()
+            let wait = Task { try await cancelled.wait(deadlineNanosAhead: 60_000_000_000) }
+            wait.cancel()
+            do {
+                _ = try await wait.value
+                check("2253 task cancellation must throw", false)
+            } catch is CancellationError { check("2253 task cancellation releases waiter", true) } catch {
+                check("2253 task cancellation unexpected error", false)
+            }
+            check("2253 cancelled signal rejects late callback", !cancelled.complete(.finalResult(hasText: true)))
+        }
+
         // ===== JOE-2287: serial deduplicated edge stream =====
         do {
             let mods = UInt64(HotkeyConfig.controlOptionSpace.modifiers)

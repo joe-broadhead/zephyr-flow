@@ -53,13 +53,12 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     private var startedAtNanos: UInt64?
     private var isStreaming = false
     private var latestLevels: [Float] = Array(repeating: 0.05, count: 24)
-    private var finalWaiters: [CheckedContinuation<Void, Never>] = []
     private var sawFinal = false
     private var lastError: String?
     // JOE-2253: tokenized callbacks + event-driven finalization.
     private var recognitionTracker = SpeechRecognitionTracker()
-    private var finalContinuation: CheckedContinuation<Void, Never>?
-    private var finalizationPending = false
+    private var finalSignal = SpeechFinalizationSignal()
+    private var finalizingToken: RecognitionToken?
     // JOE-2254: session language snapshot (for result metadata).
     private var currentLanguage: SupportedLanguage = .auto
 
@@ -67,7 +66,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
     func load(model: ModelIdentifier, verifiedFolder: String? = nil) async throws {
         guard model == .appleSpeech, verifiedFolder == nil else { throw WhisperEngineError.notReady }
-        guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
+        guard !isStreaming, finalizingToken == nil else { throw WhisperEngineError.alreadyStreaming }
         // No locale fallback or permission prompt here. The coordinator must
         // preflight the requested language before publishing this candidate.
         recognizer = nil
@@ -82,7 +81,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
     private func validateCapabilities(localOnly: Bool, language: SupportedLanguage) throws {
         guard isReady else { throw WhisperEngineError.notReady }
-        guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
+        guard !isStreaming, finalizingToken == nil else { throw WhisperEngineError.alreadyStreaming }
         // Auto means the user's current locale, not silent en-US substitution
         // or arbitrary SFSpeechRecognizer defaults. Fixed language stays exact.
         let locale = Locale(identifier: language.bcp47 ?? Locale.current.identifier)
@@ -105,7 +104,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws {
         guard isReady else { throw WhisperEngineError.notReady }
-        guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
+        guard !isStreaming, finalizingToken == nil else { throw WhisperEngineError.alreadyStreaming }
         // Recheck at capture admission as permissions/capabilities can change
         // after preparation. All checks are synchronous; no permission request
         // or reentrant await can start capture after an intervening cancel.
@@ -113,7 +112,9 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         guard let recognizer else { throw WhisperEngineError.notReady }
         currentLanguage = language
         // JOE-2253: unique token per start; callbacks carry it.
-        recognitionTracker.start(token: RecognitionToken())
+        let token = RecognitionToken()
+        recognitionTracker.start(token: token)
+        finalSignal = SpeechFinalizationSignal()
 
         self.onPartial = onPartial
         self.accumulated = ""
@@ -154,7 +155,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
             request.append(buffer)
             // Levels on actor
             let copy = Self.rmsLevels(from: buffer)
-            Task { await self.updateLevels(copy) }
+            Task { await self.updateLevels(copy, token: token) }
         }
 
         engine.prepare()
@@ -163,11 +164,10 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         } catch {
             input.removeTap(onBus: 0)
             cleanupStream()
-            throw WhisperEngineError.transcriptionFailed("Audio engine failed: \(error.localizedDescription)")
+            throw WhisperEngineError.transcriptionFailed("Audio engine failed to start")
         }
         self.audioEngine = engine
 
-        let token = recognitionTracker.currentToken ?? RecognitionToken()
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
             let callback = AppleSpeechCallback(
@@ -184,7 +184,18 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     }
 
     func stopAndFinalize() async throws -> FinalTranscription {
-        guard isStreaming else { throw WhisperEngineError.notStreaming }
+        guard isStreaming, let token = recognitionTracker.currentToken else { throw WhisperEngineError.notStreaming }
+        guard finalizingToken == nil else { throw WhisperEngineError.decodeBusy }
+        finalizingToken = token
+        let signal = finalSignal
+        defer {
+            if finalizingToken == token {
+                finalizingToken = nil
+                if recognitionTracker.isCurrent(token: token) { _ = recognitionTracker.cancel(token: token) }
+                finishRecognition()
+                cleanupStream()
+            }
+        }
 
         ZFLog.info("stopAndFinalize accumulated_len=\(accumulated.count) sawFinal=\(sawFinal)")
 
@@ -192,18 +203,15 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         // event (final result / terminal error / cancellation) until a
         // bounded deadline — never break early merely because partial text
         // exists (JOE-2253 event-driven finalization).
+        stopNativeCapture()
         request?.endAudio()
-
-        if !sawFinal && !finalizationPending {
-            finalizationPending = true
-            // Review R3.1: race the final event against a hard deadline with
-            // an actor-owned, cancel-aware wait (cannot hang past 2s).
-            await waitForFinalEvent(deadlineNanosAhead: 2_000_000_000)
-            // Deadline reached: a non-empty partial is only partial/degraded.
-            if !sawFinal {
-                let outcome = recognitionTracker.noteDeadline()
-                ZFLog.info("finalize deadline outcome=\(outcome.rawValue)")
-            }
+        let event = try await signal.wait(deadlineNanosAhead: 2_000_000_000)
+        try Task.checkCancellation()
+        guard isStreaming, recognitionTracker.currentToken == token else { throw CancellationError() }
+        if event == .cancelled { throw CancellationError() }
+        if event == .deadlineExceeded {
+            _ = recognitionTracker.noteDeadline()
+            sawFinal = false  // A late final cannot replace the winning deadline.
         }
 
         // Exactly-once release of task/tap/continuations.
@@ -213,7 +221,6 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         let started = startedAtNanos
         let ended = DispatchTime.now().uptimeNanoseconds
         let err = lastError
-        cleanupStream()
 
         ZFLog.info(
             "Final text len=\(finalText.count) hasError=\(err != nil)")
@@ -228,8 +235,9 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         // error and usable text. Any error keeps the result partial/degraded.
         let completeness = SpeechCompletenessPolicy.completeness(
             sawFinal: sawFinal, error: err, hasText: !finalText.isEmpty)
-        let warnings = SpeechCompletenessPolicy.warnings(
+        var warnings = SpeechCompletenessPolicy.warnings(
             sawFinal: sawFinal, error: err, hasText: !finalText.isEmpty)
+        if event == .deadlineExceeded { warnings.append(.deadlineExceeded) }
         let accounting = EngineFrameAccounting(
             capturedSourceSamples: 0,
             deliveredEngineSamples: 0,
@@ -250,7 +258,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
             inferenceDurationNanos: nil,  // Streaming framework does not expose inference-only timing.
             warnings: warnings,
             fallbackReason: (sawFinal && err == nil) ? nil : "rolling partial / degraded",
-            termination: err == nil ? .completed : .failed
+            termination: event == .deadlineExceeded ? .deadlineExceeded : (err == nil ? .completed : .failed)
         ).requiringCompletionEvidence()
     }
 
@@ -263,55 +271,12 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
     // MARK: - Private
 
-    /// Waits for the final recognition event (resumed exactly once by
-    /// finishRecognition from any terminal path).
-    private func awaitFinalEvent() async {
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            finalContinuation = cont
-            if sawFinal || recognitionTracker.finalEvent != nil {
-                finishRecognition()
-            }
-        }
-    }
-
-    /// Review R3.1: bounded, cancel-aware wait for the final recognition event.
-    /// Runs ON the actor so it can mutate finalContinuation; the deadline task
-    /// is a separate unstructured task that calls the actor to resume the
-    /// continuation if the final event never arrives — the wait can never hang.
-    private func waitForFinalEvent(deadlineNanosAhead: UInt64) async {
-        // The deadline task cancels the wait by resuming the continuation
-        // exactly once via the actor.
-        // The deadline task guarantees the wait is bounded: after the
-        // deadline it hops to the actor and resumes the continuation exactly
-        // once (if still pending). The continuation itself is stored on the
-        // actor, so no Sendable closure touches actor state.
-        let deadlineTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: deadlineNanosAhead)
-            await self?.cancelFinalizationWait()
-        }
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            finalContinuation = cont
-            if sawFinal || recognitionTracker.finalEvent != nil {
-                finishRecognition()  // resumes cont exactly once
-            }
-        }
-        deadlineTask.cancel()
-    }
-
-    /// Actor-side: resume the finalization continuation if still pending.
-    private func cancelFinalizationWait() {
-        if let cont = finalContinuation {
-            finalContinuation = nil
-            cont.resume()
-        }
-    }
-
     private func handleRecognition(
         token: RecognitionToken,
         callback: AppleSpeechCallback
     ) {
         // JOE-2253: reject callbacks whose token is no longer current.
-        guard recognitionTracker.isCurrent(token: token) else {
+        guard isStreaming, recognitionTracker.isCurrent(token: token) else {
             ZFLog.info("stale recognition callback rejected (token mismatch)")
             return
         }
@@ -325,7 +290,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
             }
             // Never log transcript content — lengths only (PII).
             ZFLog.info("partial isFinal=\(callback.isFinal) len=\(text.count) kept=\(accumulated.count)")
-            if callback.isFinal {
+            if callback.isFinal, callback.errorCode == nil {
                 sawFinal = callback.hasUsableFinalText
                 let outcome = recognitionTracker.noteFinal(token: token, hasText: callback.hasUsableFinalText)
                 ZFLog.info("final event outcome=\(outcome.rawValue) len=\(text.count)")
@@ -357,25 +322,22 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     private func finishRecognition() {
         task?.cancel()
         task = nil
+        stopNativeCapture()
         request?.endAudio()
         request = nil
+        finalSignal.complete(recognitionTracker.finalEvent ?? .cancelled)
+    }
+
+    private func stopNativeCapture() {
         if let engine = audioEngine {
             engine.inputNode.removeTap(onBus: 0)
             engine.stop()
         }
         audioEngine = nil
-        if recognitionTracker.markResumed() {
-            finalContinuation?.resume()
-            finalContinuation = nil
-        }
-        for waiter in finalWaiters {
-            waiter.resume()
-        }
-        finalWaiters = []
-        finalizationPending = false
     }
 
-    private func updateLevels(_ sampleLevel: Float) {
+    private func updateLevels(_ sampleLevel: Float, token: RecognitionToken) {
+        guard isStreaming, recognitionTracker.isCurrent(token: token) else { return }
         var next = latestLevels
         next.removeFirst()
         next.append(sampleLevel)
