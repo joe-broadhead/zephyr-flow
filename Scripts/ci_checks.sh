@@ -53,7 +53,7 @@ if ! run_logged xctest swift test; then fail "swift test"; fi
 if run_logged xctest-discovery swift test list; then
   for suite in M0ContractTests ProductionBlockerTests FlowProcessorTests ModelsTests \
       ProductionAudioTests ProductionBoundaryTests ProductionEngineTests ProductionOfflineTokenizerTests \
-      ProductionPreparationTests ProductionAcquisitionTests ProductionPasteboardTests ProductionHistoryTests FlowDeadlineTests ProductionSettingsTests ProductionFnPreferenceTests ProductionAdmissionTests AxBoundedRunnerTests; do
+      ProductionPreparationTests ProductionAcquisitionTests ProductionPasteboardTests ProductionHistoryTests FlowDeadlineTests ProductionSettingsTests ProductionFnPreferenceTests ProductionAdmissionTests AxBoundedRunnerTests ProductionTargetReadTests; do
     if ! grep -Eq "^ZephyrFlowTests[.]$suite/test" "$REPORT_DIR/xctest-discovery.log"; then
       fail "XCTest suite not discovered: $suite"
     fi

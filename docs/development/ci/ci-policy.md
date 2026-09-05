@@ -126,6 +126,18 @@ production release approval.
     completion; cancellation/timeout is not proof a write did not apply. This
     does not bound preflight/capture AX IPC, make scheduling hard real time,
     prove native memory bounds, or provide atomic target/clipboard exclusion.
+    `ProductionTargetReadTests` exercises the production target-capture and
+    current-context service with injected app/trust/metadata readers. External
+    metadata reads run on a dedicated bounded lane, not MainActor; timeout or
+    cancellation returns unknown and retains one reader until native completion.
+    Frontmost application/trust is rechecked before publication. Tests hold the
+    synthetic reader while MainActor runs, reject stale/cancelled results and
+    prevent concurrent retries. No real AX messages or target app activation
+    occurs. Native messaging timeout requests are an additional best effort,
+    not a proven OS cancellation guarantee. Full insertion preflight still has
+    AX calls outside this service; live field/window races and all-app deadline
+    qualification remain open. Missing frontmost-app metadata now fails unknown
+    instead of performing an unbounded AX fallback on MainActor.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
