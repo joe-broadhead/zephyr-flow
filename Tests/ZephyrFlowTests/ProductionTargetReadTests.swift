@@ -41,7 +41,7 @@
 
     final class ProductionTargetReadTests: XCTestCase {
         @MainActor
-        private func service(
+        private static func service(
             app: TargetReadApplication, native: TargetReadNativeFixture,
             lane: AxOperationLane = AxOperationLane(), budget: UInt64 = 5_000_000_000
         ) -> TargetValidationService {
@@ -51,9 +51,9 @@
         }
 
         func testMissingUntrustedIgnoredTargetsNeverInvokeNativeRead() async {
-            let app = await TargetReadApplication()
+            let app = await MainActor.run { TargetReadApplication() }
             let native = TargetReadNativeFixture()
-            let service = await service(app: app, native: native)
+            let service = await Self.service(app: app, native: native)
             for (bundle, trusted): (String?, Bool) in [
                 (nil, true), ("synthetic.target", false), ("com.apple.SecurityAgent", true),
             ] {
@@ -68,9 +68,9 @@
         }
 
         func testSnapshotAndValidationUseSameBoundedMetadataPath() async {
-            let app = await TargetReadApplication()
+            let app = await MainActor.run { TargetReadApplication() }
             let native = TargetReadNativeFixture()
-            let service = await service(app: app, native: native)
+            let service = await Self.service(app: app, native: native)
             let sid = SessionID(token: "target-fixture", sequence: 1, createdAtUptimeNanos: 1)
             let snapshot = await service.captureSnapshot(sessionID: sid, nowNanos: 2)
             let context = await service.currentContext(nowNanos: 3)
@@ -84,10 +84,10 @@
         }
 
         func testHeldReadLeavesMainActorResponsiveAndTimeoutRetainsOneReader() async throws {
-            let app = await TargetReadApplication()
+            let app = await MainActor.run { TargetReadApplication() }
             let native = TargetReadNativeFixture(held: true)
             let lane = AxOperationLane()
-            let service = await service(app: app, native: native, lane: lane, budget: 500_000_000)
+            let service = await Self.service(app: app, native: native, lane: lane, budget: 500_000_000)
             let read = Task { await service.currentContext(nowNanos: 1) }
             addTeardownBlock {
                 read.cancel()
@@ -110,9 +110,9 @@
 
         func testChangedApplicationOrRevokedTrustRejectsCompletedMetadata() async throws {
             for revoke in [false, true] {
-                let app = await TargetReadApplication()
+                let app = await MainActor.run { TargetReadApplication() }
                 let native = TargetReadNativeFixture(held: true)
-                let service = await service(app: app, native: native)
+                let service = await Self.service(app: app, native: native)
                 let read = Task { await service.currentContext(nowNanos: 1) }
                 addTeardownBlock {
                     read.cancel()
@@ -134,10 +134,10 @@
         }
 
         func testCancellationRejectsLateSnapshotWithoutJoiningNativeRead() async throws {
-            let app = await TargetReadApplication()
+            let app = await MainActor.run { TargetReadApplication() }
             let native = TargetReadNativeFixture(held: true)
             let lane = AxOperationLane()
-            let service = await service(app: app, native: native, lane: lane)
+            let service = await Self.service(app: app, native: native, lane: lane)
             let sid = SessionID(token: "target-fixture", sequence: 1, createdAtUptimeNanos: 1)
             let read = Task { await service.captureSnapshot(sessionID: sid, nowNanos: 2) }
             addTeardownBlock {
