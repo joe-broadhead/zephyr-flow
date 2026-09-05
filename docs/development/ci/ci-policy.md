@@ -72,6 +72,16 @@ production release approval.
     not a passing Flow release gate. The corpus and numeric budgets are not
     changed by this fix. Reviewed corpus completion and independently verified
     policy/candidate provenance remain separate acceptance work.
+    `FlowDeadlineTests` holds synthetic backend/configuration actors across
+    caller deadlines and cancellation. Flow's typed request deadline covers
+    routing, configuration, regex and enhanced work; callers do not join a
+    noncooperative child task. One outstanding worker remains owned until its
+    actual return; requests while busy receive an explicit verbatim fallback
+    rather than queue more native work. Deadline fallback preserves the exact
+    input without token scanning (the diagnostic span count is not a census).
+    OS scheduling is not a hard-real-time guarantee, and a stuck worker can
+    retain one request until it finishes. No semantic-quality or device-latency
+    qualification is inferred from these controlled tests.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

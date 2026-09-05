@@ -9,6 +9,7 @@ FAILURES=0
 REPORT_DIR="${ZF_CI_REPORT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/zephyr-ci.XXXXXX")}"
 mkdir -p "$REPORT_DIR"
 REPORT_DIR="$(cd "$REPORT_DIR" && pwd)"
+export ZF_FLOW_REPORT_PATH="$REPORT_DIR/flow-fidelity-report.json"
 export LC_ALL=C
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -52,7 +53,7 @@ if ! run_logged xctest swift test; then fail "swift test"; fi
 if run_logged xctest-discovery swift test list; then
   for suite in M0ContractTests ProductionBlockerTests FlowProcessorTests ModelsTests \
       ProductionAudioTests ProductionBoundaryTests ProductionEngineTests ProductionOfflineTokenizerTests \
-      ProductionPreparationTests ProductionAcquisitionTests ProductionPasteboardTests ProductionHistoryTests; do
+      ProductionPreparationTests ProductionAcquisitionTests ProductionPasteboardTests ProductionHistoryTests FlowDeadlineTests; do
     if ! grep -Eq "^ZephyrFlowTests[.]$suite/test" "$REPORT_DIR/xctest-discovery.log"; then
       fail "XCTest suite not discovered: $suite"
     fi

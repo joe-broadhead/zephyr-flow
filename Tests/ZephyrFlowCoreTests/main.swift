@@ -497,7 +497,25 @@ final class InMemoryHistoryFS: HistoryFileSystem, @unchecked Sendable {
     func setPermissions(_ url: URL, mode: Int) throws {}
 }
 
-/// Round-6: concurrency-safe failure counter for the split test runner.
+/// Held synthetic backend for non-joining Flow deadline regression checks.
+private actor CoreHeldFlowBackend: FlowProcessorProtocol {
+    private(set) var entered = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func process(_ text: String, style: FlowStyle) async -> String { text }
+    func process(_ request: FlowRequest) async -> FlowOutcome {
+        entered = true
+        if !released { await withCheckedContinuation { continuation = $0 } }
+        return await FlowProcessor.shared.process(request)
+    }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+/// Concurrency-safe failure counter for the split test runner.
 private final class CoreTestCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var _value = 0
@@ -3962,11 +3980,18 @@ struct CoreTests {
                 "goldenExact": stats.golden,
                 "deterministicRuns": stats.deterministic,
                 "failures": failures,
+                "releaseGatePassed": gateResult == .pass,
+                "releaseGateResult": String(describing: gateResult),
+                "requiredStyleCount": FlowReleasePolicy.current.budgets.count,
+                "measuredStyleCount": perStyle.count,
             ]
-            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]),
-                let text = String(data: data, encoding: .utf8)
-            {
-                try? text.write(toFile: "/tmp/flow-fidelity-report.json", atomically: true, encoding: .utf8)
+            if let path = ProcessInfo.processInfo.environment["ZF_FLOW_REPORT_PATH"] {
+                do {
+                    let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted])
+                    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                } catch {
+                    check("2281 requested Flow evidence write must succeed", false)
+                }
             }
         }
 
@@ -4061,6 +4086,30 @@ struct CoreTests {
     }
 
     static func runPart5() async {
+        do {
+            let backend = CoreHeldFlowBackend()
+            let router = FlowRouter(regex: backend)
+            let request = FlowRequest(
+                sessionID: SessionID(token: "deadline", sequence: 1, createdAtUptimeNanos: 0),
+                text: "  synthetic café -12 kg  ", style: .clean, language: .enUS,
+                sensitivity: .normal, deadlineNanosAhead: 100_000_000)
+            let output = await router.process(request)
+            let entered = await backend.entered
+            check(
+                "2279 request deadline returns before native completion", output.status == .deadlineExceeded && entered)
+            check(
+                "2279 deadline fallback preserves exact Unicode and whitespace",
+                output.text == request.text && output.resolvedLossClass == .verbatim)
+            check("2279 deadline retains native work owner", await router.hasOutstandingWork)
+            let busy = await router.process(request)
+            check("2279 busy native backend does not accumulate work", busy.status == .rejected)
+            await backend.release()
+            for _ in 0..<500 {
+                if !(await router.hasOutstandingWork) { break }
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            check("2279 actual completion releases native owner", !(await router.hasOutstandingWork))
+        }
         do {
             let keyCalls = CoreTestCounter()
             let repo = ActorHistoryRepository(

@@ -143,6 +143,9 @@ public enum FlowWarning: String, Codable, CaseIterable, Sendable, Equatable {
     case structuralFallback
     case enhancedTimeout
     case lateResultIgnored
+    /// Original text returned without token scanning; protectedSpanCount is
+    /// not a measured census on this zero-transformation deadline path.
+    case verbatimFallback
 }
 
 /// Typed Flow outcome: transformation risk, actual changes, fallback and
