@@ -1,5 +1,6 @@
 """Run the real shell runner with fake tools in an isolated throwaway repo."""
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -82,6 +83,17 @@ class GateRunnerTests(unittest.TestCase):
                      "format", "actions", "docs", "coverage-tests", "coverage-core", "coverage-report", "asan", "stress"]:
             self.assertTrue((self.report / f"{name}.log").exists(), name)
         self.assertIn("exit_code=0", (self.report / "result.txt").read_text())
+        locations = json.loads((self.report / "warning-locations.json").read_text())
+        self.assertEqual(locations["primary_emissions"], 0)
+        self.assertEqual(locations["diagnostics"], [])
+
+    def test_warning_location_evidence_is_retained_on_failure(self):
+        result = self.run_gate("new-warning")
+        self.assertNotEqual(result.returncode, 0)
+        locations = json.loads((self.report / "warning-locations.json").read_text())
+        self.assertEqual(locations["primary_emissions"], 1)
+        self.assertEqual(locations["distinct_source_locations"], 1)
+        self.assertEqual(locations["diagnostics"][0]["key"], "Sources/Example.swift | new synthetic warning")
 
     def test_missing_required_tool_fails_preflight(self):
         (self.bin / "mkdocs").unlink()

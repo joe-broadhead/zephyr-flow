@@ -68,11 +68,61 @@
             XCTAssertEqual(original, decoded)
         }
 
-        func testInsertionResultMessages() {
-            XCTAssertNil(InsertionResult.inserted.userMessage)
-            XCTAssertEqual(InsertionResult.copiedToClipboard.userMessage, "Copied to clipboard")
-            XCTAssertTrue(InsertionResult.pasted.succeeded)
-            XCTAssertFalse(InsertionResult.failed("x").succeeded)
+        func testInsertionOutcomeDistinguishesVerifiedWriteFromPostedEvent() {
+            let verified = InsertionOutcome.verifiedInserted(
+                strategy: .axSelectedText, evidence: .postWriteSelectionReRead, warnings: [])
+            XCTAssertTrue(verified.isVerifiedSuccess)
+            XCTAssertTrue(verified.isCompletedAction)
+            XCTAssertTrue(verified.permitsGreenSuccessUI)
+            XCTAssertTrue(verified.permitsHistoryRetention)
+            XCTAssertEqual(verified.userFacingMessage, "Inserted")
+
+            let posted = InsertionOutcome.eventPostedUnverified(
+                strategy: .clipboardPaste, warnings: [.noPostWriteVerification])
+            XCTAssertTrue(posted.isCompletedAction)
+            XCTAssertFalse(posted.isVerifiedSuccess)
+            XCTAssertFalse(posted.permitsGreenSuccessUI)
+            XCTAssertFalse(posted.permitsHistoryRetention)
+            XCTAssertEqual(posted.userFacingMessage, "Paste sent — verify destination")
+        }
+
+        func testInsertionOutcomeDistinguishesExplicitCopyFromAutomaticCopy() {
+            let explicit = InsertionOutcome.explicitlyCopiedByUser
+            XCTAssertTrue(explicit.isCompletedAction)
+            XCTAssertFalse(explicit.isVerifiedSuccess, "copy is not evidence of target insertion")
+            XCTAssertTrue(explicit.permitsGreenSuccessUI)
+            XCTAssertEqual(explicit.userFacingMessage, "Copied to clipboard")
+
+            let automatic = InsertionOutcome.automaticCopy
+            XCTAssertTrue(automatic.isCompletedAction)
+            for outcome in [automatic, .automaticCopyBlocked] {
+                XCTAssertFalse(outcome.isVerifiedSuccess)
+                XCTAssertFalse(outcome.permitsGreenSuccessUI)
+                XCTAssertFalse(outcome.permitsHistoryRetention)
+                XCTAssertFalse(outcome.permitsAutomaticPanelDismissal)
+                XCTAssertTrue(outcome.isUncertain)
+            }
+            XCTAssertFalse(InsertionOutcome.automaticCopyBlocked.isCompletedAction)
+            XCTAssertNotEqual(automatic.userFacingMessage, explicit.userFacingMessage)
+        }
+
+        func testInsertionUncertaintyAndFailureCannotClaimSuccess() {
+            let outcomes: [InsertionOutcome] = [
+                .targetChanged, .targetGone, .targetUnknown, .secureTarget, .notEditable,
+                .clipboardNotRestoredBecauseChanged, .clipboardRestoreFailed,
+                .deadlineExceeded, .writeMayHaveApplied, .cancelled, .failed("synthetic failure"),
+            ]
+            for outcome in outcomes {
+                XCTAssertFalse(outcome.isVerifiedSuccess)
+                XCTAssertFalse(outcome.isCompletedAction)
+                XCTAssertFalse(outcome.permitsGreenSuccessUI)
+                XCTAssertFalse(outcome.permitsHistoryRetention)
+                XCTAssertFalse(outcome.permitsAutomaticPanelDismissal)
+            }
+            XCTAssertTrue(InsertionOutcome.writeMayHaveApplied.isUncertain)
+            XCTAssertEqual(
+                InsertionOutcome.writeMayHaveApplied.userFacingMessage,
+                "The write may have applied — verify the destination before retrying")
         }
 
         func testHistoryEntryIdentity() {

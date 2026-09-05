@@ -19,9 +19,11 @@ concurrency:
 jobs:
   test-macos:
     name: Test & Build (macOS)
-    # macos-15 ships Swift 6.x required by WhisperKit → swift-jinja 2.x
+    # Keep the app and validation toolchains aligned, not the image's default.
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -31,9 +33,16 @@ jobs:
       - name: Show toolchain
         run: |
           set -euo pipefail
+          test -d "$DEVELOPER_DIR"
           sw_vers
           swift --version
-          xcodebuild -version || true
+          swift format --version
+          xcode_version="$(xcodebuild -version)" || exit 1
+          printf '%s\n' "$xcode_version"
+          if [[ "$xcode_version" != $'Xcode 16.4\nBuild version 16F6' ]]; then
+            echo "Required Xcode 16.4 / 16F6 is not selected" >&2
+            exit 1
+          fi
 
       - name: Core tests
         run: swift run ZephyrFlowCoreTests
@@ -64,6 +73,8 @@ jobs:
     name: Gates (XCTest, strict concurrency, lint, format, docs, version, drift, coverage)
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -77,10 +88,17 @@ jobs:
           echo "ZF_CI_REPORT_DIR=$ZF_CI_REPORT_DIR" >> "$GITHUB_ENV"
           mkdir -p "$ZF_CI_REPORT_DIR"
           {
+            test -d "$DEVELOPER_DIR"
             git rev-parse HEAD
             sw_vers
             swift --version
-            xcodebuild -version
+            swift format --version
+            xcode_version="$(xcodebuild -version)" || exit 1
+            printf '%s\n' "$xcode_version"
+            if [[ "$xcode_version" != $'Xcode 16.4\nBuild version 16F6' ]]; then
+              echo "Required Xcode 16.4 / 16F6 is not selected" >&2
+              exit 1
+            fi
             xcrun --find xctest
           } 2>&1 | tee "$ZF_CI_REPORT_DIR/toolchain.log"
 
@@ -121,6 +139,7 @@ jobs:
             ${{ runner.temp }}/zephyr-gates/*.log
             ${{ runner.temp }}/zephyr-gates/*.txt
             ${{ runner.temp }}/zephyr-gates/*.tsv
+            ${{ runner.temp }}/zephyr-gates/*.json
             ${{ runner.temp }}/zephyr-gates/coverage.*/
           if-no-files-found: error
           retention-days: 30

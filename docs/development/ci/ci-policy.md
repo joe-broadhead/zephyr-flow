@@ -24,9 +24,20 @@ production release approval.
    repository-relative file identity, diagnostic and occurrence count.
    New/increased warnings and unrecognized warning formats fail; reductions
    are allowed. Baseline expansion requires a separate reviewed change.
+   `warning-locations.json` additionally groups primary emissions by diagnostic
+   and line/column within that build, retaining unlocated warnings. This is
+   diagnostic evidence, **not a deduplicated replacement budget**. Coordinates
+   are not stable identities across edits; compiler changes can alter IDs,
+   messages and emission counts. The historical baseline does not identify its
+   exact compiler/build settings. Such mismatches require same-toolchain source
+   review, not automatic baseline regeneration or warning suppression.
 4. **Formatting and strings** — strict recursive Swift formatting plus
    `Scripts/string_scan.py`. The string scan resolves known catalogue
    references; it is not complete localization or accessibility acceptance.
+   The multiline-string reflow option retains the `never` policy using the
+   Swift 6.1-compatible object encoding. A small decoder-shape regression and
+   an installed-formatter smoke test check compatibility separately; the former
+   does not execute an older formatter. Strict recursive lint is still required.
 5. **Lint and gate regressions** — recursive Bash/ShellCheck checks,
    `actionlint .github/workflows/ci.yml` (including Actions context rules),
    workflow YAML syntax, and `python3 -m unittest discover -s Tests/CI -p 'test_*.py'`.
@@ -73,8 +84,13 @@ may prevent artifact upload and must not be interpreted as completed evidence.
 
 ## Tool versions and reproducibility
 
-- CI records the actual macOS/Xcode/Swift versions. `macos-15`, the selected
-  Xcode, Python 3.12 patch and Homebrew ShellCheck/actionlint are not immutable tool pins.
+- Both macOS jobs select `/Applications/Xcode_16.4.app/Contents/Developer` and
+  require Xcode **16.4 / 16F6** before building; a missing or mismatched toolchain
+  fails rather than falling back to the runner default. CI records actual
+  macOS/Xcode/Swift/formatter versions. This selection does not retroactively
+  qualify the historical warning baseline or establish Swift 6 language-mode
+  acceptance. `macos-15`, Python 3.12 patch and Homebrew ShellCheck/actionlint
+  remain unpinned; this is not a fully reproducible runner image.
 - Python gate packages are installed in a temporary virtual environment, never
   into Homebrew/system Python. Setup errors are not suppressed. Direct versions
   in `Scripts/ci/requirements.txt` constrain the shared docs requirements;

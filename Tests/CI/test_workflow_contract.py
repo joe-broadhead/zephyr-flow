@@ -1,8 +1,10 @@
 """Static CI configuration checks, not a substitute for running GitHub CI."""
 
+import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 import unittest
 
 import yaml
@@ -41,7 +43,7 @@ class WorkflowContractTests(unittest.TestCase):
         upload = next(s for s in self.gates["steps"] if "upload-artifact@" in s.get("uses", ""))
         self.assertEqual(upload["if"], "always()")
         self.assertEqual(upload["with"]["if-no-files-found"], "error")
-        for suffix in ["*.log", "*.txt", "*.tsv", "coverage.*/"]:
+        for suffix in ["*.log", "*.txt", "*.tsv", "*.json", "coverage.*/"]:
             self.assertIn(suffix, upload["with"]["path"])
         self.assertIn("runner.temp", upload["with"]["path"])
         # runner context is valid in step inputs, but NOT job-level env.
@@ -56,6 +58,51 @@ class WorkflowContractTests(unittest.TestCase):
         for step in self.gates["steps"]:
             if "uses" in step:
                 self.assertRegex(step["uses"], r"@[0-9a-f]{40}$")
+
+    def test_macos_jobs_select_the_same_explicit_xcode(self):
+        for name in ["test-macos", "gates"]:
+            job = self.workflow["jobs"][name]
+            self.assertEqual(job["env"]["DEVELOPER_DIR"], "/Applications/Xcode_16.4.app/Contents/Developer")
+            self.assertNotIn("continue-on-error", job)
+
+    def test_toolchain_verification_rejects_missing_or_wrong_xcode(self):
+        # Execute the workflow shell with tool doubles: selection/exit handling
+        # only, not evidence that an Xcode compiler has actually run.
+        steps = [self.workflow["jobs"]["test-macos"]["steps"], self.gates["steps"]]
+        for job_steps in steps:
+            script = next(s["run"] for s in job_steps if s["name"] in [
+                "Show toolchain", "Prepare gate reports and verify Xcode"])
+            for version, missing, tool_exit in [("Xcode 16.4\nBuild version 16F6", False, 0),
+                                                ("Xcode 16.4\nBuild version wrong", False, 0),
+                                                ("Xcode 99\nBuild version 16F6", False, 0),
+                                                ("Xcode 16.4\nBuild version 16F6", True, 0),
+                                                ("Xcode 16.4\nBuild version 16F6", False, 17)]:
+                with self.subTest(version=version, missing=missing, tool_exit=tool_exit, script=script):
+                    with tempfile.TemporaryDirectory(prefix="zephyr-xcode-pin-") as directory:
+                        root = Path(directory)
+                        tools = root / "bin"
+                        tools.mkdir()
+                        developer = root / "Developer"
+                        if not missing:
+                            developer.mkdir()
+                        # /usr/bin/git is also an Xcode shim on macOS; isolate it
+                        # so this fixture never resolves the synthetic developer dir.
+                        for tool in ["swift", "sw_vers", "xcrun", "xcodebuild", "git"]:
+                            body = ('printf \'%s\\n\' "$ZF_TEST_XCODE_VERSION"; exit "$ZF_TEST_XCODE_EXIT"'
+                                    if tool == "xcodebuild"
+                                    else 'echo "synthetic toolchain test double"')
+                            executable = tools / tool
+                            executable.write_text("#!/bin/bash\n" + body + "\n")
+                            executable.chmod(0o755)
+                        env = {**os.environ, "PATH": f"{tools}:/usr/bin:/bin", "DEVELOPER_DIR": str(developer),
+                               "RUNNER_TEMP": str(root), "GITHUB_ENV": str(root / "github-env"),
+                               "ZF_TEST_XCODE_VERSION": version, "ZF_TEST_XCODE_EXIT": str(tool_exit)}
+                        result = subprocess.run(["/bin/bash", "-c", script], cwd=ROOT, env=env,
+                                                capture_output=True, text=True, timeout=10)
+                        if missing or tool_exit or version != "Xcode 16.4\nBuild version 16F6":
+                            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        else:
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_actions_validator_rejects_original_context_error(self):
         fixture = """name: Context regression

@@ -83,10 +83,12 @@ fi
 # Compare primary occurrences using this checkout's actual root, not a
 # hard-coded directory name. Reductions are allowed; new files, warnings or
 # increased occurrence counts fail. Baseline expansion needs separate review.
+# The location sidecar explains repeated emissions without relaxing that budget.
 if ! run_logged strict-warnings python3 Scripts/ci/check_warnings.py \
     --root "$ROOT" --build-log "$REPORT_DIR/strict-build.log" \
     --baseline docs/development/ci/strict-concurrency-warnings-baseline.txt \
-    --output "$REPORT_DIR/warnings.txt"; then
+    --output "$REPORT_DIR/warnings.txt" \
+    --locations-output "$REPORT_DIR/warning-locations.json"; then
   fail "new or unparseable strict-concurrency warnings"
 fi
 
