@@ -176,7 +176,7 @@ final class HotkeyService: ObservableObject {
         }
     }
 
-    /// Bounded lost-release sweep: never leaves hold/toggle armed forever.
+    /// Recover observed key-up, not merely two seconds of elapsed hold time.
     private func startLostReleaseSweep() {
         lostReleaseTimer?.invalidate()
         lostReleaseTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -246,6 +246,7 @@ final class HotkeyService: ObservableObject {
     // MARK: - Edges
 
     private func emitEdge(down: Bool) {
+        guard started else { return }
         guard !(config.specialKey == .fn && fnRecoveryRequired) else { return }
         if mode == .holdToTalk {
             if down && !isKeyDown {
@@ -349,6 +350,7 @@ final class HotkeyTapEngine: @unchecked Sendable {
         thread.qualityOfService = .userInteractive
         lock.lock()
         runGeneration = generation
+        edgeStream.setLifecycle(.starting)
         tapThread = thread
         lock.unlock()
         thread.start()
@@ -364,6 +366,7 @@ final class HotkeyTapEngine: @unchecked Sendable {
         let runLoop = tapRunLoop
         let thread = tapThread
         runGeneration = nil
+        edgeStream.setLifecycle(.stopping)
         lock.unlock()
 
         if let runLoop {
@@ -389,6 +392,7 @@ final class HotkeyTapEngine: @unchecked Sendable {
         runLoopSource = nil
         tapRunLoop = nil
         tapThread = nil
+        edgeStream.setLifecycle(.stopped)
         lock.unlock()
 
         DispatchQueue.main.async { [weak self] in
@@ -398,10 +402,19 @@ final class HotkeyTapEngine: @unchecked Sendable {
         return joined
     }
 
-    /// Time-based fail-safe for lost releases (bounded consumer-side sweep).
+    /// Query key state read-only; tests inject the resulting Boolean in Core.
     func sweepLostRelease(nowNanos: UInt64) -> Bool {
         lock.lock()
-        let recovered = edgeStream.sweepLostRelease(nowNanos: nowNanos)
+        let observedKey: UInt16?
+        switch special {
+        case .fn: observedKey = 63
+        case .rightOption: observedKey = 61
+        case .rightCommand: observedKey = 54
+        case .rightControl: observedKey = 62
+        case .none: observedKey = keyCode
+        }
+        let observed = observedKey.map { CGEventSource.keyState(.combinedSessionState, key: $0) }
+        let recovered = edgeStream.sweepLostRelease(nowNanos: nowNanos, observedKeyDown: observed)
         lock.unlock()
         if recovered {
             onEdge?(false)
@@ -550,8 +563,14 @@ final class HotkeyTapEngine: @unchecked Sendable {
 
         CFRunLoopAddSource(runLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-
-        onStatus?("Tap OK (\(label)) ax=\(AXIsProcessTrusted())", true)
+        let ready = lock.withLock {
+            guard runGeneration == generation, !Thread.current.isCancelled, CGEvent.tapIsEnabled(tap: tap) else {
+                return false
+            }
+            edgeStream.setLifecycle(.healthy)
+            return true
+        }
+        if ready { onStatus?("Tap OK (\(label)) ax=\(AXIsProcessTrusted())", true) }
 
         while !Thread.current.isCancelled {
             let result = CFRunLoopRunInMode(.defaultMode, 15.0, false)
@@ -570,6 +589,7 @@ final class HotkeyTapEngine: @unchecked Sendable {
         CFRunLoopRemoveSource(runLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: false)
         if runGeneration == generation {
+            edgeStream.setLifecycle(.stopped)
             eventTap = nil
             runLoopSource = nil
             tapRunLoop = nil
@@ -592,8 +612,6 @@ final class HotkeyTapEngine: @unchecked Sendable {
 
         lock.lock()
         let special = self.special
-        let configuredKey = self.keyCode
-        let configuredMods = self.modifiers
         lock.unlock()
 
         switch special {
@@ -623,7 +641,7 @@ final class HotkeyTapEngine: @unchecked Sendable {
         case .rightControl:
             return handleRightModCG(type: type, event: event, expected: 62, mask: .maskControl)
         case .none:
-            return handleStandardCG(type: type, event: event, keyCode: configuredKey, modifiers: configuredMods)
+            return handleStandardCG(type: type, event: event)
         }
     }
 
@@ -649,50 +667,48 @@ final class HotkeyTapEngine: @unchecked Sendable {
 
     private func handleStandardCG(
         type: CGEventType,
-        event: CGEvent,
-        keyCode: UInt16?,
-        modifiers: UInt
+        event: CGEvent
     ) -> Unmanaged<CGEvent>? {
-        guard let keyCode else { return Unmanaged.passUnretained(event) }
-        let eventKey = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        guard eventKey == keyCode else { return Unmanaged.passUnretained(event) }
-
-        let needed = CGEventFlags(rawValue: UInt64(modifiers))
-        let relevant: CGEventFlags = [.maskCommand, .maskShift, .maskAlternate, .maskControl]
-        let current = event.flags.intersection(relevant)
-        let required = needed.intersection(relevant)
-        guard current == required else { return Unmanaged.passUnretained(event) }
-
-        if type == .keyDown {
-            let autorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-            feedRaw(
-                HotkeySourceEvent(
-                    source: .tap, down: true,
-                    keyCode: eventKey,
-                    flags: event.flags.rawValue,
-                    isFnKey: false, isAutorepeat: autorepeat,
-                    timestampNanos: nowNanos()))
-        } else if type == .keyUp {
-            feedRaw(
-                HotkeySourceEvent(
-                    source: .tap, down: false,
-                    keyCode: eventKey,
-                    flags: event.flags.rawValue,
-                    isFnKey: false, timestampNanos: nowNanos()))
+        guard
+            let input = Self.standardInput(
+                type: type,
+                keyCode: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags.rawValue,
+                isAutorepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0)
+        else {
+            return Unmanaged.passUnretained(event)
         }
+        let edge = lock.withLock { () -> Bool? in
+            guard special == nil else { return nil }
+            return edgeStream.feedStandard(input, requiredModifiers: UInt64(modifiers), timestampNanos: nowNanos())
+        }
+        if let edge { onEdge?(edge) }
+        // Observational shortcut: event consumption/OS conflict qualification
+        // is separate. Never claim that other apps cannot see the chord.
         return Unmanaged.passUnretained(event)
+    }
+
+    static func standardInput(type: CGEventType, keyCode: Int64, flags: UInt64, isAutorepeat: Bool)
+        -> StandardHotkeyEvent?
+    {
+        if type == .flagsChanged { return .flagsChanged(flags: flags) }
+        guard let key = UInt16(exactly: keyCode) else { return nil }
+        switch type {
+        case .keyDown: return .keyDown(keyCode: key, flags: flags, isAutorepeat: isAutorepeat)
+        case .keyUp: return .keyUp(keyCode: key, flags: flags)
+        default: return nil
+        }
     }
 
     // MARK: One serial edge machine
 
     private func feedRaw(_ event: HotkeySourceEvent) {
-        var emit = false
         lock.lock()
-        emit = edgeStream.feed(event)
+        let emit = edgeStream.feed(event)
+        let down = edgeStream.heldDown
         lock.unlock()
         if emit {
-            onDebug?("logical edge down=\(event.down) src=\(event.source.rawValue)")
-            onEdge?(event.down)
+            onDebug?("logical edge down=\(down) src=\(event.source.rawValue)")
+            onEdge?(down)
         }
     }
 }

@@ -6398,6 +6398,57 @@ struct CoreTests {
 
         // ===== JOE-2287: serial deduplicated edge stream =====
         do {
+            let mods = UInt64(HotkeyConfig.controlOptionSpace.modifiers)
+            let down = StandardHotkeyEvent.keyDown(keyCode: 49, flags: mods, isAutorepeat: false)
+            for remaining in [UInt64(0), 1 << 18, 1 << 19, mods | (1 << 20)] {
+                var stream = HotkeyEdgeStream(configIsFn: false, configKeyCode: 49)
+                check(
+                    "2287 stopped standard input ignored",
+                    stream.feedStandard(down, requiredModifiers: mods, timestampNanos: 1) == nil)
+                stream.setLifecycle(.healthy)
+                check(
+                    "2287 standard chord pressed",
+                    stream.feedStandard(down, requiredModifiers: mods, timestampNanos: 2) == true)
+                check(
+                    "2287 modifier-first release emitted",
+                    stream.feedStandard(.flagsChanged(flags: remaining), requiredModifiers: mods, timestampNanos: 3)
+                        == false)
+                check(
+                    "2287 modifier repress never arms",
+                    stream.feedStandard(.flagsChanged(flags: mods), requiredModifiers: mods, timestampNanos: 4) == nil)
+                check(
+                    "2287 held primary key cannot rearm",
+                    stream.feedStandard(down, requiredModifiers: mods, timestampNanos: 5) == nil)
+                check(
+                    "2287 primary up deduplicated",
+                    stream.feedStandard(.keyUp(keyCode: 49, flags: 0), requiredModifiers: mods, timestampNanos: 6)
+                        == nil)
+                check(
+                    "2287 rapid fresh press is not cross-source duplicate",
+                    stream.feedStandard(down, requiredModifiers: mods, timestampNanos: 7) == true)
+                check(
+                    "2287 primary up ignores modifier mismatch",
+                    stream.feedStandard(.keyUp(keyCode: 49, flags: 0), requiredModifiers: mods, timestampNanos: 8)
+                        == false)
+                check(
+                    "2287 one pair per physical chord", stream.presses == 2 && stream.releases == 2 && !stream.heldDown)
+            }
+            var held = HotkeyEdgeStream(configIsFn: false, configKeyCode: 49)
+            held.setLifecycle(.healthy)
+            _ = held.feedStandard(down, requiredModifiers: mods, timestampNanos: 2)
+            check(
+                "2287 real ten-minute hold not lost release",
+                !held.sweepLostRelease(nowNanos: 600_000_000_000, observedKeyDown: true))
+            check(
+                "2287 absent key-state evidence is not release",
+                !held.sweepLostRelease(nowNanos: 600_000_000_000, observedKeyDown: nil))
+            check(
+                "2287 backward sweep clock does not trap", !held.sweepLostRelease(nowNanos: 1, observedKeyDown: false))
+            check(
+                "2287 observed key-up recovers lost edge",
+                held.sweepLostRelease(nowNanos: 600_000_000_000, observedKeyDown: false))
+        }
+        do {
             // 1. One physical action, three sources -> ONE logical pair.
             var es = HotkeyEdgeStream(configIsFn: true)
             es.setLifecycle(.healthy)
@@ -6448,7 +6499,8 @@ struct CoreTests {
             check("2287 held after down", es2.heldDown)
             check(
                 "2287 lost release recovered",
-                es2.sweepLostRelease(nowNanos: t0 + HotkeyEdgeStream.lostReleaseTimeoutNanos + 1))
+                es2.sweepLostRelease(
+                    nowNanos: t0 + HotkeyEdgeStream.lostReleaseTimeoutNanos + 1, observedKeyDown: false))
             check("2287 not held after sweep", !es2.heldDown)
             check("2287 recovered counted", es2.lostReleasesRecovered == 1)
 

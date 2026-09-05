@@ -182,6 +182,14 @@ production release approval.
     submission, Gatekeeper or signing qualification. Release preflights remain
     explicitly blocked with no automated tag/publish or ad-hoc fallback. See
     `Scripts/release/README.md` for the separate operation/acceptance boundaries.
+    Hotkey Core and production value-mapping tests cover conventional modifier-
+    first/key-first release, exact modifier admission, no repeat/repress re-arm,
+    native modifier constants and observed-key-up recovery. They never create
+    or post CGEvents, start an event tap, read keyboard state, or touch settings.
+    The native adapter now advances Core lifecycle after enabled-tap evidence;
+    a two-second elapsed hold alone is no longer a lost-release receipt. Actual
+    keyboard, native thread/restart/late callback, OS shortcut conflicts and
+    ten-minute physical hold behavior remain unqualified.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

@@ -50,6 +50,14 @@ public enum HotkeyLifecycleState: String, Codable, Sendable, Equatable {
     case stopping
 }
 
+/// Value-only conventional shortcut input. Flags changes can release a chord,
+/// but never begin a recording without a fresh non-repeat primary-key down.
+public enum StandardHotkeyEvent: Sendable, Equatable {
+    case keyDown(keyCode: UInt16, flags: UInt64, isAutorepeat: Bool)
+    case keyUp(keyCode: UInt16, flags: UInt64)
+    case flagsChanged(flags: UInt64)
+}
+
 public struct HotkeyEdgeReport: Sendable, Equatable {
     public let presses: Int
     public let releases: Int
@@ -81,7 +89,8 @@ public struct HotkeyEdgeStream: Sendable, Equatable {
     private var configKeyCode: UInt16?
     private var configIsFn: Bool
     private var chordBlockedUntilRelease = false
-    private var activeChordModifiers = false
+    private var standardKeyDown = false
+    public static let conventionalModifierMask: UInt64 = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
 
     public init(configIsFn: Bool, configKeyCode: UInt16? = nil) {
         self.configIsFn = configIsFn
@@ -109,7 +118,7 @@ public struct HotkeyEdgeStream: Sendable, Equatable {
         lastLogicalDownNanos = nil
         lastPressSource = nil
         chordBlockedUntilRelease = false
-        activeChordModifiers = false
+        standardKeyDown = false
     }
 
     public mutating func setLifecycle(_ state: HotkeyLifecycleState) {
@@ -120,7 +129,41 @@ public struct HotkeyEdgeStream: Sendable, Equatable {
                 emitRelease(reason: "lifecycle-\(state.rawValue)")
             }
             heldDown = false
+            standardKeyDown = false
         }
+    }
+
+    /// Called under the same owner lock as feed/configuration/lifecycle. The
+    /// primary key stays physically latched after modifier release, so adding
+    /// modifiers back or autorepeat cannot re-arm a partially released chord.
+    public mutating func feedStandard(
+        _ event: StandardHotkeyEvent, requiredModifiers: UInt64, timestampNanos: UInt64
+    ) -> Bool? {
+        guard !configIsFn, let key = configKeyCode, lifecycle == .healthy || lifecycle == .degraded else { return nil }
+        let required = requiredModifiers & Self.conventionalModifierMask
+        let down: Bool
+        let flags: UInt64
+        switch event {
+        case .keyDown(let eventKey, let current, let autorepeat):
+            guard eventKey == key, !autorepeat, !standardKeyDown else { return nil }
+            standardKeyDown = true
+            guard current & Self.conventionalModifierMask == required else { return nil }
+            down = true
+            flags = current
+        case .keyUp(let eventKey, let current):
+            guard eventKey == key else { return nil }
+            standardKeyDown = false
+            down = false
+            flags = current  // Release is independent of the remaining modifiers.
+        case .flagsChanged(let current):
+            guard standardKeyDown, heldDown, current & Self.conventionalModifierMask != required else { return nil }
+            down = false
+            flags = current
+        }
+        return feed(
+            HotkeySourceEvent(
+                source: .tap, down: down, keyCode: key, flags: flags,
+                isFnKey: false, timestampNanos: timestampNanos)) ? down : nil
     }
 
     /// Feed one raw source event. Returns true when a logical edge is
@@ -155,30 +198,35 @@ public struct HotkeyEdgeStream: Sendable, Equatable {
             return false
         }
 
-        // Modifier chords: while ANY chord modifier is down, Fn/key events
-        // are suppressed and do not arm hold state; state resets on the
-        // release edge of the chord.
-        // CGEventFlags: command=0x100000, alternate=0x200000, shift=0x20000,
-        // control=0x4000. Any of these with the Fn key = chord (suppressed).
-        let chordModifiers: UInt64 = 0x100000 | 0x200000 | 0x20000 | 0x4000
+        // CGEventFlags: shift=1<<17, control=1<<18, option=1<<19,
+        // command=1<<20. Fn with a chord never arms; it still releases a
+        // prior hold so adding a modifier cannot strand capture.
+        let chordModifiers = Self.conventionalModifierMask
         let chordPresent = (event.flags & chordModifiers) != 0
-        if configIsFn && chordPresent {
-            if event.down && !chordBlockedUntilRelease {
-                chordBlockedUntilRelease = true
-                suppressed += 1
+        if configIsFn {
+            if !event.down { chordBlockedUntilRelease = false }
+            if chordPresent || chordBlockedUntilRelease {
+                if event.down { chordBlockedUntilRelease = true }
+                if heldDown {
+                    emitRelease(reason: "modifier-chord")
+                    return true
+                }
+                if event.down { suppressed += 1 }
+                return false
             }
-            return false
-        }
-        if chordBlockedUntilRelease && !event.down {
-            chordBlockedUntilRelease = false
-            return false
         }
 
         // Dedup window: an edge from a lower-priority source within the
         // window of the same logical edge from a higher-priority source is
         // absorbed.
         if event.down {
+            if let last = lastLogicalDownNanos, event.timestampNanos < last {
+                suppressed += 1
+                return false
+            }
             if let last = lastLogicalDownNanos,
+                event.source != lastPressSource,
+                event.timestampNanos >= last,
                 event.timestampNanos - last < Self.dedupWindowNanos,
                 sourcePriority(event.source) <= sourcePriority(lastPressSource ?? .tap)
             {
@@ -202,25 +250,20 @@ public struct HotkeyEdgeStream: Sendable, Equatable {
                 suppressed += 1
                 return false
             }
-            if let last = lastLogicalDownNanos,
-                event.timestampNanos - last < Self.dedupWindowNanos
-            {
-                // Release observed within the dedup window of the down edge
-                // from any source is the logical release.
-                emitRelease(reason: "normal")
-                return true
-            }
             emitRelease(reason: "normal")
             return true
         }
     }
 
-    /// Time-based fail-safe: if the key has been held beyond the lost-release
-    /// timeout, emit a release (never leave hold/toggle armed forever).
-    /// Call from a bounded consumer timer.
-    public mutating func sweepLostRelease(nowNanos: UInt64) -> Bool {
-        guard heldDown, let last = lastLogicalDownNanos else { return false }
+    /// Elapsed time alone is not lost-release evidence: a real hold can last
+    /// ten minutes. Recover only after an explicit observed key-up. Missing
+    /// key-state evidence leaves the product capture deadline in control.
+    public mutating func sweepLostRelease(nowNanos: UInt64, observedKeyDown: Bool?) -> Bool {
+        guard observedKeyDown == false, heldDown, let last = lastLogicalDownNanos, nowNanos >= last else {
+            return false
+        }
         if nowNanos - last >= Self.lostReleaseTimeoutNanos {
+            standardKeyDown = false
             emitRelease(reason: "lost-release-timeout")
             return true
         }

@@ -38,6 +38,109 @@
     }
 
     final class ProductionBoundaryTests: XCTestCase {
+        func testConventionalHotkeyAdapterReleasesWhenModifiersGoFirstWithoutPostingEvents() throws {
+            let flags = CGEventFlags([.maskControl, .maskAlternate]).rawValue
+            XCTAssertEqual(flags, UInt64(HotkeyConfig.controlOptionSpace.modifiers))
+            XCTAssertEqual(
+                HotkeyEdgeStream.conventionalModifierMask,
+                CGEventFlags([.maskControl, .maskAlternate, .maskShift, .maskCommand]).rawValue)
+            var stream = HotkeyEdgeStream(configIsFn: false, configKeyCode: 49)
+            stream.setLifecycle(.healthy)
+            func input(_ type: CGEventType, key: Int64 = 49, flags: UInt64, repeatKey: Bool = false) throws
+                -> StandardHotkeyEvent
+            {
+                try XCTUnwrap(
+                    HotkeyTapEngine.standardInput(type: type, keyCode: key, flags: flags, isAutorepeat: repeatKey))
+            }
+            XCTAssertEqual(
+                stream.feedStandard(try input(.keyDown, flags: flags), requiredModifiers: flags, timestampNanos: 1),
+                true)
+            XCTAssertNil(
+                stream.feedStandard(
+                    try input(.keyDown, flags: flags, repeatKey: true), requiredModifiers: flags, timestampNanos: 2))
+            XCTAssertEqual(
+                stream.feedStandard(
+                    try input(.flagsChanged, key: 59, flags: CGEventFlags.maskAlternate.rawValue),
+                    requiredModifiers: flags, timestampNanos: 3), false)
+            XCTAssertNil(
+                stream.feedStandard(
+                    try input(.flagsChanged, key: 59, flags: flags), requiredModifiers: flags, timestampNanos: 4))
+            XCTAssertNil(stream.feedStandard(try input(.keyUp, flags: 0), requiredModifiers: flags, timestampNanos: 5))
+            XCTAssertEqual(stream.presses, 1)
+            XCTAssertEqual(stream.releases, 1)
+            XCTAssertNil(HotkeyTapEngine.standardInput(type: .keyDown, keyCode: -1, flags: 0, isAutorepeat: false))
+            XCTAssertNil(HotkeyTapEngine.standardInput(type: .keyUp, keyCode: Int64.max, flags: 0, isAutorepeat: false))
+            XCTAssertNil(
+                HotkeyTapEngine.standardInput(type: .mouseMoved, keyCode: 49, flags: flags, isAutorepeat: false))
+        }
+
+        func testConventionalShortcutRequiresFreshExactChordAndHonorsKeyFirstRelease() {
+            let flags = UInt64(HotkeyConfig.controlOptionSpace.modifiers)
+            var stream = HotkeyEdgeStream(configIsFn: false, configKeyCode: 49)
+            stream.setLifecycle(.healthy)
+            XCTAssertNil(
+                stream.feedStandard(
+                    .keyDown(keyCode: 49, flags: 0, isAutorepeat: false), requiredModifiers: flags, timestampNanos: 1))
+            XCTAssertNil(stream.feedStandard(.flagsChanged(flags: flags), requiredModifiers: flags, timestampNanos: 2))
+            XCTAssertNil(
+                stream.feedStandard(
+                    .keyDown(keyCode: 49, flags: flags, isAutorepeat: true), requiredModifiers: flags, timestampNanos: 3
+                ))
+            XCTAssertNil(
+                stream.feedStandard(.keyUp(keyCode: 49, flags: flags), requiredModifiers: flags, timestampNanos: 4))
+            XCTAssertNil(
+                stream.feedStandard(
+                    .keyDown(keyCode: 50, flags: flags, isAutorepeat: false), requiredModifiers: flags,
+                    timestampNanos: 5))
+            XCTAssertEqual(
+                stream.feedStandard(
+                    .keyDown(keyCode: 49, flags: flags, isAutorepeat: false), requiredModifiers: flags,
+                    timestampNanos: 6), true)
+            XCTAssertEqual(
+                stream.feedStandard(.keyUp(keyCode: 49, flags: flags), requiredModifiers: flags, timestampNanos: 7),
+                false)
+            XCTAssertNil(stream.feedStandard(.flagsChanged(flags: 0), requiredModifiers: flags, timestampNanos: 8))
+            XCTAssertEqual(stream.presses, 1)
+            XCTAssertEqual(stream.releases, 1)
+        }
+
+        func testFnChordUsesNativeModifierMasksAndCannotStrandPriorHold() {
+            for modifier in [CGEventFlags.maskControl, .maskAlternate, .maskShift, .maskCommand] {
+                var stream = HotkeyEdgeStream(configIsFn: true)
+                stream.setLifecycle(.healthy)
+                let fn = CGEventFlags.maskSecondaryFn.rawValue
+                XCTAssertFalse(
+                    stream.feed(
+                        .init(
+                            source: .tap, down: true, keyCode: 63,
+                            flags: fn | modifier.rawValue, isFnKey: true, timestampNanos: 1)))
+                _ = stream.feed(
+                    .init(source: .tap, down: false, keyCode: 63, flags: 0, isFnKey: true, timestampNanos: 2))
+                XCTAssertTrue(
+                    stream.feed(
+                        .init(source: .tap, down: true, keyCode: 63, flags: fn, isFnKey: true, timestampNanos: 3)))
+                XCTAssertTrue(
+                    stream.feed(
+                        .init(
+                            source: .tap, down: true, keyCode: 63,
+                            flags: fn | modifier.rawValue, isFnKey: true, timestampNanos: 4)))
+                XCTAssertFalse(
+                    stream.heldDown, "caller must emit logical state, not raw down, when a modifier breaks the chord")
+                XCTAssertFalse(
+                    stream.feed(
+                        .init(
+                            source: .tap, down: true, keyCode: 63,
+                            flags: fn, isFnKey: true, timestampNanos: 5)),
+                    "removing a modifier while Fn remains down cannot rearm")
+                _ = stream.feed(
+                    .init(
+                        source: .tap, down: false, keyCode: 63,
+                        flags: modifier.rawValue, isFnKey: true, timestampNanos: 6))
+                XCTAssertEqual(stream.presses, 1)
+                XCTAssertEqual(stream.releases, 1)
+            }
+        }
+
         func testNativeSensitivityReadsSameHandleRoleSubroleAndBooleanEnabledOnly() {
             var queried: [String] = []
             let evidence = AXSensitivityReader.readAttributes { name in
