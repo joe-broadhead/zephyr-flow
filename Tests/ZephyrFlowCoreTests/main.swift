@@ -4056,6 +4056,23 @@ struct CoreTests {
     }
 
     static func runPart5() async {
+        do {
+            let keyCalls = CoreTestCounter()
+            let repo = ActorHistoryRepository(
+                fileURL: URL(fileURLWithPath: "/synthetic-never-accessed/history.json"),
+                fileSystem: InMemoryHistoryFS())
+            let preparation = HistoryStoragePreparation(repository: repo) {
+                keyCalls.bump()
+                return nil
+            }
+            check("2261 history off skips initialization", await preparation.prepareForSession(saveHistory: false))
+            check("2261 history off never requests a key", keyCalls.value == 0)
+            check("2261 history off leaves storage uninitialized", await repo.storageState == .uninitialized)
+            check(
+                "2261 zero history wait budget does not launch work",
+                !(await preparation.prepareForAccess(timeoutNanos: 0)))
+            check("2261 rejected wait did not request key", keyCalls.value == 0)
+        }
         // Current readiness, not consent or historical onboarding flags.
         do {
             let consentOnly = OnboardingReadinessSnapshot(

@@ -74,7 +74,13 @@ public protocol SettingsRepository: Sendable {
 
 /// History repository (production = HistoryStore; fakes = in-memory).
 public protocol HistoryRepository: Sendable {
+    func prepareForSession(saveHistory: Bool) async -> Bool
     func add(_ entry: HistoryEntry) async
+}
+
+extension HistoryRepository {
+    /// In-memory/test repositories need no encrypted disk initialization.
+    public func prepareForSession(saveHistory: Bool) async -> Bool { !Task.isCancelled }
 }
 
 /// Permission/capability provider.

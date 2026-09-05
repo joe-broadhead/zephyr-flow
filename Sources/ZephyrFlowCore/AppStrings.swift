@@ -241,6 +241,21 @@ public enum AppStrings {
         "settings.toggle.allowDownloads": ("Allow Whisper model downloads", "Settings toggle"),
         "settings.toggle.launchAtLogin": ("Launch at login", "Settings toggle"),
         "settings.toggle.saveHistory": ("Save transcription history", "Settings toggle"),
+        "history.preparation.failed": (
+            "Encrypted history is unavailable. Check history storage and Keychain access, then retry, or turn off saving history.",
+            "Controlled initialization failure; never interpolate file paths or framework error payloads"
+        ),
+        "history.delete.failed": (
+            "Could not delete the history entry. Retry after checking storage access.",
+            "Controlled durable delete failure"
+        ),
+        "history.clear.failed": (
+            "Could not clear history. Retry after checking storage access.", "Controlled durable clear failure"
+        ),
+        "history.write.failed": (
+            "A history entry could not be saved. Check storage access before retrying.",
+            "No arbitrary storage error payload in UI"
+        ),
         "settings.toggle.debug": ("Debug logging", "Settings toggle"),
         "panel.help.stopInsert": ("Stop & Insert", "Panel button help"),
         "panel.help.cancelDiscard": ("Cancel (discard)", "Panel button help"),

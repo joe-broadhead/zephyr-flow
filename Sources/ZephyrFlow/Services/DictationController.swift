@@ -81,11 +81,6 @@ final class DictationController: ObservableObject {
     /// used by sessionDidFinish for a real identity check — NOT overwritten
     /// before the comparison).
     private var currentSessionID: SessionID?
-    /// Review R7: true once history key config + load completed (awaited in
-    /// start()). Session admission waits for this so history writes are never
-    /// made before encryption initialization.
-    private var historyReady = false
-
     init(environment: AppEnvironment, preparation: EnginePreparationCoordinator? = nil) {
         self.environment = environment
         self.preparation = preparation ?? .production(engines: environment.engines)
@@ -110,59 +105,8 @@ final class DictationController: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
-        // JOE-2262 / review R7: at-rest history encryption — non-synchronizing
-        // Keychain key, AfterFirstUnlock. Key material never enters
-        // logs/metrics/backups/support bundles. Initialization is AWAITED
-        // before session admission (history writes are fail-closed until the
-        // repository is initialized), and load errors are surfaced rather than
-        // swallowed.
-        Task {
-            let key = HistoryKeychainStore.shared.loadOrCreate()
-            await ActorHistoryRepository.shared.configureEncryption(
-                keyProvider: { key })
-            do {
-                try await ActorHistoryRepository.shared.load()
-                // Round-5 REQ-5: historyReady reflects the real storage state.
-                // When history is DISABLED the storage is marked disabled and
-                // dictation proceeds without writes. When enabled, only a
-                // ready (encrypted or plaintext) store admits history writes;
-                // sealed-key-unavailable / read-failure / corruption surface.
-                if !self.settingsStore.settings.saveHistory {
-                    await ActorHistoryRepository.shared.markHistoryDisabled()
-                    self.historyReady = true
-                    ZFLog.info("History disabled — dictation proceeds without writes")
-                    return
-                }
-                let state = await ActorHistoryRepository.shared.storageState
-                switch state {
-                case .readyEncrypted, .readyPlaintext:
-                    // Review B8: historyReady is only true when initialization
-                    // SUCCEEDED (a Keychain failure or load error keeps it
-                    // false, so session admission errors out instead of
-                    // writing).
-                    self.historyReady = true
-                case .plaintextMigrationPending:
-                    // Round-6 REQ-2: with history ENABLED, at-rest encryption
-                    // has not actually been established — do NOT admit
-                    // history-enabled sessions (the migration persists
-                    // plaintext on disk; admitting would write new plaintext).
-                    // Surface the recovery action instead.
-                    ZFLog.error(
-                        "History migration pending — plaintext not yet encrypted; admission blocked")
-                    self.historyReady = false
-                case .sealedKeyUnavailable, .sealedKeyAuthFailed,
-                    .storageReadFailure, .corruptQuarantined:
-                    ZFLog.error("History storage not ready: \(state.rawValue)")
-                    self.historyReady = false
-                case .uninitialized, .historyDisabled:
-                    self.historyReady = false
-                }
-            } catch {
-                ZFLog.error("History load failed: \(error.localizedDescription)")
-                // historyReady stays false — beginSession will surface the
-                // initialization error and refuse to admit a session.
-            }
-        }
+        // History stays lazy. Starting the app must not read/migrate a history
+        // file or create a Keychain item when saving history is disabled.
         privacy.refresh()
         hotkey.configure(
             hotkey: settingsStore.settings.hotkey,
@@ -407,28 +351,20 @@ final class DictationController: ObservableObject {
             ZFLog.info("beginSession ignored — admission closed or session active")
             return
         }
-        // Review R7: do not admit a session until history encryption init has
-        // completed (fail-closed; a Keychain failure surfaces as an error).
-        if !historyReady {
-            ZFLog.info("beginSession waiting for history initialization")
-            var waited: UInt64 = 0
-            while !historyReady, waited < 5_000_000_000 {
-                // Review B2v2 (round 5): a release/cancel during the history
-                // wait must abort the begin, not start it after the user
-                // already released.
-                if intent?.isCancelled == true || Task.isCancelled || !admissionOpen {
-                    pendingBeginTask = nil
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 50_000_000)
-                waited += 50_000_000
-            }
-            if !historyReady {
-                showError("History storage could not be initialized — check Keychain access.")
+        let requestedSettings = settingsStore.settings
+        // No storage dependency in the disabled path. Re-enabling history
+        // performs real encrypted initialization, not a stale startup boolean.
+        if requestedSettings.saveHistory {
+            let ready = await environment.history.prepareForSession(saveHistory: true)
+            guard !Task.isCancelled, intent?.isCancelled != true, admissionOpen,
+                settingsStore.settings == requestedSettings
+            else {
+                pendingBeginTask = nil
                 return
             }
-            if intent?.isCancelled == true {
+            guard ready else {
                 pendingBeginTask = nil
+                showError(AppStrings.key("history.preparation.failed"))
                 return
             }
         }
@@ -437,7 +373,6 @@ final class DictationController: ObservableObject {
         // begin that is still waiting on the engine. It is cleared only when
         // the session actually begins (below) or the begin is cancelled.
         // App-level fail-fast permission checks (never await dialogs here).
-        let requestedSettings = settingsStore.settings
         privacy.refresh()
         guard privacy.status.microphone else {
             pendingBeginTask = nil

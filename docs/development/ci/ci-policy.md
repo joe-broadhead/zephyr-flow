@@ -58,6 +58,13 @@ production release approval.
     has no cross-process conditional-write primitive; these checks do not prove
     atomic exclusion, provider IPC deadlines, provider allocation bounds, crash
     recovery or six-app insertion qualification.
+    `ProductionHistoryTests` injects synthetic key providers and temporary
+    history stores into the shared preparation service and actual history view
+    model. It checks disabled-history non-access, key-before-load ordering,
+    cancellation/deadline waiters, retained initialization ownership, controlled
+    read/key failures and retry. No personal history or Keychain item is read or
+    changed; these tests do not qualify reboot/login Keychain availability or
+    secure-session behavior across the full controller.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

@@ -60,6 +60,17 @@ struct ZFLogMetricsSink: MetricsSinking {
 
 /// History repository backed by the actor repository (JOE-2261).
 struct HistoryStoreRepository: HistoryRepository {
+    // Created lazily; the key provider is invoked only by an opted-in session
+    // or an explicit history UI action, never by application startup.
+    static let preparation = HistoryStoragePreparation(repository: .shared) {
+        await HistoryKeychainStore.shared.loadOrCreate()
+    }
+
+    func prepareForSession(saveHistory: Bool) async -> Bool {
+        guard saveHistory else { return !Task.isCancelled }
+        return await Self.preparation.prepareForSession(saveHistory: true)
+    }
+
     func add(_ entry: HistoryEntry) async {
         await ActorHistoryRepository.shared.add(entry)
     }
