@@ -6100,20 +6100,20 @@ struct CoreTests {
                 cfTypeTag: "CFString")
             check("2286 CFString type captured", strSnap.cfTypeTag == "CFString")
 
-            // 4. Crash at EVERY transaction step recovers idempotently.
-            //    idle -> stays idle; pendingApply -> idle (mutation never
-            //    confirmed); applied -> pendingRestore (must restore);
+            // 4. Pure state transitions, not actual kill/relaunch evidence.
+            //    idle -> stays idle; pendingApply is uncertain -> restore;
+            //    applied -> pendingRestore (must restore);
             //    pendingRestore -> pendingRestore; restored -> restored.
             for status in FnPreferenceStatus.allCases {
                 let rec = FnPreferenceRecord(
-                    version: 7, status: status,
+                    version: 2, status: status,
                     snapshot: snap)
                 var txc = FnPreferenceTransaction(record: rec)
                 let after = txc.recoverAfterCrash()
                 if status == .idle || status == .restored || status == .failedRestore {
                     check("2286 crash \(status.rawValue) unchanged", after == status)
                 } else if status == .pendingApply {
-                    check("2286 crash pendingApply -> idle", after == .idle)
+                    check("2286 crash pendingApply -> pendingRestore", after == .pendingRestore)
                 } else {
                     check(
                         "2286 crash applied/pendingRestore -> pendingRestore",
@@ -6134,9 +6134,10 @@ struct CoreTests {
             check("2286 failedRestore", tx5.record.status == .failedRestore)
             check("2286 capture disabled", tx5.captureDisabled)
             check("2286 failed NOT active", !tx5.record.isActiveOverride)
-            check(
-                "2286 no auto reapply (beginRestore fails)",
-                !tx5.beginRestore())
+            check("2286 failed recovery cannot reapply", !tx5.beginApply())
+            check("2286 explicit retry can restore", tx5.beginRestore())
+            tx5.finishRestore(verifiedExact: true)
+            check("2286 verified retry clears capture-disabled", !tx5.captureDisabled)
 
             // 6. Production default path never overrides.
             check(
@@ -6163,10 +6164,31 @@ struct CoreTests {
                 FnOverridePolicy.shouldRestoreImmediately(
                     configuredSpecialKeyIsFn: true, accessibilityTrusted: false))
 
-            // 7. Version monotonicity: newer version wins.
+            // 7. Schema version changes do not establish transaction ordering.
             let v1 = FnPreferenceRecord(version: 1, status: .applied, snapshot: snap)
             let v2 = FnPreferenceRecord(version: 2, status: .restored, snapshot: snap)
             check("2286 version ordering", v2.version > v1.version)
+            do {
+                for value: Any in [
+                    NSNumber(value: true), NSNumber(value: 2), NSNumber(value: 1.25),
+                    "synthetic-unexpected", Data([0, 1, 2]), ["nested": [NSNumber(value: false), "x"]],
+                ] {
+                    let snapshot = try FnPreferenceSnapshotCodec.capture(value)
+                    let decoded = try JSONDecoder().decode(
+                        FnPreferenceSnapshot.self, from: JSONEncoder().encode(snapshot))
+                    check(
+                        "2286 typed property-list snapshot round-trip",
+                        try FnPreferenceSnapshotCodec.matches(value, snapshot: decoded))
+                }
+                let bool = try FnPreferenceSnapshotCodec.capture(NSNumber(value: true))
+                check(
+                    "2286 bool is not integer one",
+                    try !FnPreferenceSnapshotCodec.matches(NSNumber(value: 1), snapshot: bool))
+                do {
+                    _ = try FnPreferenceSnapshotCodec.materialize(strSnap)
+                    check("2286 legacy missing exact value must reject", false)
+                } catch { check("2286 legacy missing exact value rejects", true) }
+            } catch { check("2286 typed snapshot encoding", false) }
         }
 
         // ===== JOE-2287: serial deduplicated edge stream =====

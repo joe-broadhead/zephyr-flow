@@ -6,7 +6,7 @@ import Foundation
 // optional single-Fn override only begins after explicit experimental
 // opt-in AND successful hotkey/tap preparation; it snapshots the EXACT
 // prior state (presence, value, CF type, suite/domain), persists a
-// versioned transaction record BEFORE mutation, atomically marks
+// versioned transaction record BEFORE mutation, acknowledges
 // apply/restore status, restores exactly the original state (never an
 // unconditional key removal after a value was present), verifies by
 // read-back, and on restore failure disables Fn capture + surfaces a
@@ -16,7 +16,7 @@ import Foundation
 
 public enum FnPreferenceStatus: String, Codable, CaseIterable, Sendable, Equatable {
     case idle  // no override ever started
-    case pendingApply  // record written, mutation not yet applied
+    case pendingApply  // journal written; mutation may have happened before crash
     case applied  // override active (record is authoritative)
     case pendingRestore  // restore started (never auto-reapplies)
     case restored  // COMPLETED — not an active override
@@ -32,24 +32,30 @@ public struct FnPreferenceSnapshot: Codable, Equatable, Sendable {
     public var cfTypeTag: String?
     public var suiteName: String
     public var keyName: String
+    /// Version-2 binary property-list payload preserves unexpected values and
+    /// their CF types. Legacy present-value records lack sufficient evidence
+    /// for exact restoration and must not guess a value or remove the key.
+    public var encodedValue: Data?
 
     public init(
         keyPresent: Bool, value: Int64?, cfTypeTag: String?,
         suiteName: String = "com.apple.HIToolbox",
-        keyName: String = "AppleFnUsageType"
+        keyName: String = "AppleFnUsageType",
+        encodedValue: Data? = nil
     ) {
         self.keyPresent = keyPresent
         self.value = value
         self.cfTypeTag = cfTypeTag
         self.suiteName = suiteName
         self.keyName = keyName
+        self.encodedValue = encodedValue
     }
 
     public static let none = FnPreferenceSnapshot(keyPresent: false, value: nil, cfTypeTag: nil)
 }
 
 public struct FnPreferenceRecord: Codable, Equatable, Sendable {
-    /// Monotonic version; never reused. A higher version always wins.
+    /// Journal schema version, not a transaction sequence or ownership token.
     public var version: Int
     public var status: FnPreferenceStatus
     public var snapshot: FnPreferenceSnapshot
@@ -60,9 +66,8 @@ public struct FnPreferenceRecord: Codable, Equatable, Sendable {
         self.snapshot = snapshot
     }
 
-    /// A COMPLETED transaction (restored/failedRestore) is never an active
-    /// override. Only `applied` (or in-flight apply/restore) triggers
-    /// recovery action on next launch.
+    /// A failedRestore record is unresolved, not an active capture override.
+    /// It needs explicit recovery and must not be re-applied automatically.
     public var isActiveOverride: Bool {
         switch status {
         case .applied, .pendingApply, .pendingRestore:
@@ -77,16 +82,16 @@ public struct FnPreferenceRecord: Codable, Equatable, Sendable {
 /// (AppKit-free): `mutating` state + explicit fault injection for
 /// apply/restore/crash at every step.
 public struct FnPreferenceTransaction: Sendable, Equatable {
-    public static let recordVersion = 1
+    public static let recordVersion = 2
     public var record: FnPreferenceRecord
     public private(set) var captureDisabled: Bool
 
     public init(record: FnPreferenceRecord) {
         self.record = record
-        self.captureDisabled = false
+        self.captureDisabled = record.status == .failedRestore
     }
 
-    public init(snapshot: FnPreferenceSnapshot, version: Int = 1) {
+    public init(snapshot: FnPreferenceSnapshot, version: Int = FnPreferenceTransaction.recordVersion) {
         self.init(
             record: FnPreferenceRecord(
                 version: version, status: .idle, snapshot: snapshot))
@@ -100,20 +105,23 @@ public struct FnPreferenceTransaction: Sendable, Equatable {
         return true
     }
 
-    /// Apply the mutation; atomically mark applied. Fault-injectable: the
-    /// caller decides whether the underlying mutation actually happened.
+    /// Mark verified mutation success. Persistence acknowledgment is owned by
+    /// the service, not this pure state machine.
     public mutating func markApplied(mutationSucceeded: Bool) {
+        guard record.status == .pendingApply else { return }
         if mutationSucceeded {
             record.status = .applied
         } else {
-            // Mutation never happened: restore the record to idle.
-            record.status = .idle
+            // Failed synchronization/read-back does NOT establish that no
+            // mutation happened. Retain recoverable intent until restored.
+            record.status = .pendingRestore
+            captureDisabled = true
         }
     }
 
     /// Begin restore (never re-applies automatically).
     public mutating func beginRestore() -> Bool {
-        guard record.status == .applied || record.status == .pendingApply else {
+        guard [.applied, .pendingApply, .pendingRestore, .failedRestore].contains(record.status) else {
             return false
         }
         record.status = .pendingRestore
@@ -123,8 +131,10 @@ public struct FnPreferenceTransaction: Sendable, Equatable {
     /// Finish restore: verify exact state; on failure disable capture and
     /// surface a persistent recovery action (failedRestore).
     public mutating func finishRestore(verifiedExact: Bool) {
+        guard record.status == .pendingRestore else { return }
         if verifiedExact {
             record.status = .restored
+            captureDisabled = false
         } else {
             record.status = .failedRestore
             captureDisabled = true
@@ -134,17 +144,14 @@ public struct FnPreferenceTransaction: Sendable, Equatable {
     /// Crash recovery on next launch. A completed transaction (restored /
     /// failedRestore) must NOT be mistaken for an active override. In-flight
     /// statuses resolve deterministically:
-    ///   - pendingApply  -> mutation never confirmed -> idle (nothing done)
+    ///   - pendingApply  -> mutation uncertain -> pendingRestore (must verify)
     ///   - applied       -> active override -> pendingRestore (must restore)
     ///   - pendingRestore-> still must restore -> pendingRestore
     public mutating func recoverAfterCrash() -> FnPreferenceStatus {
         switch record.status {
         case .idle, .restored, .failedRestore:
             return record.status
-        case .pendingApply:
-            record.status = .idle
-            return .idle
-        case .applied, .pendingRestore:
+        case .pendingApply, .applied, .pendingRestore:
             record.status = .pendingRestore
             return .pendingRestore
         }

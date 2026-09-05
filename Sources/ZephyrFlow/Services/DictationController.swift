@@ -303,8 +303,11 @@ final class DictationController: ObservableObject {
         _ = handshake.completeStep(.storageFlushed, nowNanos: now())
 
         // 7. Restore the retained Fn/global preference exactly.
-        HotkeyService.restoreFnOverrideIfNeededFromPriorLaunch()
-        _ = handshake.completeStep(.preferencesRestored, nowNanos: now())
+        if hotkey.restoreSystemFnPreferenceForShutdown() {
+            _ = handshake.completeStep(.preferencesRestored, nowNanos: now())
+        } else {
+            _ = handshake.abandon(reason: "Fn preference restoration not verified")
+        }
 
         reviewSession?.clear(reason: .appTerminating)
         reviewSession = nil

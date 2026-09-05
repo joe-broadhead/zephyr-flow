@@ -240,6 +240,10 @@ public enum AppStrings {
         "settings.toggle.localOnly": ("Local Only mode", "Settings toggle"),
         "settings.toggle.allowDownloads": ("Allow Whisper model downloads", "Settings toggle"),
         "settings.toggle.launchAtLogin": ("Launch at login", "Settings toggle"),
+        "hotkey.fnRecovery.failed": (
+            "Fn preference recovery could not be verified. Fn capture is disabled. Use Reset in Settings to retry; incomplete legacy records need manual review. The override will not reapply this launch.",
+            "Persistent controlled recovery error; never log preference payloads"
+        ),
         "login.pending": (
             "Changing login registration…", "External registration pending; do not persist desired setting yet"
         ),

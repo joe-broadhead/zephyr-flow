@@ -90,6 +90,17 @@ production release approval.
     preferences or login registration. UserDefaults synchronization/read-back
     is not fsync or a cross-process transaction; power-loss/relaunch durability,
     real ServiceManagement approval and login behavior remain device work.
+    `ProductionFnPreferenceTests` uses only an injected in-memory journal and
+    synthetic preference values. It checks typed property-list round trips,
+    journal-before-mutation, pending-apply crash-state simulation, read-back
+    failure, explicit retry, unknown/legacy records and preservation of a
+    later unrelated value. No global Fn preference, event tap, login item or
+    TCC permission is changed. Legacy present-value journals cannot reconstruct
+    an exact value and remain blocked rather than guessing/removing a key.
+    CFPreferences has no compare-and-swap and synchronization is not an fsync
+    guarantee; real crash/power-loss and supported-macOS qualification remain
+    required. Native tap startup is checked separately from thread creation;
+    this is not full hotkey native-lifecycle or hung-thread qualification.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
