@@ -4,6 +4,32 @@ import Foundation
 import Speech
 import ZephyrFlowCore
 
+/// Snapshot framework callback data before crossing onto the engine actor.
+/// NSError/SFSpeechRecognitionResult never cross that boundary, and arbitrary
+/// error descriptions/userInfo never enter presentation or diagnostic output.
+struct AppleSpeechCallback: Sendable {
+    let text: String?
+    let isFinal: Bool
+    let errorCode: Int32?
+    let errorMessage: String?
+
+    init(text: String?, isFinal: Bool, error: NSError?) {
+        self.text = text
+        self.isFinal = isFinal
+        self.errorCode = error.map { Int32(clamping: $0.code) }
+        if let error {
+            if error.domain == "kLSRErrorDomain", error.code == 201 {
+                self.errorMessage =
+                    "macOS Dictation is turned off. Enable it in System Settings → Keyboard → Dictation, then try again."
+            } else {
+                self.errorMessage = "Speech recognition failed. Try again or choose another on-device engine."
+            }
+        } else {
+            self.errorMessage = nil
+        }
+    }
+}
+
 /// On-device transcription via Apple's Speech framework.
 /// Owns its own AVAudioEngine and feeds **native-format** buffers to SFSpeech
 /// (required for reliable recognition — 16 kHz converted PCM often yields empty results).
@@ -178,7 +204,11 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         let token = recognitionTracker.currentToken ?? RecognitionToken()
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             guard let self else { return }
-            Task { await self.handleRecognition(token: token, result: result, error: error) }
+            let callback = AppleSpeechCallback(
+                text: result?.bestTranscription.formattedString,
+                isFinal: result?.isFinal ?? false,
+                error: error.map { $0 as NSError })
+            Task { await self.handleRecognition(token: token, callback: callback) }
         }
     }
 
@@ -218,7 +248,8 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         let err = lastError
         cleanupStream()
 
-        ZFLog.info("Final text len=\(finalText.count) duration=\(String(format: "%.2f", duration)) err=\(err ?? "nil")")
+        ZFLog.info(
+            "Final text len=\(finalText.count) duration=\(String(format: "%.2f", duration)) hasError=\(err != nil)")
 
         if finalText.isEmpty, let err {
             throw WhisperEngineError.transcriptionFailed(err)
@@ -309,44 +340,38 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
     private func handleRecognition(
         token: RecognitionToken,
-        result: SFSpeechRecognitionResult?,
-        error: Error?
+        callback: AppleSpeechCallback
     ) {
         // JOE-2253: reject callbacks whose token is no longer current.
         guard recognitionTracker.isCurrent(token: token) else {
             ZFLog.info("stale recognition callback rejected (token mismatch)")
             return
         }
-        if let result {
-            let text = result.bestTranscription.formattedString
+        if let text = callback.text {
             // Never overwrite a good partial with an empty final (common on
             // cancel/end) — tracker preserves latest usable partial.
             _ = recognitionTracker.notePartial(token: token, text: text)
             if !text.isEmpty {
                 accumulated = text
-                onPartial?(PartialTranscription(text: text, isFinal: result.isFinal))
+                onPartial?(PartialTranscription(text: text, isFinal: callback.isFinal))
             }
             // Never log transcript content — lengths only (PII).
-            ZFLog.info("partial isFinal=\(result.isFinal) len=\(text.count) kept=\(accumulated.count)")
-            if result.isFinal {
+            ZFLog.info("partial isFinal=\(callback.isFinal) len=\(text.count) kept=\(accumulated.count)")
+            if callback.isFinal {
                 sawFinal = true
                 let outcome = recognitionTracker.noteFinal(token: token, hasText: !text.isEmpty)
                 ZFLog.info("final event outcome=\(outcome.rawValue) len=\(text.count)")
                 finishRecognition()
             }
         }
-        if let error {
-            let ns = error as NSError
-            // 1 = cancelled, 203 = no speech, 1110 = no speech detected — keep partials
-            // 201 = Siri/Dictation disabled system-wide (blocks SFSpeechRecognizer)
-            let friendly = Self.friendlySpeechError(ns)
+        if let code = callback.errorCode {
+            let friendly = callback.errorMessage ?? "Speech recognition failed."
             lastError = friendly
             let outcome = recognitionTracker.noteError(
                 token: token,
-                code: Int32(ns.code),
+                code: code,
                 friendly: friendly)
-            ZFLog.info("recognition error outcome=\(outcome.rawValue) domain=\(ns.domain) code=\(ns.code)")
-            ZFLog.error("recognition error domain=\(ns.domain) code=\(ns.code) \(ns.localizedDescription)")
+            ZFLog.error("recognition error outcome=\(outcome.rawValue) code=\(code)")
             // Review R3.1: preserve the error. An errored partial must NEVER
             // be promoted to `.complete` — keeping lastError set makes the
             // completeness mapping below return .partial/.degraded, never
@@ -412,17 +437,6 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
                 cont.resume(returning: ok)
             }
         }
-    }
-
-    nonisolated private static func friendlySpeechError(_ ns: NSError) -> String {
-        // kLSRErrorDomain 201 — system Dictation/Siri master switch is off
-        if ns.domain == "kLSRErrorDomain" && ns.code == 201 {
-            return "macOS Dictation is turned off. Enable it in System Settings → Keyboard → Dictation, then try again."
-        }
-        if ns.localizedDescription.localizedCaseInsensitiveContains("Siri and Dictation are disabled") {
-            return "macOS Dictation is turned off. Enable it in System Settings → Keyboard → Dictation, then try again."
-        }
-        return ns.localizedDescription
     }
 
     nonisolated private static func rmsLevels(from buffer: AVAudioPCMBuffer) -> Float {

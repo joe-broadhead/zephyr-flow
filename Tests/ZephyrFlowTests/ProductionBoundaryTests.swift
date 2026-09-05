@@ -12,6 +12,38 @@
     }
 
     final class ProductionBoundaryTests: XCTestCase {
+        func testSpeechCallbackCopiesOnlySendableValuesAndControlledError() async {
+            let callback = AppleSpeechCallback(
+                text: "synthetic partial", isFinal: false,
+                error: NSError(
+                    domain: "synthetic", code: 42,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: "synthetic private description",
+                        "payload": "synthetic private metadata",
+                    ]))
+            let delivered = await Task.detached { callback }.value
+            XCTAssertEqual(delivered.text, "synthetic partial")
+            XCTAssertFalse(delivered.isFinal)
+            XCTAssertEqual(delivered.errorCode, 42)
+            XCTAssertEqual(
+                delivered.errorMessage,
+                "Speech recognition failed. Try again or choose another on-device engine.")
+        }
+
+        func testSpeechCallbackHandlesMissingResultsAndOversizedErrorCodes() {
+            let empty = AppleSpeechCallback(text: nil, isFinal: false, error: nil)
+            XCTAssertNil(empty.text)
+            XCTAssertNil(empty.errorCode)
+            XCTAssertNil(empty.errorMessage)
+
+            let failure = AppleSpeechCallback(
+                text: nil, isFinal: false, error: NSError(domain: "synthetic", code: Int.max))
+            XCTAssertEqual(failure.errorCode, Int32.max)
+            let disabled = AppleSpeechCallback(
+                text: nil, isFinal: false, error: NSError(domain: "kLSRErrorDomain", code: 201))
+            XCTAssertTrue(disabled.errorMessage?.contains("System Settings") == true)
+        }
+
         func testSettingsAdapterReadsOnItsOwnerFromDetachedCaller() async {
             let fixture = await MainActor.run { IsolatedReadFixture() }
             let repository: any SettingsRepository = await MainActor.run {

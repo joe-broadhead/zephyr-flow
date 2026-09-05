@@ -48,6 +48,23 @@
             XCTAssertLessThanOrEqual(output.count, 1600 + 32)
             XCTAssertTrue(converter.flush().allSatisfy(\.isFinite))
         }
+
+        func testConverterRetainsShortEndOfStreamTail() throws {
+            for rate in [44_100.0, 48_000.0] {
+                let converter = SessionAudioConverter()
+                let input = AudioChunk(
+                    sessionID: SessionID(token: "synthetic-tail", sequence: 1, createdAtUptimeNanos: 0),
+                    sequence: 0, startSample: 0, sampleRate: rate, channelCount: 1,
+                    samples: Array(repeating: 0.25, count: 4800))
+                let first = try XCTUnwrap(converter.convert(input))
+                let tail = converter.flush()
+                XCTAssertFalse(tail.isEmpty, "the native resampler buffers a short final block")
+                let expected = Double(input.samples.count) * SessionAudioConverter.targetSampleRate / rate
+                XCTAssertEqual(Double(first.count + tail.count), expected, accuracy: 1)
+                XCTAssertTrue(tail.allSatisfy(\.isFinite))
+                XCTAssertTrue(converter.flush().isEmpty, "a second flush must not duplicate the tail")
+            }
+        }
     }
 #else
     #error("XCTest requires full Xcode; use swift run ZephyrFlowCoreTests on CommandLineTools-only machines.")
