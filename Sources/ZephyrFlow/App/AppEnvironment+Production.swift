@@ -49,7 +49,13 @@ struct ZFLogMetricsSink: MetricsSinking {
 
 /// Settings repository backed by SettingsStore.
 @MainActor struct SettingsStoreRepository: SettingsRepository {
-    var current: AppSettings { SettingsStore.shared.settings }
+    private let read: @MainActor @Sendable () -> AppSettings
+
+    init(read: @escaping @MainActor @Sendable () -> AppSettings = { SettingsStore.shared.settings }) {
+        self.read = read
+    }
+
+    var current: AppSettings { read() }
 }
 
 /// History repository backed by the actor repository (JOE-2261).
@@ -61,7 +67,13 @@ struct HistoryStoreRepository: HistoryRepository {
 
 /// Permission provider backed by PrivacyService.
 @MainActor struct PrivacyPermissionProvider: PermissionProviding {
-    var microphoneGranted: Bool { PrivacyService.shared.status.microphone }
-    var accessibilityTrusted: Bool { PrivacyService.shared.status.accessibility }
-    var speechRecognitionGranted: Bool { PrivacyService.shared.status.speechRecognition }
+    private let read: @MainActor @Sendable () -> PermissionStatus
+
+    init(read: @escaping @MainActor @Sendable () -> PermissionStatus = { PrivacyService.shared.status }) {
+        self.read = read
+    }
+
+    var microphoneGranted: Bool { read().microphone }
+    var accessibilityTrusted: Bool { read().accessibility }
+    var speechRecognitionGranted: Bool { read().speechRecognition }
 }

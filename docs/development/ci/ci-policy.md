@@ -12,8 +12,12 @@ production release approval.
 1. **XCTest** — `swift test` is the authoritative test target and must pass;
    `swift test list` must succeed and discover each existing suite. Execution
    logs must confirm those suites passed. Missing XCTest cannot compile to an
-   empty test target. The current suites test Core contracts; depending on the
-   app target does **not** establish production-adapter coverage.
+   empty test target. Most suites test Core contracts. `ProductionAudioTests`
+   exercises in-memory native PCM snapshot/conversion adapters, while
+   `ProductionBoundaryTests` exercises the app's settings/permission read
+   adapters with injected sources and detached callers. Neither suite opens a
+   microphone or personal store. These bounded checks do **not** establish
+   full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
    Core evidence on CI and on CommandLineTools-only machines. It is neither
    a replacement for XCTest nor evidence of equivalent production coverage.

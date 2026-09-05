@@ -67,7 +67,9 @@ public protocol MetricsSinking: Sendable {
 
 /// Settings repository (production = SettingsStore; fakes = static).
 public protocol SettingsRepository: Sendable {
-    var current: AppSettings { get }
+    // Production settings are MainActor-owned. An async requirement permits
+    // that isolation without exposing a synchronous nonisolated witness.
+    var current: AppSettings { get async }
 }
 
 /// History repository (production = HistoryStore; fakes = in-memory).
@@ -77,9 +79,9 @@ public protocol HistoryRepository: Sendable {
 
 /// Permission/capability provider.
 public protocol PermissionProviding: Sendable {
-    var microphoneGranted: Bool { get }
-    var accessibilityTrusted: Bool { get }
-    var speechRecognitionGranted: Bool { get }
+    var microphoneGranted: Bool { get async }
+    var accessibilityTrusted: Bool { get async }
+    var speechRecognitionGranted: Bool { get async }
 }
 
 /// Target validation service boundary (JOE-2268/2249).

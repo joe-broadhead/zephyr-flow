@@ -4004,12 +4004,14 @@ struct CoreTests {
             check("2243 fake clock controllable", clock.nowNanos() == 1500)
             // Sleeper records (no real wait), ids monotonic, metrics/history
             // are in-memory, permissions fake.
+            let microphone = await env.permissions.microphoneGranted
+            let accessibility = await env.permissions.accessibilityTrusted
+            let speech = await env.permissions.speechRecognitionGranted
             check(
                 "2243 fake permissions",
-                env.permissions.microphoneGranted
-                    && env.permissions.accessibilityTrusted
-                    && env.permissions.speechRecognitionGranted)
-            check("2243 fake settings repo", env.settings.current == .default)
+                microphone && accessibility && speech)
+            let currentSettings = await env.settings.current
+            check("2243 fake settings repo", currentSettings == .default)
             // Engine registry carries the fake engine.
             let engine = env.engines.whisper as? FakeWhisperEngine
             check("2243 fake engine in registry", engine != nil)
@@ -4036,9 +4038,9 @@ struct CoreTests {
             }
             let target = env.targetValidation as? FakeTargetValidation
             check("2243 fake target validation available", target != nil)
-            // Production env uses the real flow (no side effects at init).
-            let prodSettings = AppEnvironment.test().settings.current
-            check("2243 test env has no side effects", prodSettings == .default)
+            // The test composition uses static settings, not the production store.
+            let testSettings = await AppEnvironment.test().settings.current
+            check("2243 test env has no side effects", testSettings == .default)
         }
 
         // ===== JOE-2266: termination handshake =====

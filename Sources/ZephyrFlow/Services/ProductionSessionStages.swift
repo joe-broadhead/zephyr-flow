@@ -11,7 +11,6 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
     private let engineKind: SessionEngineChoice
     private let engineToken: EngineToken
     private let audio = AudioCapture.shared
-    private let settingsStore = SettingsStore.shared
     private let lock = NSLock()
 
     // Session-scoped mutable state (fresh instance per session).
@@ -107,33 +106,34 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                     self.lock.withLock { self.deliveryFinished = true }
                 }
                 for await chunk in channel.chunks {
-                    self.lock.lock()
-                    self.accounting.noteCaptured(
-                        sourceSamples: UInt64(chunk.samples.count),
-                        sourceRate: chunk.sampleRate)
-                    if chunk.sequence < self.sequencer.nextExpected {
-                        self.accounting.noteDropped(sourceSamples: UInt64(chunk.samples.count), reason: .lateAppend)
-                        self.lock.unlock()
-                        continue
+                    let shouldConvert = self.lock.withLock {
+                        self.accounting.noteCaptured(
+                            sourceSamples: UInt64(chunk.samples.count),
+                            sourceRate: chunk.sampleRate)
+                        guard chunk.sequence >= self.sequencer.nextExpected else {
+                            self.accounting.noteDropped(sourceSamples: UInt64(chunk.samples.count), reason: .lateAppend)
+                            return false
+                        }
+                        self.sequencer.accept(chunk)
+                        return true
                     }
-                    self.sequencer.accept(chunk)
-                    self.lock.unlock()
+                    guard shouldConvert else { continue }
                     guard let mono = converter.convert(chunk) else {
-                        self.lock.lock()
-                        self.accounting.noteDropped(
-                            sourceSamples: UInt64(chunk.samples.count), reason: .converterFailure)
-                        self.lock.unlock()
+                        self.lock.withLock {
+                            self.accounting.noteDropped(
+                                sourceSamples: UInt64(chunk.samples.count), reason: .converterFailure)
+                        }
                         continue
                     }
                     await engine.appendAudio(mono)
-                    self.lock.lock()
-                    self.accounting.noteConverted(engineSamples: UInt64(mono.count))
-                    self.accounting.noteDelivered(engineSamples: UInt64(mono.count))
-                    let now = self.environment.clock.nowNanos()
-                    _ = self.drainBarrier.noteDelivered(
-                        sequence: chunk.sequence,
-                        nowNanos: now)
-                    self.lock.unlock()
+                    self.lock.withLock {
+                        self.accounting.noteConverted(engineSamples: UInt64(mono.count))
+                        self.accounting.noteDelivered(engineSamples: UInt64(mono.count))
+                        let now = self.environment.clock.nowNanos()
+                        _ = self.drainBarrier.noteDelivered(
+                            sequence: chunk.sequence,
+                            nowNanos: now)
+                    }
                 }
                 // Review B1v2: flush the converter's EOS tail INSIDE the
                 // consumer (after the loop, before completion), append it to
@@ -215,7 +215,7 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // consumer task COMPLETED (the converter flush happens inside the
         // consumer's defer before deliveryFinished). Wait for deliveryFinished
         // (bounded); if the consumer never completes, degrade.
-        let drainDeadlineNanos = drainBarrier.deadlineNanosAhead + 1_000_000_000
+        let drainDeadlineNanos = lock.withLock { drainBarrier.deadlineNanosAhead + 1_000_000_000 }
         let waitStart = environment.clock.nowNanos()
         while true {
             let finished = lock.withLock { deliveryFinished }
@@ -292,9 +292,12 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         // Review B1: reconcile against the channel's ACCEPTED sample count
         // (authoritative admission), not only the samples the consumer
         // dequeued — accepted-but-not-yet-delivered chunks must be counted.
-        let expectedCaptured = max(acceptedSamples, accounting.capturedSourceSamples)
-        let ratio = SessionAudioConverter.targetSampleRate / accounting.sourceSampleRate
-        let reconciled = accounting.reconciles(
+        // The consumer may still be quarantined in an engine append. Snapshot
+        // its accounting under the same lock used by every delivery update.
+        let (finalAccounting, finalDrainState) = lock.withLock { (accounting, drainBarrier.state) }
+        let expectedCaptured = max(acceptedSamples, finalAccounting.capturedSourceSamples)
+        let ratio = SessionAudioConverter.targetSampleRate / finalAccounting.sourceSampleRate
+        let reconciled = finalAccounting.reconciles(
             converterRatio: ratio,
             roundingToleranceSamples: 64,
             expectedCapturedSourceSamples: expectedCaptured)
@@ -316,12 +319,12 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                 lateAppends: lateAppends,
                 reconciled: reconciled))
         let summary = SessionAudioSummary(
-            capturedSourceSamples: accounting.capturedSourceSamples,
-            deliveredEngineSamples: accounting.deliveredEngineSamples,
-            droppedSamples: accounting.droppedSourceSamples,
+            capturedSourceSamples: finalAccounting.capturedSourceSamples,
+            deliveredEngineSamples: finalAccounting.deliveredEngineSamples,
+            droppedSamples: finalAccounting.droppedSourceSamples,
             degraded: degraded,
             reconciled: reconciled,
-            drainState: drainBarrier.state.rawValue)
+            drainState: finalDrainState.rawValue)
         // Review B1v2: never discard ownership while the consumer may still be
         // running. Only clear the handles when the task completed; otherwise
         // the retained task+converter keep the unfinished operation reachable
@@ -357,7 +360,9 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             deadlineNanosAhead: 2_000_000_000)
         validation.start(nowNanos: environment.clock.nowNanos())
         // Bounded, observable restore (never a blind sleep).
-        let monitor = await environment.targetValidation.restoreToCapturedTarget(
+        // The fresh context below remains authoritative; a restore attempt
+        // alone is never evidence that insertion is safe.
+        _ = await environment.targetValidation.restoreToCapturedTarget(
             snapshot: snapshot, deadlineNanosAhead: 2_000_000_000)
         let context = await environment.targetValidation.currentContext(
             nowNanos: environment.clock.nowNanos())

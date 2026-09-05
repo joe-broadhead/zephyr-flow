@@ -26,6 +26,7 @@ struct ZephyrFlowApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var privacyTimer: Timer?
+    private var uiTourTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -74,8 +75,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         // Poll stage file for next surface
-        Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { timer in
-            Task { @MainActor in
+        uiTourTimer?.invalidate()
+        uiTourTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
                 let stage =
                     (try? String(contentsOf: stageURL)).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""
                 switch stage {
@@ -88,7 +91,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     DictationController.shared.prepareDemoPanelForScreenshot()
                     try? "panel-open".write(to: stageURL, atomically: true, encoding: .utf8)
                 case "done":
-                    timer.invalidate()
+                    self.uiTourTimer?.invalidate()
+                    self.uiTourTimer = nil
                     DictationController.shared.clearDemoPanelForScreenshot()
                     WindowRouter.closeOnboarding()
                     // Leave settings closed for a clean quit
@@ -104,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         privacyTimer?.invalidate()
+        uiTourTimer?.invalidate()
         DictationController.shared.stop()
     }
 

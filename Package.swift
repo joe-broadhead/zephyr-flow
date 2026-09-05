@@ -33,8 +33,8 @@ let package = Package(
         .testTarget(
             name: "ZephyrFlowTests",
             // Keep the app dependency available for production-adapter tests.
-            // Existing suites cover Core contracts; this dependency alone
-            // does not establish production-path coverage (JOE-2243/2291).
+            // Core contracts and bounded in-memory adapter checks are tested;
+            // this does not establish full production-path coverage (JOE-2243/2291).
             dependencies: ["ZephyrFlowCore", "ZephyrFlow"],
             path: "Tests/ZephyrFlowTests"
         ),

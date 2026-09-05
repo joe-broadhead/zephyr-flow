@@ -5,16 +5,17 @@
 - **Address Sanitizer** (`swift test --sanitize=address`): XCTest target.
   Checks memory safety in the exercised paths. An ASan pass is not a general
   leak-free claim, and it does not run every test in the separate Core runner.
-  Current XCTest suites cover Core contracts, not real microphone/native
-  adapter ownership. Retain actual candidate results before claiming a pass.
+  XCTest covers Core contracts plus bounded in-memory PCM and injected
+  settings/permission adapter checks. It does not qualify real microphone or
+  full native-session ownership. Retain candidate results before claiming a pass.
 - **Rapid-control stress** (seeded, in the Core suite): randomized
   press/release/cancel sequences assert exactly-one terminal, idempotent
   duplicate edges and cancel-termination (JOE-2246 invariants).
 - **Crash/relaunch recovery** (deterministic, in the Core suite): versioned
   fault points (settings/history/model-promote/pasteboard) with atomic-vs-
   partial write simulation; recovery must yield OLD or NEW consistent state,
-  never MIXED. Real kill/relaunch of the app is a scheduled extended lane on
-  the exact candidate (human-gated).
+  never MIXED. A real app kill/relaunch campaign on the exact candidate remains
+  implementation and qualification work, not evidence supplied by these simulations.
 - **Strict-concurrency compile-time checks**: gate 3 builds app and test
   targets with `-strict-concurrency=complete` and fails on new/increased
   warnings against the reviewed baseline. These are not runtime race checks.
@@ -26,13 +27,14 @@
   concurrency and seeded stress provide different, partial evidence; they
   are not equivalent substitutes. Qualification needs an explicit supported
   toolchain assessment and any justified exclusions.
-- **Real microphone/transcript paths**: sanitizer lanes use deterministic
-  fakes only; no private transcripts or credentials are required.
+- **Real microphone/transcript paths**: sanitizer lanes use synthetic fixtures
+  and in-memory adapters; no private transcripts or credentials are required.
 
 ## Pinning + artifacts
 
-- Toolchain: `macos-15` runner image; actual Xcode/Swift versions and source
-  SHA are recorded. The image/toolchain is not an immutable version pin.
+- Toolchain: Xcode **16.4 / 16F6** is selected and verified; actual Swift and
+  formatter versions and source SHA are recorded. The `macos-15` runner image
+  is not immutable, and other tool/dependency pins remain incomplete.
   Full ASan/stress logs and command exit codes are uploaded on successful and
   failed runs when the runner reaches the upload step. See [CI policy](ci-policy.md).
 - CI time caps never convert a timeout into success: lanes exit non-zero on

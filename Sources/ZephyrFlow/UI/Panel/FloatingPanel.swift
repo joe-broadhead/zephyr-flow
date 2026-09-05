@@ -3,6 +3,7 @@ import SwiftUI
 import ZephyrFlowCore
 
 /// Borderless, non-activating floating panel that can appear over other apps.
+@MainActor
 final class FloatingPanelController {
     static let shared = FloatingPanelController()
 
