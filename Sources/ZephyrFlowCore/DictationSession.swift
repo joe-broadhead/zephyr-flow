@@ -616,7 +616,16 @@ public actor DictationSession {
         limitTimerTask?.cancel()
         limitEventTask?.cancel()
         state.recordingSecondsRemaining = nil
-        guard let command else { return }
+        guard let command else {
+            // Cancelling run() while it awaits the command stream terminates
+            // iteration with nil; it must still stop capture and emit exactly
+            // one terminal, not leave the microphone/provider live.
+            await provider.cancel()
+            _ = control.cancel()
+            publish(phase: .hidden, interim: "", level: 0.05)
+            finishTerminal(category: .cancelled)
+            return
+        }
 
         if command == .cancel {
             await provider.cancel()

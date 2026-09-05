@@ -1448,6 +1448,40 @@ struct CoreTests {
                 await provider.insertionCount == 0)
         }
 
+        // Task cancellation while waiting for the control mailbox closes the
+        // stream without a command. It must still cancel/release the provider.
+        do {
+            let provider = FakeSessionStages()
+            let session = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: .init(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                    insertionMode: "automatic", saveHistory: false, copyOnlyOverrideBundleIDs: []))
+            let states = await session.subscribe()
+            let run = Task { await session.run() }
+            let timeout = Task {
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                await session.cancel()
+            }
+            var cancelledRun = false
+            var hidden = false
+            for await state in states {
+                if state.recordingSecondsRemaining != nil && !cancelledRun {
+                    cancelledRun = true
+                    run.cancel()
+                }
+                hidden = hidden || state.phase == .hidden
+            }
+            await run.value
+            timeout.cancel()
+            let cancelledProvider = await provider.cancelCount
+            let inserted = await provider.insertionCount
+            let released = await session.awaitTerminalAndReleased()
+            check(
+                "2246 cancelled capture mailbox releases provider",
+                cancelledRun && hidden && cancelledProvider == 1 && inserted == 0 && released)
+        }
+
         // Product-limit timer and sample-limit signal share the normal stop
         // path. Short injected clock budgets do not stand in for device soak.
         for fromSamples in [false, true] {
