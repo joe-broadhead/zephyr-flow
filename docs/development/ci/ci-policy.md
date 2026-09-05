@@ -118,6 +118,14 @@ production release approval.
     actual AX focus, TCC, microphone, continuously changing sensitivity or
     device qualification tests. Later validation still applies the restrictive
     session history/insertion policy.
+    `AxBoundedRunnerTests` uses held synchronous closures and injected scheduling,
+    not actual AX IPC. It checks cancellation before/after worker admission,
+    deadlines rechecked at admission, retained singleflight after timeout,
+    rejection of retries, and late-result isolation. Infinite-loop fixtures are
+    not used. The shared production AX-write lane remains occupied until native
+    completion; cancellation/timeout is not proof a write did not apply. This
+    does not bound preflight/capture AX IPC, make scheduling hard real time,
+    prove native memory bounds, or provide atomic target/clipboard exclusion.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

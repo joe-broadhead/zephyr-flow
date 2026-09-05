@@ -28,6 +28,11 @@ actor InsertionService: InsertionServiceProtocol {
         lease: TargetLease? = nil
     ) async -> InsertionOutcome {
         guard !text.isEmpty else { return .failed("Empty text") }
+        // A prior timed-out/cancelled native write still owns its lane until
+        // actual completion. Do not admit a retry or clipboard fallback while
+        // that write may still apply, even from a newer session.
+        guard !AxOperationLane.shared.hasOutstandingWork else { return .writeMayHaveApplied }
+        guard !Task.isCancelled else { return .targetUnknown }
         // JOE-2259: domain rejection of automatic insertion for secure/unknown
         // sessions — cannot be bypassed by calling this service directly.
         guard SensitiveSessionPolicy.autoPasteAllowed(sensitivity: sensitivity) else {
@@ -92,6 +97,8 @@ actor InsertionService: InsertionServiceProtocol {
         }
 
         for strategy in strategies {
+            guard !AxOperationLane.shared.hasOutstandingWork else { return .writeMayHaveApplied }
+            guard !Task.isCancelled else { return .targetUnknown }
             switch strategy {
             case .copyOnly:
                 // Review R9: copy-only MODE is an automatic write, not an
@@ -739,7 +746,7 @@ actor InsertionService: InsertionServiceProtocol {
 
         // Apply temporary content (text + unique marker type) only after the
         // target checks passed.
-        guard !Task.isCancelled else { return .failed }
+        guard !Task.isCancelled, !AxOperationLane.shared.hasOutstandingWork else { return .failed }
         let pasteboard = NSPasteboard.general
         guard let original = PasteboardTransactionAdapter.snapshot(from: pasteboard),
             var tx = PasteboardTransaction(sessionID: sessionID, original: original)
@@ -747,6 +754,7 @@ actor InsertionService: InsertionServiceProtocol {
             ZFLog.info("paste refused — exact snapshot unavailable or over budget")
             return .failed
         }
+        guard !Task.isCancelled, !AxOperationLane.shared.hasOutstandingWork else { return .failed }
         switch PasteboardTransactionAdapter.stage(text, transaction: &tx, on: pasteboard) {
         case .applied: break
         case .refused: return .failed
@@ -779,7 +787,9 @@ actor InsertionService: InsertionServiceProtocol {
             ZFLog.info("paste event-time: sensitive/unknown field — restore + blocked")
             return finishClipboardTransaction(&tx, on: pasteboard, posted: false)
         }
-        guard !Task.isCancelled, PasteboardTransactionAdapter.stillOwns(tx, on: pasteboard), postCommandV() else {
+        guard !Task.isCancelled, !AxOperationLane.shared.hasOutstandingWork,
+            PasteboardTransactionAdapter.stillOwns(tx, on: pasteboard), postCommandV()
+        else {
             // Failure before/during event posting: restore safely now.
             return finishClipboardTransaction(&tx, on: pasteboard, posted: false)
         }

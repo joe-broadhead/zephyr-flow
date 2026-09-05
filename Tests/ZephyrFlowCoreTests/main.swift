@@ -2311,6 +2311,7 @@ struct CoreTests {
                 deadlineNanosAhead: 20_000_000,
                 startedAtNanos: start,
                 nowNanos: { start },
+                lane: AxOperationLane(),
                 operation: {
                     Thread.sleep(forTimeInterval: 0.5)  // synchronous hang, like a stuck AX target
                     return 7
@@ -2337,22 +2338,45 @@ struct CoreTests {
             } else {
                 check("R2.2 expired budget never executes", false)
             }
-            // R2.2: the wait returns at the deadline even if the operation is
-            // a never-returning sync call (bounded, no hang).
+            // R2.2: held synchronous work outlives its waiter; ownership must
+            // persist, but tests release it rather than leaking infinite work.
+            let heldLane = AxOperationLane()
+            let heldRelease = DispatchSemaphore(value: 0)
+            let heldEntered = ExecutedFlag()
             let startNs = DispatchTime.now().uptimeNanoseconds
-            let never = await AxBoundedRunner.run(
-                deadlineNanosAhead: 30_000_000,  // 30 ms
-                startedAtNanos: startNs,
-                nowNanos: { DispatchTime.now().uptimeNanoseconds },
-                operation: {
-                    while true { Thread.sleep(forTimeInterval: 1.0) }
-                })
-            let elapsed = DispatchTime.now().uptimeNanoseconds &- startNs
-            if case .deadlineExceeded = never {
-                check("R2.2 never-returning op bounded (~30ms)", elapsed < 5_000_000_000)
-            } else {
-                check("R2.2 never-returning op bounded", false)
+            let heldCall = Task {
+                await AxBoundedRunner.run(
+                    deadlineNanosAhead: 10_000_000_000,
+                    startedAtNanos: startNs,
+                    nowNanos: { DispatchTime.now().uptimeNanoseconds },
+                    lane: heldLane,
+                    operation: {
+                        heldEntered.mark()
+                        _ = heldRelease.wait(timeout: .now() + 10)
+                        return 9
+                    })
             }
+            while !heldEntered.didRun && DispatchTime.now().uptimeNanoseconds - startNs < 5_000_000_000 {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            check("2270 held worker entry observed", heldEntered.didRun)
+            heldCall.cancel()
+            let cancelled = await heldCall.value
+            if case .cancelled(let mayHaveStarted) = cancelled {
+                check("R2.2 held native cancellation waiter returns", mayHaveStarted)
+            } else {
+                check("R2.2 held native cancellation waiter returns", false)
+            }
+            check("2270 native work remains owned after cancellation", heldLane.hasOutstandingWork)
+            let busy = await AxBoundedRunner.run(
+                deadlineNanosAhead: 1_000_000_000,
+                startedAtNanos: start, nowNanos: { start }, lane: heldLane, operation: { 10 })
+            if case .busy = busy {
+                check("2270 native retries cannot overlap", true)
+            } else {
+                check("2270 native retries cannot overlap", false)
+            }
+            heldRelease.signal()
             // Already-expired budget never executes.
             let expired = await AxBoundedRunner.run(
                 deadlineNanosAhead: 10,

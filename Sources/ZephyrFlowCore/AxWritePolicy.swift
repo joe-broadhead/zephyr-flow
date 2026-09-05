@@ -237,6 +237,8 @@ public enum AxWritePolicy {
 public enum AxBoundedResult<Value: Sendable>: Sendable {
     case completed(Value)
     case deadlineExceeded(elapsedNanos: UInt64)
+    case busy
+    case cancelled(operationMayHaveStarted: Bool)
 
     public var value: Value? {
         if case .completed(let v) = self { return v }
@@ -244,113 +246,141 @@ public enum AxBoundedResult<Value: Sendable>: Sendable {
     }
 }
 
-/// Bounded runner for a single AX call. The synchronous AX call executes on a
-/// dedicated detached thread; the caller awaits up to a deadline; results that
-/// arrive after the deadline are ignored as RESULTS, but a synchronous side
-/// effect may have ALREADY applied — callers must treat .deadlineExceeded as
-/// 'the write may have applied'. A hung target can
-/// therefore never block the session/UI indefinitely.
+/// One outstanding native operation per lane. Timeout/cancellation closes the
+/// caller's waiter, not native ownership. The lane is released only when the
+/// worker exits, so a stuck call cannot accumulate retries/verification threads.
+/// The shared lane is used by all production AX writes and their verification.
+public final class AxOperationLane: @unchecked Sendable {
+    public static let shared = AxOperationLane()
+    private let lock = NSLock()
+    private var owner: UUID?
+    fileprivate let schedule: @Sendable (@escaping @Sendable () -> Void) -> Void
+
+    public convenience init() { self.init(schedule: { Thread.detachNewThread($0) }) }
+    /// Internal test seam: hold a worker before admission without real AX IPC.
+    init(schedule: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void) { self.schedule = schedule }
+    public var hasOutstandingWork: Bool { lock.withLock { owner != nil } }
+    fileprivate func acquire() -> UUID? {
+        lock.withLock {
+            guard owner == nil else { return nil }
+            let id = UUID()
+            owner = id
+            return id
+        }
+    }
+    fileprivate func complete(_ id: UUID) {
+        lock.withLock { if owner == id { owner = nil } }
+    }
+}
+
+/// Dedicated-thread native execution with a cancellable, deadline-bounded
+/// waiter. Scheduling is not hard real time. An already-started synchronous
+/// mutation can still apply after timeout/cancellation; never retry blindly.
+/// This runner does not bound AX calls made outside it or enforce target leases.
 public enum AxBoundedRunner {
     /// - Parameters:
-    ///   - deadlineNanosAhead: hard budget for this single call.
+    ///   - deadlineNanosAhead: caller budget for this single call.
     ///   - startedAtNanos: continuous-clock start instant.
     ///   - nowNanos: clock read (deterministic in tests).
     ///   - operation: the AX call.
     public static func run<Value: Sendable>(
         deadlineNanosAhead: UInt64,
         startedAtNanos: UInt64,
-        nowNanos: @escaping () -> UInt64,
+        nowNanos: @escaping @Sendable () -> UInt64,
+        lane: AxOperationLane = .shared,
         operation: @escaping @Sendable () -> Value
     ) async -> AxBoundedResult<Value> {
-        // Deterministic fast path: an already-expired budget never executes.
-        let elapsedAtStart = nowNanos() &- startedAtNanos
+        let elapsedAtStart = elapsed(now: nowNanos(), start: startedAtNanos)
+        if Task.isCancelled { return .cancelled(operationMayHaveStarted: false) }
         if elapsedAtStart >= deadlineNanosAhead {
             return .deadlineExceeded(elapsedNanos: elapsedAtStart)
         }
-
-        // Review R2.2: a synchronous AX mutation (e.g. AXUIElementSetAttributeValue)
-        // cannot be undone by task cancellation — once it starts, the side
-        // effect may have applied even if the caller times out. Two hard rules:
-        //   1. Never BEGIN the operation unless the remaining budget suffices
-        //      (the fast path above).
-        //   2. The wait is BOUNDED without waiting for a non-cooperative child:
-        //      we race the detached op against the deadline using an
-        //      unstructured Task whose value we poll, and we return at the
-        //      deadline regardless. We do NOT use a task group, because
-        //      structured concurrency waits for child tasks to finish — a
-        //      hung sync AX call would defeat the deadline.
-        // The caller must treat `.deadlineExceeded` as "the write MAY have
-        // applied; re-validate the target before any further side effect"
-        // (InsertionService already re-validates before each write).
-        // Bounded wait: race the detached operation against a deadline using
-        // a single continuation resumed by whichever fires first. We do NOT
-        // use a task group (structured concurrency waits for non-cooperative
-        // children, which would defeat the deadline). The operation task is
-        // detached: if it is still running at the deadline we return
-        // immediately without awaiting it.
-        // Review R2.2: a synchronous AX mutation cannot be undone by task
-        // cancellation — once started, the side effect may have applied even
-        // on timeout. Hard rules:
-        //   1. Never BEGIN unless the remaining budget suffices (fast path
-        //      above).
-        //   2. The WAIT is truly bounded: the operation runs DETACHED, so the
-        //      structured group below only contains cooperative children (a
-        //      value proxy + a deadline sleep). group.next() returns at the
-        //      first completion and the group scope does NOT wait for the
-        //      detached, possibly-hung operation. A late `.deadlineExceeded`
-        //      means the write MAY have applied; the caller re-validates the
-        //      target before any further side effect.
-        // Review R2.2: a synchronous AX mutation cannot be undone by task
-        // cancellation — once started, the side effect may have applied even
-        // on timeout. Hard rules:
-        //   1. Never BEGIN unless the remaining budget suffices (fast path
-        //      above).
-        //   2. The WAIT is truly bounded even if the operation never returns:
-        //      a detached op is raced against a deadline using an exactly-once
-        //      continuation (atomic guard), and we return at the deadline
-        //      without awaiting the hung op.
-        let operationTask = Task.detached(priority: .userInitiated) { operation() }
-        let remaining = deadlineNanosAhead - elapsedAtStart
-        // Exactly-once continuation: the first racer (op result or deadline)
-        // resumes; the loser is a no-op. A lock-guarded once-flag avoids
-        // double-resume (withCheckedContinuation crashes on a second resume).
-        let once = OnceFlag()
-        let result: Value? = await withCheckedContinuation { (cont: CheckedContinuation<Value?, Never>) in
-            let deadlineChild = Task {
-                try? await Task.sleep(nanoseconds: remaining)
-                once.run { cont.resume(returning: nil) }
+        guard let id = lane.acquire() else { return .busy }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .nanoseconds(Int64(clamping: deadlineNanosAhead - elapsedAtStart)))
+        let (stream, completion) = AsyncStream.makeStream(
+            of: AxBoundedResult<Value>.self, bufferingPolicy: .bufferingNewest(1))
+        let flight = AxCallCompletion(completion: completion)
+        let result: AxBoundedResult<Value>? = await withTaskCancellationHandler {
+            let timer = Task {
+                do { try await clock.sleep(until: deadline) } catch { return }
+                flight.finish(.deadlineExceeded(elapsedNanos: elapsed(now: nowNanos(), start: startedAtNanos)))
             }
-            let opChild = Task {
-                let v = await operationTask.value
-                once.run { cont.resume(returning: v) }
+            defer {
+                timer.cancel()
+                completion.finish()
             }
-            // If the operation finishes first, cancel the deadline child.
-            Task {
-                _ = await opChild.value
-                deadlineChild.cancel()
+            lane.schedule {
+                // Recheck at worker admission, not just before scheduling.
+                // This is not an atomic deadline fence around an OS mutation.
+                let age = elapsed(now: nowNanos(), start: startedAtNanos)
+                guard age < deadlineNanosAhead, clock.now < deadline else {
+                    lane.complete(id)
+                    flight.finish(.deadlineExceeded(elapsedNanos: age))
+                    return
+                }
+                guard flight.begin() else {
+                    lane.complete(id)
+                    return
+                }
+                let value = operation()
+                lane.complete(id)  // actual native completion, never caller timeout
+                let ageAtEnd = elapsed(now: nowNanos(), start: startedAtNanos)
+                if ageAtEnd >= deadlineNanosAhead || clock.now >= deadline {
+                    flight.finish(.deadlineExceeded(elapsedNanos: ageAtEnd))
+                } else {
+                    flight.finish(.completed(value))
+                }
             }
+            for await value in stream { return value }
+            return nil
+        } onCancel: {
+            flight.cancel()
         }
-        if let result {
-            return .completed(result)
-        }
-        // Deadline hit: the late result (if any) is dropped as a RESULT, but
-        // the detached operation may STILL BE RUNNING and its synchronous side
-        // effect may apply after we return. We do NOT await it; the caller
-        // receives .deadlineExceeded (mapped to .writeMayHaveApplied) and must
-        // verify the target before any retry.
-        return .deadlineExceeded(elapsedNanos: nowNanos() &- startedAtNanos)
+        if Task.isCancelled { return .cancelled(operationMayHaveStarted: flight.mayHaveStarted) }
+        return result ?? .deadlineExceeded(elapsedNanos: elapsed(now: nowNanos(), start: startedAtNanos))
     }
+
+    private static func elapsed(now: UInt64, start: UInt64) -> UInt64 { now >= start ? now - start : .max }
 }
 
-/// Review R2.2: lock-guarded run-exactly-once helper for the bounded AX race.
-private final class OnceFlag: @unchecked Sendable {
+/// The lock serializes worker admission with cancellation/timeout publication.
+/// No native call or user closure executes while it is held. The native worker
+/// retains this bounded state until actual completion even if its waiter left.
+private final class AxCallCompletion<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
-    private var ran = false
-    func run(_ body: () -> Void) {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !ran else { return }
-        ran = true
-        body()
+    private var started = false
+    private var finished = false
+    private let completion: AsyncStream<AxBoundedResult<Value>>.Continuation
+    init(completion: AsyncStream<AxBoundedResult<Value>>.Continuation) { self.completion = completion }
+    var mayHaveStarted: Bool { lock.withLock { started } }
+    func begin() -> Bool {
+        lock.withLock {
+            guard !finished, !started else { return false }
+            started = true
+            return true
+        }
+    }
+    func cancel() {
+        let startedAtCancellation: Bool? = lock.withLock {
+            guard !finished else { return nil }
+            finished = true
+            return started
+        }
+        if let startedAtCancellation {
+            completion.yield(.cancelled(operationMayHaveStarted: startedAtCancellation))
+            completion.finish()
+        }
+    }
+    func finish(_ result: AxBoundedResult<Value>) {
+        let publish = lock.withLock {
+            guard !finished else { return false }
+            finished = true
+            return true
+        }
+        if publish {
+            completion.yield(result)
+            completion.finish()
+        }
     }
 }
