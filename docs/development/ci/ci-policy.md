@@ -18,6 +18,11 @@ production release approval.
    sources and detached callers, speech callback value/error snapshots, and
    serialized AX-handle ownership without AX messages. Neither suite opens a
    microphone or personal store, requests permissions, or writes to another app.
+   `ProductionEngineTests` exercises the app's WhisperKit engine with a
+   controlled runtime factory and the runtime's exclusive-call owner with a
+   controlled backend: stale/cancelled loads, active-model isolation and
+   cancellation that does not stop native work. No model weights are loaded;
+   this does not verify WhisperKit inference or tokenizer networking.
    These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

@@ -3,7 +3,8 @@ import Foundation
 import WhisperKit
 import ZephyrFlowCore
 
-/// WhisperKit-backed engine. Network only when `allowDownload` is true.
+/// WhisperKit-backed engine. Model download consent is enforced separately
+/// from the outstanding dependency tokenizer offline-load requirement.
 ///
 /// Live partials use a **single-flight** rolling-window decode loop so we never
 /// run concurrent `transcribe` calls (WhisperKit/NSProgress races → SIGSEGV).
@@ -15,7 +16,9 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     public var isReady: Bool { _isReady && !_isQuarantined }
     private(set) var modelName = "WhisperKit"
 
-    private var kit: WhisperKit?
+    private var kit: (any WhisperTranscriptionRuntime)?
+    private let runtimeFactory: WhisperRuntimeFactory
+    private var pendingLoadToken: UUID?
     private var onPartial: (@Sendable (PartialTranscription) -> Void)?
     private var audioSamples: [Float] = []
     private var isStreaming = false
@@ -40,6 +43,12 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     private var partialLoopTask: Task<Void, Never>?
 
     private static let maxSampleCount = StreamingPartialWindow.sampleRate * 60
+
+    init(
+        runtimeFactory: @escaping WhisperRuntimeFactory = { try await WhisperKitRuntime.load($0) }
+    ) {
+        self.runtimeFactory = runtimeFactory
+    }
 
     /// JOE-2254: decode options honor the session language snapshot. Fixed
     /// languages disable auto-detection (deterministic behavior); `auto`
@@ -98,7 +107,6 @@ actor WhisperKitEngine: WhisperEngineProtocol {
             throw WhisperEngineError.modelLoadFailed("Not a WhisperKit model: \(model.rawValue)")
         }
 
-        _isReady = false
         // Round-5 B5: verified admission REQUIRES a verified folder. A nil
         // verifiedFolder must NEVER fall back to WhisperKit's own cache from
         // the verified path — that would load unverified bytes. Identifier/
@@ -108,34 +116,8 @@ actor WhisperKitEngine: WhisperEngineProtocol {
                 "verified load refused — no verified artifact directory (identifier/cache fallback is not permitted from verified admission)"
             )
         }
-        // Review B6v2: load from the app-owned VERIFIED directory (the
-        // promoted artifact from the acquisition pipeline), NOT from
-        // WhisperKit's own cache. Network is disabled: the verified
-        // artifact is already on disk.
-        // Round-6 B4: stage + pass the verified TOKENIZER folder (a
-        // tokenizer/ subfolder of the verified artifact) so the pinned
-        // loader never falls back to a Hub tokenizer download.
-        ZFLog.info("WhisperKit load model=\(model.rawValue) verifiedFolder=\(verifiedFolder)")
-        let tokenizerFolder = URL(fileURLWithPath: verifiedFolder)
-            .appendingPathComponent("tokenizer", isDirectory: true)
-        do {
-            let pipe = try await WhisperKit(
-                model: model.rawValue,
-                modelFolder: verifiedFolder,
-                tokenizerFolder: tokenizerFolder,
-                verbose: false,
-                logLevel: .error,
-                prewarm: true,
-                load: true,
-                download: false
-            )
-            self.kit = pipe
-            self.modelName = "WhisperKit (\(model.displayName)) [verified]"
-            self._isReady = true
-        } catch {
-            let hint = "\(error.localizedDescription) — verified artifact load failed"
-            throw WhisperEngineError.modelLoadFailed(hint)
-        }
+        try await loadRuntime(
+            WhisperRuntimeConfiguration(model: model, verifiedFolder: verifiedFolder, allowDownload: false))
     }
 
     func load(model: ModelIdentifier, allowDownload: Bool) async throws {
@@ -143,27 +125,40 @@ actor WhisperKitEngine: WhisperEngineProtocol {
             throw WhisperEngineError.modelLoadFailed("Not a WhisperKit model: \(model.rawValue)")
         }
 
-        _isReady = false
-        ZFLog.info("WhisperKit load model=\(model.rawValue) allowDownload=\(allowDownload)")
+        try await loadRuntime(
+            WhisperRuntimeConfiguration(model: model, verifiedFolder: nil, allowDownload: allowDownload))
+    }
 
+    private func loadRuntime(_ configuration: WhisperRuntimeConfiguration) async throws {
+        guard !isStreaming, !isFinalizing, !decodeOwnership.isBusy else {
+            throw WhisperEngineError.decodeBusy
+        }
+        guard !_isQuarantined else { throw WhisperEngineError.notReady }
+        let token = UUID()
+        pendingLoadToken = token
+        _isReady = false
+        verifiedDigest = nil
+        kit = nil
+        ZFLog.info(
+            "WhisperKit load model=\(configuration.model.rawValue) verified=\(configuration.verifiedFolder != nil)")
         do {
-            let pipe = try await WhisperKit(
-                model: model.rawValue,
-                verbose: false,
-                logLevel: .error,
-                prewarm: true,
-                load: true,
-                download: allowDownload
-            )
-            self.kit = pipe
-            self.modelName = "WhisperKit (\(model.displayName))"
-            self._isReady = true
+            let candidate = try await runtimeFactory(configuration)
+            guard pendingLoadToken == token, !Task.isCancelled, !_isQuarantined else {
+                throw CancellationError()
+            }
+            kit = candidate
+            modelName =
+                "WhisperKit (\(configuration.model.displayName))"
+                + (configuration.verifiedFolder == nil ? "" : " [verified]")
+            _isReady = true
+            pendingLoadToken = nil
         } catch {
-            let hint =
-                allowDownload
-                ? error.localizedDescription
-                : "\(error.localizedDescription) — enable model downloads in Privacy settings or pick Apple Speech"
-            throw WhisperEngineError.modelLoadFailed(hint)
+            if pendingLoadToken == token {
+                pendingLoadToken = nil
+                _isReady = false
+            }
+            if error is CancellationError { throw error }
+            throw WhisperEngineError.modelLoadFailed(error.localizedDescription)
         }
     }
 
@@ -177,9 +172,9 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         language: SupportedLanguage,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws {
-        // Round-6 B4: localOnly is now enforced — a verified/local session
-        // must never trigger a Hub request (the tokenizer folder is staged
-        // and passed at load; there is no download path here).
+        // Streaming uses only the already-loaded runtime. Offline tokenizer
+        // initialization is a separate load-path requirement, not proven by
+        // passing a folder or setting the model's download flag to false.
         _ = localOnly
         guard isReady, kit != nil else { throw WhisperEngineError.notReady }
         guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
@@ -360,9 +355,13 @@ actor WhisperKitEngine: WhisperEngineProtocol {
 
     func quarantine() async {
         _isQuarantined = true
+        pendingLoadToken = nil
     }
 
     func cancel() async {
+        // Invalidate publication before any suspension, even if the native
+        // initializer ignores task cancellation and returns much later.
+        pendingLoadToken = nil
         isFinalizing = true
         partialLoopTask?.cancel()
         partialLoopTask = nil
@@ -388,7 +387,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     /// starts a second decode after a polling cap, and a deadline retains
     /// ownership until the native call actually ends.
     private func runTranscribe(
-        kit: WhisperKit,
+        kit: any WhisperTranscriptionRuntime,
         samples: [Float],
         options: DecodingOptions,
         purpose: DecodePurpose
@@ -409,9 +408,9 @@ actor WhisperKitEngine: WhisperEngineProtocol {
             throw WhisperEngineError.decodeBusy
         }
         do {
-            let results = try await kit.transcribe(audioArray: samples, decodeOptions: options)
+            let text = try await kit.transcribe(samples: samples, options: options)
             _ = decodeOwnership.finish(op, outcome: .completed)
-            return results.map(\.text).joined(separator: " ")
+            return text
         } catch is CancellationError {
             _ = decodeOwnership.cancel(op)
             _ = decodeOwnership.finish(op, outcome: .cancelled)

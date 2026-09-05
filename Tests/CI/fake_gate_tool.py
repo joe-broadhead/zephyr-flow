@@ -16,7 +16,7 @@ mode = os.environ.get("ZF_TEST_FAILURE", "")
 products = Path(os.environ["ZF_TEST_PRODUCTS"])
 root = Path(os.environ["ZF_TEST_ROOT"])
 SUITES = ["M0ContractTests", "ProductionBlockerTests", "FlowProcessorTests", "ModelsTests",
-          "ProductionAudioTests", "ProductionBoundaryTests"]
+          "ProductionAudioTests", "ProductionBoundaryTests", "ProductionEngineTests"]
 
 
 def fail_if(name):
