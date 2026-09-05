@@ -15,8 +15,11 @@ production release approval.
    empty test target. Most suites test Core contracts. `ProductionAudioTests`
    exercises in-memory native PCM snapshot/conversion adapters, while
    `ProductionBoundaryTests` exercises settings/permission reads with injected
-   sources and detached callers, speech callback value/error snapshots, and
-   serialized AX-handle ownership without AX messages. Neither suite opens a
+    sources and detached callers, speech callback value/error snapshots, and
+    serialized AX-handle ownership without AX messages. The boundary suite
+    also tests checked process-start
+    conversion and read-only libproc identity queries of its own XCTest process.
+    Neither suite opens a
    microphone or personal store, requests permissions, or writes to another app.
    `ProductionEngineTests` exercises the app's WhisperKit engine with a
    controlled runtime factory and the runtime's exclusive-call owner with a

@@ -38,6 +38,25 @@
     }
 
     final class ProductionBoundaryTests: XCTestCase {
+        func testProcessStartIdentityPreservesIntegerMicrosecondsAndRejectsOverflow() {
+            XCTAssertEqual(
+                ProcessStartIdentity.nanoseconds(seconds: 1_725_566_789, microseconds: 123_456),
+                1_725_566_789_123_456_000)
+            XCTAssertNil(ProcessStartIdentity.nanoseconds(seconds: .max, microseconds: 0))
+            XCTAssertNil(ProcessStartIdentity.nanoseconds(seconds: UInt64.max / 1_000_000_000, microseconds: 999_999))
+            XCTAssertNil(ProcessStartIdentity.nanoseconds(seconds: 1, microseconds: 1_000_000))
+            XCTAssertNil(ProcessStartIdentity.nanoseconds(seconds: 0, microseconds: 0))
+        }
+
+        func testProcessStartIdentityReadsOnlyOwnProcessAndIsStable() throws {
+            // Read-only libproc query of this XCTest process, no target-app
+            // AX messages, permissions, UI activation or process lifecycle work.
+            let first = try XCTUnwrap(ProcessStartIdentity.read(pid: getpid()))
+            XCTAssertEqual(ProcessStartIdentity.read(pid: getpid()), first)
+            XCTAssertNil(ProcessStartIdentity.read(pid: 0))
+            XCTAssertNil(ProcessStartIdentity.read(pid: -1))
+        }
+
         func testAXHandleOwnerSerializesWithoutSendingAXMessages() {
             // Creating/hashing a handle does not query attributes, request
             // Accessibility trust, or send a write to any application.

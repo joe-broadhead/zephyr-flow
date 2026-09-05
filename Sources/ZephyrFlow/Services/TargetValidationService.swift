@@ -80,7 +80,7 @@ final class TargetValidationService: TargetValidationProviding {
             target: .init(
                 pid: pid,
                 bundleID: bundle,
-                processStartUptimeNanos: processStartNanos(pid: pid),
+                processStartUptimeNanos: ProcessStartIdentity.read(pid: pid),
                 windowID: frontmostWindowID(pid: pid, element: element),
                 appVersion: bundleShortVersion(bundle)),
             element: .init(
@@ -129,7 +129,7 @@ final class TargetValidationService: TargetValidationProviding {
         return TargetValidationContext(
             pid: pid,
             bundleID: bundle,
-            processStartUptimeNanos: processStartNanos(pid: pid),
+            processStartUptimeNanos: ProcessStartIdentity.read(pid: pid),
             windowID: frontmostWindowID(pid: pid, element: element),
             element: .init(
                 role: role ?? "unknown",
@@ -307,16 +307,6 @@ final class TargetValidationService: TargetValidationProviding {
             }
         }
         return nil
-    }
-
-    private func processStartNanos(pid: Int32) -> UInt64? {
-        var info = proc_bsdinfo()
-        let size = MemoryLayout<proc_bsdinfo>.size
-        let rc = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size))
-        guard rc > 0 else { return nil }
-        let seconds = UInt64(info.pbi_start_tvsec)
-        let micros = UInt64(info.pbi_start_tvusec)
-        return seconds * 1_000_000_000 + micros * 1_000
     }
 
     private func bundleShortVersion(_ bundleID: String) -> String? {

@@ -517,11 +517,8 @@ actor InsertionService: InsertionServiceProtocol {
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success else { return nil }
         let currentBundle = await frontmostBundleID()
-        // Process-start identity via NSRunningApplication (PID reuse check).
-        let running = NSRunningApplication(processIdentifier: pid)
-        let processStart = running?.launchDate.map {
-            UInt64($0.timeIntervalSince1970 * 1_000_000_000)
-        }
+        // Exactly the same integer representation used during capture.
+        let processStart = ProcessStartIdentity.read(pid: pid)
         let role = await focusedRole()
         let subrole = focusedSubrole(element)
         let token = axString(element, kAXIdentifierAttribute as String)
