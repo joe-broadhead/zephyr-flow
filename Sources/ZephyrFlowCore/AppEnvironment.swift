@@ -227,17 +227,31 @@ public struct AppEnvironment: Sendable {
 
 // MARK: - Engine registry
 
-/// Registry of available transcription engines (content-free identity).
+/// Factories for isolated engine candidates. Production factories must return
+/// a fresh actor per load; reloading a session-owned actor is not permitted.
 public struct EngineRegistry: Sendable {
-    public let whisper: (any WhisperEngineProtocol)?
-    public let appleSpeech: (any WhisperEngineProtocol)?
+    private let makeWhisper: (@Sendable () -> any WhisperEngineProtocol)?
+    private let makeAppleSpeech: (@Sendable () -> any WhisperEngineProtocol)?
 
+    /// Shared instances are useful for deterministic test fixtures only.
     public init(
         whisper: (any WhisperEngineProtocol)?,
         appleSpeech: (any WhisperEngineProtocol)?
     ) {
-        self.whisper = whisper
-        self.appleSpeech = appleSpeech
+        if let whisper { makeWhisper = { whisper } } else { makeWhisper = nil }
+        if let appleSpeech { makeAppleSpeech = { appleSpeech } } else { makeAppleSpeech = nil }
+    }
+
+    public init(
+        makeWhisper: (@Sendable () -> any WhisperEngineProtocol)?,
+        makeAppleSpeech: (@Sendable () -> any WhisperEngineProtocol)?
+    ) {
+        self.makeWhisper = makeWhisper
+        self.makeAppleSpeech = makeAppleSpeech
+    }
+
+    public func makeEngine(for model: ModelIdentifier) -> (any WhisperEngineProtocol)? {
+        model.isWhisperKit ? makeWhisper?() : makeAppleSpeech?()
     }
 }
 

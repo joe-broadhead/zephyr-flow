@@ -17,8 +17,8 @@ extension AppEnvironment {
             history: HistoryStoreRepository(),
             permissions: PrivacyPermissionProvider(),
             engines: EngineRegistry(
-                whisper: WhisperKitEngine(),
-                appleSpeech: AppleSpeechEngine()),
+                makeWhisper: { WhisperKitEngine() },
+                makeAppleSpeech: { AppleSpeechEngine() }),
             flow: FlowRouter.shared,
             insertion: InsertionService.shared,
             targetValidation: TargetValidationService.shared)

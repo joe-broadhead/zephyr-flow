@@ -4042,8 +4042,13 @@ struct CoreTests {
             let currentSettings = await env.settings.current
             check("2243 fake settings repo", currentSettings == .default)
             // Engine registry carries the fake engine.
-            let engine = env.engines.whisper as? FakeWhisperEngine
+            let engine = env.engines.makeEngine(for: .whisperTiny) as? FakeWhisperEngine
             check("2243 fake engine in registry", engine != nil)
+            let freshRegistry = EngineRegistry(makeWhisper: { FakeWhisperEngine() }, makeAppleSpeech: nil)
+            let firstCandidate = freshRegistry.makeEngine(for: .whisperTiny)
+            let secondCandidate = freshRegistry.makeEngine(for: .whisperTiny)
+            check("2243 registry factories create isolated candidates", firstCandidate !== secondCandidate)
+            check("2243 missing backend cannot substitute Whisper", freshRegistry.makeEngine(for: .appleSpeech) == nil)
             // Session pipeline smoke with fakes: start -> append -> finalize.
             let sid = SessionID(token: "env", sequence: 1, createdAtUptimeNanos: 0)
             var finalResult: EngineResult?

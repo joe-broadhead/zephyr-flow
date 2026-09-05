@@ -29,8 +29,15 @@ production release approval.
    loopback permission-denial probe and required suite-execution evidence.
    This bounds the exercised loader paths; it is not a complete app privacy
    canary or real-model inference qualification. The direct Tokenizers/Hub
-   APIs use the already-resolved swift-transformers **1.1.9** revision.
-   These bounded checks do **not** establish
+    APIs use the already-resolved swift-transformers **1.1.9** revision.
+    `ProductionPreparationTests` exercises the application preparation
+    coordinator using injected artifact/acquisition closures and held engine
+    actors: consent, verification vs loaded readiness, explicit Apple loading,
+    supersession, retry, quarantine and cancellation before native completion.
+    The controller now consumes that coordinator and the environment's engine
+    factories; these tests do not instantiate the full UI controller or perform
+    real acquisition, Speech authorization, capture, or inference.
+    These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
    Core evidence on CI and on CommandLineTools-only machines. It is neither

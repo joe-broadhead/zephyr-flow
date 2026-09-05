@@ -130,7 +130,7 @@ struct SettingsView: View {
                 if controller.isModelLoading {
                     ProgressView("Loading model…")
                 }
-                if let banner = modelReadiness.bannerMessage {
+                if let banner = controller.statusMessage {
                     Text(banner)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -246,6 +246,20 @@ struct SettingsView: View {
                 }
                 Button(AppStrings.key("settings.refreshModelStatus")) {
                     modelReadiness.refreshAll()
+                }
+            }
+            Section("Engine preparation") {
+                if let message = controller.statusMessage {
+                    Text(message).font(.callout)
+                }
+                if controller.isModelLoading {
+                    ProgressView("Preparing selected engine…")
+                    Button("Cancel preparation") { controller.cancelModelPreparation() }
+                } else {
+                    Button("Retry preparation") { controller.reloadEngine() }
+                }
+                if settings.settings.preferredModel.isWhisperKit {
+                    Button("Use Apple Speech") { selectModel(.appleSpeech) }
                 }
             }
         }
@@ -528,6 +542,7 @@ struct SettingsView: View {
 
     private func modelBlocked(_ model: ModelIdentifier) -> Bool {
         model.isWhisperKit && !settings.settings.allowModelDownloads
+            && !modelReadiness.readiness(for: model).state.isReady
     }
 
     private func readinessLabel(for model: ModelIdentifier) -> String {
@@ -539,9 +554,9 @@ struct SettingsView: View {
             return "Downloading…"
         case .ready:
             if let b = r.bytesOnDisk, b > 0 {
-                return "Ready · \(ByteCountFormatter.string(fromByteCount: b, countStyle: .file))"
+                return "Verified files · \(ByteCountFormatter.string(fromByteCount: b, countStyle: .file))"
             }
-            return "Ready"
+            return "Verified files"
         case .queued: return "Queued…"
         case .verifying: return "Verifying…"
         case .cancelled: return "Cancelled"

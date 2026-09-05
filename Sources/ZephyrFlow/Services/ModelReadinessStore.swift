@@ -3,8 +3,9 @@ import Foundation
 import SwiftUI
 import ZephyrFlowCore
 
-/// Observable readiness for Whisper models. JOE-2255: readiness = VERIFIED
-/// loadability (manifest + digest + size bounds), not a non-empty directory.
+/// Observable artifact verification for Whisper models (manifest + digest +
+/// size bounds), not engine readiness. EnginePreparationCoordinator separately
+/// loads a current candidate before allowing session admission.
 /// Downloads go through the app-owned verified cache with singleflight,
 /// staging -> verify -> atomic promote, quarantine and explicit consent.
 @MainActor
@@ -20,12 +21,6 @@ final class ModelReadinessStore: ObservableObject {
         fs: ProductionModelAcquisitionFileSystem(downloader: ProductionModelAcquisitionFileSystem.whisperKitDownloader))
     private var acquisitionTasks: [ModelIdentifier: Task<ModelAcquisitionController.ModelAcquisitionResult, Never>] =
         [:]
-    /// JOE-2256: generation-safe selection — only the current request may
-    /// publish readiness/banner/error state.
-    private var selection = ModelSelectionTracker()
-    /// In-flight engine load tasks keyed by request id (cancel/supersede).
-    private var loadTasks: [UInt64: Task<Void, Never>] = [:]
-    public private(set) var lastLoadOutcome: ModelLoadOutcome?
 
     private init() {
         refreshAll()
@@ -74,6 +69,7 @@ final class ModelReadinessStore: ObservableObject {
             for model in ModelIdentifier.allCases {
                 built[model] = await self.acquisition.verifiedReadiness(for: model)
             }
+            guard !Task.isCancelled else { return }
             let priorDownloading = self.readiness.filter {
                 if case .downloading = $0.value.state { return true }
                 return false
@@ -94,51 +90,6 @@ final class ModelReadinessStore: ObservableObject {
     /// Acquire a VERIFIED model. `consent` = explicit download consent
     /// (settings.allowModelDownloads), independent of Local Only audio policy.
     /// Concurrent requests share ONE acquisition (singleflight).
-    /// JOE-2256: submit a new model selection (supersedes in-flight loads).
-    /// Returns the request id; only the CURRENT request may publish.
-    @discardableResult
-    func select(
-        _ model: ModelIdentifier,
-        allowDownloads: Bool, localOnly: Bool
-    ) -> UInt64 {
-        let requestID = selection.submit(
-            model: model,
-            settings: .init(
-                allowModelDownloads: allowDownloads,
-                localOnlyMode: localOnly))
-        // Cancel/supersede any in-flight load task for a different model.
-        for (rid, task) in loadTasks where rid != requestID {
-            task.cancel()
-            loadTasks.removeValue(forKey: rid)
-        }
-        return requestID
-    }
-
-    /// Publish a load completion ONLY when its request is current; stale
-    /// completions are typed superseded events and never overwrite state.
-    func publishLoadCompletion(
-        requestID: UInt64,
-        model: ModelIdentifier,
-        outcome: ModelLoadOutcome
-    ) {
-        let accepted = selection.acceptCompletion(
-            requestID: requestID, model: model, outcome: outcome)
-        switch accepted {
-        case .ready(let m):
-            readiness[m] = ModelReadiness(state: .ready)
-            bannerMessage = "\(m.displayName) ready"
-            clearBannerLater()
-        case .failed(let m, let message):
-            readiness[m] = ModelReadiness(state: .failed(message))
-            bannerMessage = "\(m.displayName): \(message)"
-        case .cancelled(let m):
-            readiness[m] = ModelReadiness(state: .cancelled)
-        case .superseded:
-            break  // never publish stale state
-        }
-        lastLoadOutcome = accepted
-    }
-
     func acquire(_ model: ModelIdentifier, consent: Bool) async -> ModelAcquisitionController.ModelAcquisitionResult {
         if let existing = acquisitionTasks[model] {
             return await existing.value
@@ -154,7 +105,7 @@ final class ModelReadinessStore: ObservableObject {
             readiness[model] = ModelReadiness(
                 state: .ready,
                 bytesOnDisk: nil)
-            bannerMessage = "\(model.displayName) ready"
+            bannerMessage = "\(model.displayName) files verified"
             clearBannerLater()
         case .cancelled:
             readiness[model] = ModelReadiness(state: .cancelled)
@@ -177,7 +128,7 @@ final class ModelReadinessStore: ObservableObject {
             let ready = await self.acquisition.verifiedReadiness(for: model)
             self.readiness[model] = ready
             if ready.state.isReady {
-                self.bannerMessage = "\(model.displayName) ready"
+                self.bannerMessage = "\(model.displayName) files verified"
                 self.clearBannerLater()
             }
         }
