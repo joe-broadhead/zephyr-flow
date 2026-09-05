@@ -150,6 +150,13 @@ production release approval.
     These tests do not qualify Flow semantic quality or complete the missing
     Raw release corpus. Session-stage cancellation checks also observe task
     cancellation after finalization and Flow, not only the control flag.
+    `LongDictationTests` covers the human-selected ten-minute chunking policy's
+    Core primitives: bounded append-only PCM blocks, full sample-range plans,
+    exact overlap word/timing matching and incomplete fallback when alignment
+    is missing/conflicting/ambiguous. Synthetic PCM and timestamps are not
+    real speech/inference or named-hardware memory/latency qualification. These
+    primitives do not, by themselves, integrate the production decoder or
+    implement recording-limit UI/control; that integration remains required.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

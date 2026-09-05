@@ -4183,6 +4183,34 @@ struct CoreTests {
 
     static func runPart5() async {
         do {
+            var buffer = LongDictationAudioBuffer(maximumSamples: 10, blockSamples: 3)
+            check("2251 blocked buffer admits prefix", buffer.append([0, 1, 2, 3, 4, 5]) == 6)
+            check(
+                "2251 partial window does not erase final audio",
+                buffer.recentSamples(maximum: 2) == [4, 5]
+                    && buffer.samples(in: 0..<3) == [0, 1, 2])
+            check(
+                "2251 product limit counts excess",
+                buffer.append([6, 7, 8, 9, 10]) == 4
+                    && buffer.rejectedSamples == 1 && buffer.reachedLimit)
+            check("2251 final prefix still present", buffer.samples(in: 0..<10) == Array(0..<10).map(Float.init))
+            let plan = FinalDecodeChunkPlan.ranges(sampleCount: LongDictationPolicy.maximumSamples)
+            check(
+                "2251 ten-minute plan covers complete admitted range",
+                plan?.first?.lowerBound == 0 && plan?.last?.upperBound == 9_600_000)
+            check("2251 invalid length cannot plan", FinalDecodeChunkPlan.ranges(sampleCount: 9_600_001) == nil)
+            let missing = LongDictationStitcher.stitch(
+                [
+                    .init(samples: 0..<480_000, text: "first", words: nil),
+                    .init(samples: 448_000..<500_000, text: "second", words: nil),
+                ], expectedSampleCount: 500_000)
+            if case .incomplete(let text, _) = missing {
+                check("2251 missing seam preserves both hypotheses", text == "first\n\nsecond")
+            } else {
+                check("2251 missing seam preserves both hypotheses", false)
+            }
+        }
+        do {
             check(
                 "2258 secure subrole confines ordinary text role",
                 AccessibilitySensitivity.classify(
