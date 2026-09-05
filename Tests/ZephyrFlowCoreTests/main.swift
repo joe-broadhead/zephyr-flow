@@ -1495,17 +1495,22 @@ struct CoreTests {
 
         // A .complete enum is not frame/final-event evidence. The real session
         // must confine malformed success-shaped results to explicit review.
-        for (counts, termination): (EngineFrameAccounting?, EngineResultTermination) in [
-            (nil, .completed),
+        for (counts, termination, warnings): (EngineFrameAccounting?, EngineResultTermination, [EngineWarning]) in [
+            (nil, .completed, []),
             (
                 .init(
                     capturedSourceSamples: 0, deliveredEngineSamples: 0, decodedEngineSamples: 0,
-                    droppedSourceSamples: 0), .completed
+                    droppedSourceSamples: 0), .completed, []
             ),
             (
                 .init(
                     capturedSourceSamples: 16_000, deliveredEngineSamples: 16_000, decodedEngineSamples: 16_000,
-                    droppedSourceSamples: 0), .failed
+                    droppedSourceSamples: 0), .failed, []
+            ),
+            (
+                .init(
+                    capturedSourceSamples: 16_000, deliveredEngineSamples: 16_000, decodedEngineSamples: 16_000,
+                    droppedSourceSamples: 0), .completed, [.truncation]
             ),
         ] {
             let provider = FakeSessionStages()
@@ -1514,7 +1519,7 @@ struct CoreTests {
                 engine: .init(kind: .whisper, modelName: "synthetic", modelVersion: nil, modelDigest: nil),
                 languageRequested: nil, languageDetected: nil, confidence: nil, confidenceSource: nil,
                 startedAtUptimeNanos: nil, endedAtUptimeNanos: nil, inferenceDurationNanos: nil,
-                warnings: [], fallbackReason: nil, termination: termination)
+                warnings: warnings, fallbackReason: nil, termination: termination)
             check("2252 malformed completion label rejected", !result.isComplete)
             await provider.setEngineResult(result)
             let session = DictationSession(

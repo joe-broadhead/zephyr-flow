@@ -5,14 +5,15 @@
     final class EngineResultContractTests: XCTestCase {
         private static func result(
             text: String = "synthetic final", completeness: EngineResultCompleteness = .complete,
-            accounting: EngineFrameAccounting?, termination: EngineResultTermination = .completed
+            accounting: EngineFrameAccounting?, termination: EngineResultTermination = .completed,
+            warnings: [EngineWarning] = []
         ) -> EngineResult {
             EngineResult(
                 text: text, completeness: completeness, frameAccounting: accounting,
                 engine: .init(kind: .whisper, modelName: "synthetic", modelVersion: nil, modelDigest: nil),
                 languageRequested: "en-US", languageDetected: nil, confidence: nil, confidenceSource: nil,
                 startedAtUptimeNanos: 1, endedAtUptimeNanos: 2, inferenceDurationNanos: nil,
-                warnings: [], fallbackReason: nil, termination: termination)
+                warnings: warnings, fallbackReason: nil, termination: termination)
         }
 
         func testIncompleteMissingOrInconsistentFrameEvidenceCannotPromoteSuccess() {
@@ -67,6 +68,21 @@
                 XCTAssertFalse(counts.reconciled(converterRatio: 1, roundingToleranceSamples: 64))
             }
             XCTAssertFalse(valid.reconciled(converterRatio: 1, roundingToleranceSamples: .max))
+        }
+
+        func testIncompleteWarningsContradictAnOtherwiseCompleteResult() {
+            let counts = EngineFrameAccounting(
+                capturedSourceSamples: 16_000, deliveredEngineSamples: 16_000,
+                decodedEngineSamples: 16_000, droppedSourceSamples: 0)
+            for warning in [
+                EngineWarning.partialFallback, .shortAudioFallback, .deadlineExceeded, .truncation, .captureDegraded,
+            ] {
+                let checked = Self.result(accounting: counts, warnings: [warning]).requiringCompletionEvidence()
+                XCTAssertFalse(checked.isComplete)
+                XCTAssertEqual(checked.completeness, .partial)
+                XCTAssertTrue(checked.warnings.contains(warning))
+                XCTAssertEqual(checked.warnings.filter { $0 == .captureDegraded }.count, 1)
+            }
         }
 
         func testFractionalToleranceIsComparedWithoutRoundingDownDiscrepancy() {

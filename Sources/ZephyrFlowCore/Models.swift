@@ -153,6 +153,15 @@ public struct EngineResult: Sendable, Equatable {
             !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
             let accounting = frameAccounting, accounting.droppedSourceSamples == 0
         else { return false }
+        guard
+            !warnings.contains(where: { warning in
+                switch warning {
+                case .partialFallback, .shortAudioFallback, .deadlineExceeded, .truncation, .captureDegraded:
+                    return true
+                case .lowConfidence, .engineFallback: return false
+                }
+            })
+        else { return false }
         return accounting.reconciled(converterRatio: 1.0, roundingToleranceSamples: 64)
     }
 
