@@ -34,7 +34,7 @@ final class ModelReadinessStore: ObservableObject {
     static func freeDiskSpace() -> UInt64 {
         let url = URL(fileURLWithPath: NSHomeDirectory())
         let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return UInt64(values?.volumeAvailableCapacityForImportantUsage ?? 0)
+        return UInt64(max(0, values?.volumeAvailableCapacityForImportantUsage ?? 0))
     }
 
     /// Verified readiness from the acquisition controller (source of truth).

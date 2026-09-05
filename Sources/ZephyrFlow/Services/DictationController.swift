@@ -38,8 +38,14 @@ final class DictationController: ObservableObject {
 
     private let preparation: EnginePreparationCoordinator
     private var preparationObservation: AnyCancellable?
+    private var settingsObservation: AnyCancellable?
     private var preparedEngine: PreparedEngine?
     private var reloadAfterSession = false
+    var isSelectedEnginePrepared: Bool {
+        guard let preparedEngine else { return false }
+        return preparedEngine.request == EnginePreparationRequest(settings: settingsStore.settings)
+            && preparation.isCurrent(preparedEngine)
+    }
     /// Serializes begin/end/cancel so concurrent hotkey Tasks cannot race.
     private var sessionChain: Task<Void, Never>?
     /// Review R1.4: a begin-session task that may still be in model preload.
@@ -88,6 +94,16 @@ final class DictationController: ObservableObject {
             self?.modelDownloadFraction = nil
             self?.statusMessage = phase.message
         }
+        settingsObservation = settingsStore.$settings
+            .map { EnginePreparationRequest(settings: $0) }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                // Invalidate at the setting publication edge, including consent
+                // revocation and language/privacy changes. The scheduled load
+                // reads the updated settings after @Published finishes setting.
+                self?.reloadEngine()
+            }
         configureFlowRouter()
     }
 
@@ -221,7 +237,7 @@ final class DictationController: ObservableObject {
         let needUI =
             !privacy.status.microphone
             || (settingsStore.settings.preferredModel == .appleSpeech && !privacy.status.speechRecognition)
-            || !privacy.status.accessibility
+            || (settingsStore.settings.insertionMode != .alwaysCopy && !privacy.status.accessibility)
         guard needUI else { return }
         if !settingsStore.settings.hasCompletedOnboarding {
             ZFLog.info("Permission preflight deferred to onboarding")
@@ -926,18 +942,27 @@ final class DictationController: ObservableObject {
         }
     }
 
+    /// Explicit setup action using the same current-candidate admission path.
+    /// It loads/checks capabilities only; it never activates a microphone.
+    func prepareSelectedEngine(retry: Bool = false) async -> Bool {
+        guard session == nil else { return false }
+        if retry { preparation.cancel() }
+        return await preloadEngine()
+    }
+
     /// Same coordinator as session admission; Apple Speech is selected from
     /// settings and loaded explicitly. Artifact verification and engine load
     /// are distinct phases. No active-session engine is mutated by reloading.
-    private func preloadEngine() async {
-        guard session == nil, admissionOpen else { return }
+    private func preloadEngine() async -> Bool {
+        guard session == nil, admissionOpen else { return false }
         let request = EnginePreparationRequest(settings: settingsStore.settings)
         guard let candidate = await preparation.prepare(request), preparation.isCurrent(candidate),
             request == EnginePreparationRequest(settings: settingsStore.settings),
             session == nil, admissionOpen, !Task.isCancelled
-        else { return }
+        else { return false }
         preparedEngine = candidate
         engineLabel = request.model.displayName
+        return true
     }
 
     private func configureFlowRouter() {

@@ -75,6 +75,16 @@ public enum AppStrings {
         "onboarding.continue": ("Continue", "Onboarding default primary action"),
         "onboarding.granted": ("Granted", "Onboarding status chip"),
         "onboarding.notGranted": ("Not granted yet", "Onboarding status chip"),
+        "onboarding.checklanguage": ("Check selected language", "Explicit no-capture capability/load check"),
+        "onboarding.preparelocal": ("Load verified local model", "Cache hit does not grant download consent"),
+        "onboarding.limited.title": ("Setup is incomplete", "A skipped/failed capability must not appear ready"),
+        "onboarding.limited.continue": (
+            "Continue in limited mode", "Close setup without claiming capabilities are complete"
+        ),
+        "onboarding.limited.explanation": (
+            "Missing permissions or an unloaded engine still limit dictation. You can go back now, or reopen Setup later. No microphone starts before the selected engine is prepared.",
+            "Truthful limited-mode completion page"
+        ),
         // Settings
         "settings.history": ("History", "Settings history section"),
         "settings.clearAll": ("Clear All", "Settings history clear button"),
@@ -106,6 +116,29 @@ public enum AppStrings {
         ),
         "settings.refreshModelStatus": ("Refresh model status", "Model status refresh button"),
         "engine.preparation.title": ("Engine preparation", "Selected speech engine preparation section"),
+        "engine.preparation.diskspace": (
+            "Model preparation needs at least 1.5 GB of free space under the current policy. Free space in your home volume, then retry.",
+            "Existing ModelUIPolicy minimum headroom check; not a measured final model size"
+        ),
+        "engine.capability.speechpermission": (
+            "Apple Speech needs Speech Recognition permission. Open Setup to grant it, then retry.",
+            "Preparation cannot prompt; user must explicitly authorize Speech Recognition"
+        ),
+        "engine.capability.microphonepermission": (
+            "Microphone permission is missing. Open Setup to grant it, then retry.", "Microphone preflight failure"
+        ),
+        "engine.capability.language": (
+            "Apple Speech does not support the selected language on this Mac. Choose another language or Whisper.",
+            "No silent language fallback"
+        ),
+        "engine.capability.ondevice": (
+            "Local Only: the selected Apple Speech language is not available on device. Check language packs in System Settings or choose Whisper.",
+            "Never fall back to network when on-device support is missing"
+        ),
+        "engine.capability.unavailable": (
+            "Apple Speech is unavailable. Check Dictation in System Settings, then retry or choose Whisper.",
+            "Recognizer availability preflight; does not claim a specific OS failure cause"
+        ),
         "engine.preparation.progress": ("Preparing selected engine…", "Indeterminate preparation indicator"),
         "engine.preparation.cancel": (
             "Cancel preparation", "Stop waiting for preparation; native work may still finish"

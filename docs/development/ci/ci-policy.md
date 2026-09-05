@@ -34,6 +34,11 @@ production release approval.
     coordinator using injected artifact/acquisition closures and held engine
     actors: consent, verification vs loaded readiness, explicit Apple loading,
     supersession, retry, quarantine and cancellation before native completion.
+    Capability-failure, fresh/cached language preflight, disk-headroom and
+    onboarding consent-versus-loaded-state checks use injected capability data.
+    Actual Apple Speech checks authorization, the exact requested locale and
+    Local Only support before candidate publication and again before capture;
+    permission prompts remain explicit Setup actions, not engine-load effects.
     The controller now consumes that coordinator and the environment's engine
     factories; these tests do not instantiate the full UI controller or perform
     real acquisition, Speech authorization, capture, or inference.

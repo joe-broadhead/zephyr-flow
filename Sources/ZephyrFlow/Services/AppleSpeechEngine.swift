@@ -63,29 +63,36 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     func levels() -> [Float] { latestLevels }
 
     func load(model: ModelIdentifier, verifiedFolder: String? = nil) async throws {
-        // Apple Speech loads system recognizers; there is no downloaded
-        // artifact to verify. `verifiedFolder` is accepted for protocol
-        // uniformity and ignored.
-        let identifier = Locale.current.identifier
-        let speechRecognizer =
-            SFSpeechRecognizer(locale: Locale(identifier: identifier))
-            ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-            ?? SFSpeechRecognizer()
-
-        guard let speechRecognizer else {
-            throw WhisperEngineError.modelLoadFailed("No speech recognizer available")
-        }
-
-        // Don't block on auth prompts during load — mark ready and enforce at startStreaming.
-        let status = SFSpeechRecognizer.authorizationStatus()
-        ZFLog.info(
-            "Speech auth status=\(status.rawValue) locale=\(speechRecognizer.locale.identifier) available=\(speechRecognizer.isAvailable) onDevice=\(speechRecognizer.supportsOnDeviceRecognition)"
-        )
-
-        recognizer = speechRecognizer
-        modelName = "Apple Speech (\(speechRecognizer.locale.identifier))"
+        guard model == .appleSpeech, verifiedFolder == nil else { throw WhisperEngineError.notReady }
+        guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
+        // No locale fallback or permission prompt here. The coordinator must
+        // preflight the requested language before publishing this candidate.
+        recognizer = nil
+        modelName = "Apple Speech"
         isReady = true
-        ZFLog.info("AppleSpeechEngine ready")
+        ZFLog.info("Apple Speech initialized; capability preflight required")
+    }
+
+    func preflight(localOnly: Bool, language: SupportedLanguage) async throws {
+        try validateCapabilities(localOnly: localOnly, language: language)
+    }
+
+    private func validateCapabilities(localOnly: Bool, language: SupportedLanguage) throws {
+        guard isReady else { throw WhisperEngineError.notReady }
+        guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
+        // Auto means the user's current locale, not silent en-US substitution
+        // or arbitrary SFSpeechRecognizer defaults. Fixed language stays exact.
+        let locale = Locale(identifier: language.bcp47 ?? Locale.current.identifier)
+        let candidate = SFSpeechRecognizer(locale: locale)
+        let capabilities = SpeechReadinessCapabilities(
+            speechAuthorized: SFSpeechRecognizer.authorizationStatus() == .authorized,
+            microphoneAuthorized: AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+            requestedLocaleAvailable: candidate != nil,
+            recognizerAvailable: candidate?.isAvailable == true,
+            supportsOnDevice: candidate?.supportsOnDeviceRecognition == true)
+        _ = try capabilities.validate(localOnly: localOnly)
+        recognizer = candidate
+        modelName = "Apple Speech (\(locale.identifier))"
     }
 
     func startStreaming(
@@ -96,58 +103,14 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     ) async throws {
         guard isReady else { throw WhisperEngineError.notReady }
         guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }
-        // JOE-2254: construct the recognizer for the requested locale with an
-        // explicit fallback policy — NEVER a silent en-US substitution.
-        let recognizer: SFSpeechRecognizer
-        if let bcp47 = language.bcp47 {
-            guard let localeRecognizer = SFSpeechRecognizer(locale: Locale(identifier: bcp47)) else {
-                throw WhisperEngineError.modelLoadFailed(
-                    "Speech recognition is unavailable for \(bcp47). Pick another language or use Auto.")
-            }
-            recognizer = localeRecognizer
-        } else {
-            guard let current = self.recognizer ?? SFSpeechRecognizer() else {
-                throw WhisperEngineError.notReady
-            }
-            recognizer = current
-        }
-        // Local Only preflight: on-device recognition must be available; never
-        // silently fall back to network recognition.
-        if localOnly && !recognizer.supportsOnDeviceRecognition {
-            throw WhisperEngineError.modelLoadFailed(
-                "Local Only: on-device speech is unavailable for \(recognizer.locale.identifier). Download the language pack in System Settings → Apple Intelligence & Siri, or turn off Local Only."
-            )
-        }
-        self.recognizer = recognizer
+        // Recheck at capture admission as permissions/capabilities can change
+        // after preparation. All checks are synchronous; no permission request
+        // or reentrant await can start capture after an intervening cancel.
+        try validateCapabilities(localOnly: localOnly, language: language)
+        guard let recognizer else { throw WhisperEngineError.notReady }
         currentLanguage = language
         // JOE-2253: unique token per start; callbacks carry it.
         recognitionTracker.start(token: RecognitionToken())
-
-        // Auth — request if needed (caller should activate app so dialogs appear)
-        let speechStatus = SFSpeechRecognizer.authorizationStatus()
-        if speechStatus != .authorized {
-            let granted = await requestAuth()
-            guard granted else {
-                throw WhisperEngineError.transcriptionFailed(
-                    "Speech Recognition permission denied — System Settings → Privacy & Security → Speech Recognition")
-            }
-        }
-        let micOK = await requestMic()
-        guard micOK else {
-            throw WhisperEngineError.transcriptionFailed(
-                "Microphone permission denied — System Settings → Privacy & Security → Microphone")
-        }
-
-        guard recognizer.isAvailable else {
-            throw WhisperEngineError.transcriptionFailed("Speech recognizer unavailable")
-        }
-
-        // C1 (Opus): Local Only must fail closed — never stream audio to Apple servers.
-        if localOnly && !recognizer.supportsOnDeviceRecognition {
-            throw WhisperEngineError.transcriptionFailed(
-                "Local Only: on-device speech is unavailable for \(recognizer.locale.identifier). Download the language pack in System Settings → Apple Intelligence & Siri, or turn off Local Only."
-            )
-        }
 
         self.onPartial = onPartial
         self.accumulated = ""
@@ -421,22 +384,6 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         audioEngine = nil
         isStreaming = false
         latestLevels = Array(repeating: 0.05, count: 24)
-    }
-
-    private func requestAuth() async -> Bool {
-        await withCheckedContinuation { cont in
-            SFSpeechRecognizer.requestAuthorization { status in
-                cont.resume(returning: status == .authorized)
-            }
-        }
-    }
-
-    private func requestMic() async -> Bool {
-        await withCheckedContinuation { cont in
-            AVCaptureDevice.requestAccess(for: .audio) { ok in
-                cont.resume(returning: ok)
-            }
-        }
     }
 
     nonisolated private static func rmsLevels(from buffer: AVAudioPCMBuffer) -> Float {

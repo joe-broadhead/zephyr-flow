@@ -19,6 +19,9 @@ public protocol WhisperEngineProtocol: Actor {
     ///   from that directory (Review B6v2: not WhisperKit's own cache) and
     ///   must not use the network.
     func load(model: ModelIdentifier, verifiedFolder: String?) async throws
+    /// Check the session's language/privacy capabilities before readiness is
+    /// published. No permission prompts, network activity or capture here.
+    func preflight(localOnly: Bool, language: SupportedLanguage) async throws
     /// - Parameter localOnly: When true, must not use any network path (fail closed).
     /// - Parameter sessionID: immutable session this stream belongs to
     ///   (JOE-2249/2250: session-scoped callbacks and decode ownership).
@@ -35,6 +38,14 @@ public protocol WhisperEngineProtocol: Actor {
     /// could not be quiesced within the bounded deadline, so the engine may
     /// still be owned by an unfinished task. The instance must not be reused.
     func quarantine() async
+}
+
+extension WhisperEngineProtocol {
+    public func preflight(localOnly: Bool, language: SupportedLanguage) async throws {
+        let ready = await isReady
+        let quarantined = await isQuarantined
+        guard ready && !quarantined else { throw WhisperEngineError.notReady }
+    }
 }
 
 public enum WhisperEngineError: LocalizedError, Sendable {

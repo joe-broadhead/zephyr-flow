@@ -4029,6 +4029,56 @@ struct CoreTests {
     }
 
     static func runPart5() async {
+        // Current readiness, not consent or historical onboarding flags.
+        do {
+            let consentOnly = OnboardingReadinessSnapshot(
+                microphone: true, speech: false, accessibility: false,
+                downloadConsent: true, engineLoaded: false)
+            check("2283 consent is not loaded readiness", !consentOnly.satisfies(.modelAcquisition))
+            check(
+                "2282 consent cannot satisfy Apple language capability", !consentOnly.satisfies(.languageAvailability))
+            let cached = OnboardingReadinessSnapshot(
+                microphone: true, speech: true, accessibility: false,
+                downloadConsent: false, engineLoaded: true)
+            check("2283 verified loaded cache needs no download consent", cached.satisfies(.modelAcquisition))
+            for path in [OnboardingProductPath.appleSpeechAutomatic, .appleSpeechClipboardOnly] {
+                check(
+                    "2282 every Apple path checks language",
+                    CapabilityGraph.steps(for: path).contains { $0.capability == .languageAvailability })
+            }
+            for localOnly in [true, false] {
+                for onDevice in [true, false] {
+                    let capabilities = SpeechReadinessCapabilities(
+                        speechAuthorized: true, microphoneAuthorized: true,
+                        requestedLocaleAvailable: true, recognizerAvailable: true, supportsOnDevice: onDevice)
+                    if localOnly && !onDevice {
+                        do {
+                            _ = try capabilities.validate(localOnly: true)
+                            check("2254 local only fails closed", false)
+                        } catch {
+                            check(
+                                "2254 local only controlled failure",
+                                error as? SpeechCapabilityFailure == .onDeviceUnavailable)
+                        }
+                    } else {
+                        check(
+                            "2254 prefer device even when network allowed",
+                            (try? capabilities.validate(localOnly: localOnly)) == onDevice)
+                    }
+                }
+            }
+            let noSpeech = SpeechReadinessCapabilities(
+                speechAuthorized: false, microphoneAuthorized: true,
+                requestedLocaleAvailable: true, recognizerAvailable: true, supportsOnDevice: true)
+            do {
+                _ = try noSpeech.validate(localOnly: true)
+                check("2254 denied speech rejects readiness", false)
+            } catch {
+                check(
+                    "2254 speech authorization failure controlled",
+                    error as? SpeechCapabilityFailure == .speechAuthorizationRequired)
+            }
+        }
         // ===== JOE-2243: AppEnvironment DI — full pipeline with fakes only =====
         do {
             var clock = FakeClock(now: 1000)

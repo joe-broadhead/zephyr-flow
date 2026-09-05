@@ -18,6 +18,8 @@ struct EnginePreparationRequest: Sendable, Equatable {
 
 enum EnginePreparationPhase: Equatable {
     case idle, queued, verifying, acquiring, loading, ready, consentRequired, cancelled, failed
+    case unavailable(SpeechCapabilityFailure)
+    case insufficientSpace
 
     var isBusy: Bool { [.queued, .verifying, .acquiring, .loading].contains(self) }
 
@@ -32,6 +34,8 @@ enum EnginePreparationPhase: Equatable {
         case .consentRequired: return AppStrings.key("engine.preparation.consent")
         case .cancelled: return AppStrings.key("engine.preparation.cancelled")
         case .failed: return AppStrings.key("engine.preparation.failed")
+        case .unavailable(let failure): return failure.message
+        case .insufficientSpace: return AppStrings.key("engine.preparation.diskspace")
         }
     }
 }
@@ -60,6 +64,7 @@ final class EnginePreparationCoordinator: ObservableObject {
     private let makeEngine: EngineFactory
     private let lookup: ArtifactLookup
     private let acquire: Acquisition
+    private let freeBytes: @Sendable () async -> UInt64
     // At most one native preparation per backend kind. Superseding Whisper
     // requests coalesce while an old initializer finishes; Apple can proceed
     // independently. A cancellation flag is never treated as native completion.
@@ -68,10 +73,14 @@ final class EnginePreparationCoordinator: ObservableObject {
 
     var outstandingWorkers: Int { workers.count }
 
-    init(makeEngine: @escaping EngineFactory, lookup: @escaping ArtifactLookup, acquire: @escaping Acquisition) {
+    init(
+        makeEngine: @escaping EngineFactory, lookup: @escaping ArtifactLookup, acquire: @escaping Acquisition,
+        freeBytes: @escaping @Sendable () async -> UInt64 = { UInt64.max }
+    ) {
         self.makeEngine = makeEngine
         self.lookup = lookup
         self.acquire = acquire
+        self.freeBytes = freeBytes
     }
 
     static func production(engines: EngineRegistry) -> EnginePreparationCoordinator {
@@ -87,7 +96,7 @@ final class EnginePreparationCoordinator: ObservableObject {
                 guard result.state == .ready else {
                     throw result.error ?? ModelAcquisitionError.downloadFailed("acquisition did not verify")
                 }
-            })
+            }, freeBytes: { await ModelReadinessStore.freeDiskSpace() })
     }
 
     func isCurrent(_ value: PreparedEngine) -> Bool {
@@ -180,6 +189,8 @@ final class EnginePreparationCoordinator: ObservableObject {
                 let quarantined = await cached.engine.isQuarantined
                 try requireCurrent(id)
                 if ready && !quarantined {
+                    try await cached.engine.preflight(localOnly: request.localOnly, language: request.language)
+                    try requireCurrent(id)
                     phase = .ready
                     finishWaiters(with: cached)
                     return
@@ -197,9 +208,20 @@ final class EnginePreparationCoordinator: ObservableObject {
                         finishWaiters()
                         return
                     }
+                    let available = await freeBytes()
+                    try requireCurrent(id)
+                    guard
+                        ModelUIPolicy.mayStartDownload(
+                            consent: true, hasCachedVerifiedModel: false, freeBytes: available) == .allowed
+                    else {
+                        phase = .insufficientSpace
+                        finishWaiters()
+                        return
+                    }
                     phase = .acquiring
                     try await acquire(request.model, request.allowDownloads)
                     try requireCurrent(id)
+                    phase = .verifying
                     artifact = await lookup(request.model)
                     try requireCurrent(id)
                 }
@@ -208,6 +230,8 @@ final class EnginePreparationCoordinator: ObservableObject {
             let engine = try makeEngine(request.model)
             phase = .loading
             try await engine.load(model: request.model, verifiedFolder: artifact?.folder.path)
+            try requireCurrent(id)
+            try await engine.preflight(localOnly: request.localOnly, language: request.language)
             try requireCurrent(id)
             await engine.recordVerifiedDigest(artifact?.aggregateDigest)
             let ready = await engine.isReady
@@ -220,7 +244,11 @@ final class EnginePreparationCoordinator: ObservableObject {
             finishWaiters(with: value)
         } catch {
             guard generation == id else { return }
-            phase = error is CancellationError ? .cancelled : .failed
+            if let failure = error as? SpeechCapabilityFailure {
+                phase = .unavailable(failure)
+            } else {
+                phase = error is CancellationError ? .cancelled : .failed
+            }
             finishWaiters()
         }
     }

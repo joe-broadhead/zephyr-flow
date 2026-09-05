@@ -26,14 +26,17 @@
         var modelName: String { "Synthetic preparation engine" }
         private(set) var loads: [(model: ModelIdentifier, folder: String?)] = []
         private(set) var captures = 0
+        private(set) var preflights: [(Bool, SupportedLanguage)] = []
+        private let capabilityFailure: SpeechCapabilityFailure?
         private let held: Bool
         private let fails: Bool
         private var closed = false
         private var continuation: CheckedContinuation<Void, Error>?
 
-        init(held: Bool = false, fails: Bool = false) {
+        init(held: Bool = false, fails: Bool = false, capabilityFailure: SpeechCapabilityFailure? = nil) {
             self.held = held
             self.fails = fails
+            self.capabilityFailure = capabilityFailure
         }
 
         func load(model: ModelIdentifier, verifiedFolder: String?) async throws {
@@ -54,6 +57,10 @@
             continuation = nil
         }
         func recordVerifiedDigest(_ digest: String?) { verifiedDigest = digest }
+        func preflight(localOnly: Bool, language: SupportedLanguage) async throws {
+            preflights.append((localOnly, language))
+            if let capabilityFailure { throw capabilityFailure }
+        }
         func startStreaming(
             sessionID: SessionID, localOnly: Bool, language: SupportedLanguage,
             onPartial: @escaping @Sendable (PartialTranscription) -> Void
@@ -110,14 +117,15 @@
         }
 
         private func coordinator(
-            artifacts: PreparationArtifacts, engines: [ModelIdentifier: [PreparationTestEngine]]
+            artifacts: PreparationArtifacts, engines: [ModelIdentifier: [PreparationTestEngine]],
+            freeBytes: UInt64 = .max
         ) async -> EnginePreparationCoordinator {
             let factory = PreparationFactory(engines)
             let coordinator = await MainActor.run {
                 EnginePreparationCoordinator(
                     makeEngine: { try factory.make($0) },
                     lookup: { await artifacts.lookup($0) },
-                    acquire: { try await artifacts.acquire($0, consent: $1) })
+                    acquire: { try await artifacts.acquire($0, consent: $1) }, freeBytes: { freeBytes })
             }
             addTeardownBlock {
                 await coordinator.cancel()
@@ -307,6 +315,68 @@
             try await awaitPreparationCondition { await coordinator.outstandingWorkers == 0 }
             let phase = await coordinator.phase
             XCTAssertEqual(phase, .ready)
+        }
+
+        func testUnavailableOnDeviceLanguageCannotPublishReadiness() async {
+            let artifacts = PreparationArtifacts([])
+            let engine = PreparationTestEngine(capabilityFailure: .onDeviceUnavailable)
+            let coordinator = await coordinator(artifacts: artifacts, engines: [.appleSpeech: [engine]])
+            let prepared = await coordinator.prepare(request(.appleSpeech))
+            let phase = await coordinator.phase
+            let captures = await engine.captures
+            XCTAssertNil(prepared)
+            XCTAssertEqual(phase, .unavailable(.onDeviceUnavailable))
+            XCTAssertEqual(phase.message, SpeechCapabilityFailure.onDeviceUnavailable.message)
+            XCTAssertEqual(captures, 0)
+        }
+
+        func testLanguageAndLocalOnlyReachFreshAndCachedPreflight() async {
+            for language in [SupportedLanguage.auto, .enUS] {
+                let artifacts = PreparationArtifacts([])
+                let engine = PreparationTestEngine()
+                let coordinator = await coordinator(artifacts: artifacts, engines: [.appleSpeech: [engine]])
+                var settings = AppSettings.default
+                settings.preferredModel = .appleSpeech
+                settings.language = language
+                let request = EnginePreparationRequest(settings: settings)
+                let first = await coordinator.prepare(request)
+                let cached = await coordinator.prepare(request)
+                let checks = await engine.preflights
+                XCTAssertNotNil(first)
+                XCTAssertEqual(first?.token, cached?.token)
+                XCTAssertEqual(checks.count, 2)
+                XCTAssertTrue(checks.allSatisfy { $0.0 && $0.1 == language })
+            }
+        }
+
+        func testInsufficientDiskPreventsAcquisitionButNotVerifiedCacheLoad() async throws {
+            let artifacts = PreparationArtifacts([])
+            let engine = PreparationTestEngine()
+            let coordinator = await coordinator(artifacts: artifacts, engines: [.whisperTiny: [engine]], freeBytes: 0)
+            let denied = await coordinator.prepare(request(.whisperTiny, downloads: true))
+            let phase = await coordinator.phase
+            let acquisitions = await artifacts.acquisitions
+            XCTAssertNil(denied)
+            XCTAssertEqual(phase, .insufficientSpace)
+            XCTAssertTrue(acquisitions.isEmpty)
+            try await artifacts.acquire(.whisperTiny, consent: true)  // install synthetic cached fixture
+            let loaded = await coordinator.prepare(request(.whisperTiny), retry: true)
+            XCTAssertNotNil(loaded)
+        }
+
+        func testOnboardingUsesLoadedStateRatherThanConsent() {
+            let consentOnly = OnboardingReadinessSnapshot(
+                microphone: true, speech: false, accessibility: false,
+                downloadConsent: true, engineLoaded: false)
+            XCTAssertTrue(consentOnly.satisfies(.networkModelDownload))
+            XCTAssertFalse(consentOnly.satisfies(.modelAcquisition))
+            XCTAssertFalse(consentOnly.satisfies(.languageAvailability))
+            let cached = OnboardingReadinessSnapshot(
+                microphone: true, speech: true, accessibility: false,
+                downloadConsent: false, engineLoaded: true)
+            XCTAssertTrue(cached.satisfies(.modelAcquisition))
+            XCTAssertFalse(cached.satisfies(.networkModelDownload))
+            XCTAssertTrue(cached.satisfies(.languageAvailability))
         }
     }
 #else
