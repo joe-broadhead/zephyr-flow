@@ -240,11 +240,42 @@ public enum AppStrings {
         "settings.toggle.localOnly": ("Local Only mode", "Settings toggle"),
         "settings.toggle.allowDownloads": ("Allow Whisper model downloads", "Settings toggle"),
         "settings.toggle.launchAtLogin": ("Launch at login", "Settings toggle"),
+        "login.pending": (
+            "Changing login registration…", "External registration pending; do not persist desired setting yet"
+        ),
+        "login.systemstatus": (
+            "Observed system status", "Authoritative ServiceManagement state, separate from saved preference"
+        ),
+        "login.open": ("Open Login Items settings", "Explicit recovery action"),
+        "login.refresh": ("Refresh login status", "Read authoritative state without changing registration"),
+        "login.change.failed": (
+            "Could not change Launch at Login. Check Login Items settings and retry.",
+            "Controlled registration/unregistration error"
+        ),
+        "login.reconciliation.required": (
+            "System registration and saved settings may differ. Review Login Items settings and refresh status before retrying.",
+            "Compensation was not verified or external state differs; not a successful rollback claim"
+        ),
+        "login.unavailable": (
+            "Launch at login is unavailable in this unpackaged development build.", "Missing app registration"
+        ),
+        "login.unsupported": (
+            "Launch at login is not supported in this environment.", "Unsupported ServiceManagement state"
+        ),
+        "login.approval": (
+            "Approval required — open Login Items settings to confirm.", "System user-approval state is not enabled"
+        ),
+        "settings.persistence.failed": (
+            "Settings could not be saved. The previous confirmed settings remain active. Check storage access and retry.",
+            "Persistence failure without private paths or framework payloads; OS preference durability is not guaranteed"
+        ),
         "settings.toggle.saveHistory": ("Save transcription history", "Settings toggle"),
         "history.preparation.failed": (
             "Encrypted history is unavailable. Check history storage and Keychain access, then retry, or turn off saving history.",
             "Controlled initialization failure; never interpolate file paths or framework error payloads"
         ),
+        "history.loading": ("Loading encrypted history…", "Explicit history access is pending"),
+        "history.retry": ("Retry history access", "Explicit retry after key or storage failure"),
         "history.delete.failed": (
             "Could not delete the history entry. Retry after checking storage access.",
             "Controlled durable delete failure"

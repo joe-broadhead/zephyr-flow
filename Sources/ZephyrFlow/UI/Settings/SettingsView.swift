@@ -74,14 +74,18 @@ struct SettingsView: View {
             .padding(24)
         }
         .frame(minWidth: 720, minHeight: 480)
+        .safeAreaInset(edge: .bottom) {
+            if let error = settings.persistenceError {
+                Text(error).font(.callout).foregroundStyle(.orange).padding()
+            }
+        }
         .zephyrDarkChrome()
         .onAppear {
             privacy.refresh()
             NSApp.appearance = NSAppearance(named: .darkAqua)
             copyOnlyOverridesText = settings.settings.copyOnlyOverrideBundleIDs.joined(separator: ", ")
-            // Review R4.1: load history from the actor repository (single
-            // source of truth) before the pane is shown.
-            history.start()
+            // Opening unrelated settings must not initialize history. Only
+            // the explicit History pane requests key/storage access below.
         }
     }
 
@@ -107,11 +111,29 @@ struct SettingsView: View {
             }
 
             Section("Startup") {
-                Toggle(AppStrings.key("settings.toggle.launchAtLogin"), isOn: binding(\.launchAtLogin))
-                    .onChange(of: settings.settings.launchAtLogin) { _, enabled in
-                        setLaunchAtLogin(enabled)
-                    }
+                Toggle(
+                    AppStrings.key("settings.toggle.launchAtLogin"),
+                    isOn: Binding(
+                        get: { settings.settings.launchAtLogin }, set: { setLaunchAtLogin($0) })
+                )
+                .disabled(launchLoginPending || login.transaction.isPending)
+                if launchLoginPending || login.transaction.isPending {
+                    ProgressView(AppStrings.key("login.pending"))
+                }
+                LabeledContent(AppStrings.key("login.systemstatus"), value: login.systemStatus.rawValue)
+                if let message = login.lastError ?? login.availabilityMessage() {
+                    Text(message).foregroundStyle(.orange)
+                }
+                if login.needsReconciliation
+                    || !LaunchAtLoginTransaction.statusConverges(
+                        status: login.systemStatus, desiredEnabled: settings.settings.launchAtLogin)
+                {
+                    Text(AppStrings.key("login.reconciliation.required")).font(.caption)
+                }
+                Button(AppStrings.key("login.open")) { openLoginItemsSettings() }
+                Button(AppStrings.key("login.refresh")) { login.authoritativeStatus() }
             }
+            .onAppear { login.authoritativeStatus() }
 
             Section("Engine") {
                 LabeledContent("Active engine", value: controller.engineLabel)
@@ -379,10 +401,18 @@ struct SettingsView: View {
                 Button(AppStrings.key("settings.clearAll"), role: .destructive) {
                     history.clear()
                 }
-                .disabled(history.entries.isEmpty)
+                .disabled(history.entries.isEmpty || history.isLoading)
             }
 
-            if history.entries.isEmpty {
+            if history.isLoading {
+                ProgressView(AppStrings.key("history.loading"))
+            }
+            if let error = history.lastError {
+                Text(error).foregroundStyle(.orange)
+                Button(AppStrings.key("history.retry")) { history.start() }
+                    .disabled(history.isLoading)
+            }
+            if history.entries.isEmpty && !history.isLoading && history.lastError == nil {
                 ContentUnavailableView(
                     "No transcriptions yet",
                     systemImage: "text.bubble",
@@ -425,6 +455,7 @@ struct SettingsView: View {
             }
         }
         .navigationTitle(AppStrings.key("settings.section.history"))
+        .onAppear { history.start() }
     }
 
     // MARK: - About
@@ -607,7 +638,7 @@ struct SettingsView: View {
     }
 
     @State private var launchLoginPending = false
-    @State private var launchLoginError: String?
+    @ObservedObject private var login = LaunchAtLoginService.shared
 
     /// JOE-2290: transactional toggle — pending -> external change -> verify ->
     /// commit settings only on convergence; roll back + persistent error on
@@ -615,25 +646,11 @@ struct SettingsView: View {
     private func setLaunchAtLogin(_ enabled: Bool) {
         guard !launchLoginPending else { return }
         launchLoginPending = true
-        launchLoginError = nil
         Task { @MainActor in
-            let state = await LaunchAtLoginService.shared.apply(enabled: enabled)
-            launchLoginPending = false
-            switch state {
-            case .applied:
-                // Converged with verified system status — commit settings.
-                settings.update { $0.launchAtLogin = enabled }
-                launchLoginError = nil
-            case .rolledBack:
-                // Failed: settings JSON keeps the VERIFIED system state.
-                let status = LaunchAtLoginService.shared.authoritativeStatus()
-                settings.update { $0.launchAtLogin = (status == .registered) }
-                launchLoginError =
-                    LaunchAtLoginService.shared.availabilityMessage()
-                    ?? "Could not change Launch at Login. Open Login Items settings to fix."
-            default:
-                break
+            _ = await login.apply(enabled: enabled) { value in
+                settings.update { $0.launchAtLogin = value }
             }
+            launchLoginPending = false
         }
     }
 

@@ -17,7 +17,7 @@ products = Path(os.environ["ZF_TEST_PRODUCTS"])
 root = Path(os.environ["ZF_TEST_ROOT"])
 SUITES = ["M0ContractTests", "ProductionBlockerTests", "FlowProcessorTests", "ModelsTests",
           "ProductionAudioTests", "ProductionBoundaryTests", "ProductionEngineTests", "ProductionOfflineTokenizerTests",
-          "ProductionPreparationTests", "ProductionAcquisitionTests", "ProductionPasteboardTests", "ProductionHistoryTests", "FlowDeadlineTests"]
+          "ProductionPreparationTests", "ProductionAcquisitionTests", "ProductionPasteboardTests", "ProductionHistoryTests", "FlowDeadlineTests", "ProductionSettingsTests"]
 
 
 def fail_if(name):

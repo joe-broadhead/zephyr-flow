@@ -82,6 +82,14 @@ production release approval.
     OS scheduling is not a hard-real-time guarantee, and a stuck worker can
     retain one request until it finishes. No semantic-quality or device-latency
     qualification is inferred from these controlled tests.
+    `ProductionSettingsTests` injects in-memory settings persistence and fake
+    ServiceManagement operations into the actual settings/login services. It
+    checks publish-after-acknowledgment, encoding/write rejection, pending
+    admission, authoritative verification, failed/approval states and external
+    compensation after failed settings persistence. It never changes real
+    preferences or login registration. UserDefaults synchronization/read-back
+    is not fsync or a cross-process transaction; power-loss/relaunch durability,
+    real ServiceManagement approval and login behavior remain device work.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
