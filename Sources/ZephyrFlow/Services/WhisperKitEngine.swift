@@ -3,8 +3,8 @@ import Foundation
 import WhisperKit
 import ZephyrFlowCore
 
-/// WhisperKit-backed engine. Model download consent is enforced separately
-/// from the outstanding dependency tokenizer offline-load requirement.
+/// WhisperKit-backed engine. Verified initialization uses a local-only
+/// tokenizer adapter; acquisition requires separate model-download consent.
 ///
 /// Live partials use a **single-flight** rolling-window decode loop so we never
 /// run concurrent `transcribe` calls (WhisperKit/NSProgress races → SIGSEGV).
@@ -172,9 +172,9 @@ actor WhisperKitEngine: WhisperEngineProtocol {
         language: SupportedLanguage,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws {
-        // Streaming uses only the already-loaded runtime. Offline tokenizer
-        // initialization is a separate load-path requirement, not proven by
-        // passing a folder or setting the model's download flag to false.
+        // Streaming uses only the already-loaded runtime. Verified runtime
+        // initialization uses the local-only tokenizer hook; the model's
+        // download:false flag alone is not the offline guarantee.
         _ = localOnly
         guard isReady, kit != nil else { throw WhisperEngineError.notReady }
         guard !isStreaming else { throw WhisperEngineError.alreadyStreaming }

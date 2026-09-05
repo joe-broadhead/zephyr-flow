@@ -16,7 +16,7 @@ mode = os.environ.get("ZF_TEST_FAILURE", "")
 products = Path(os.environ["ZF_TEST_PRODUCTS"])
 root = Path(os.environ["ZF_TEST_ROOT"])
 SUITES = ["M0ContractTests", "ProductionBlockerTests", "FlowProcessorTests", "ModelsTests",
-          "ProductionAudioTests", "ProductionBoundaryTests", "ProductionEngineTests"]
+          "ProductionAudioTests", "ProductionBoundaryTests", "ProductionEngineTests", "ProductionOfflineTokenizerTests"]
 
 
 def fail_if(name):
@@ -38,6 +38,10 @@ if tool == "swift":
             for suite in SUITES:
                 print(f"Test Suite '{suite}' passed at synthetic-time")
         fail_if("xctest")
+    elif args == ["test", "--skip-build", "--filter", "ProductionOfflineTokenizerTests"]:
+        if mode != "offline-zero-executed":
+            print("Test Suite 'ProductionOfflineTokenizerTests' passed at synthetic-time")
+        fail_if("offline-tokenizer")
     elif args == ["package", "clean"]:
         fail_if("clean")
     elif "--show-bin-path" in args:
@@ -111,5 +115,11 @@ elif tool == "actionlint":
     fail_if("actionlint")
 elif tool == "xcodebuild":
     print("Xcode test double (not Xcode)")
+elif tool == "sandbox-exec":
+    if args[2] == "python3":
+        print("synthetic sandbox policy check (NOT an actual sandbox)")
+        fail_if("sandbox-policy")
+    else:
+        os.execvp(args[2], args[2:])
 else:
     raise AssertionError(f"unexpected fake tool: {tool}")

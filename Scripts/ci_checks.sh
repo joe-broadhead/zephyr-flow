@@ -51,7 +51,7 @@ step "1/9 XCTest (swift test)"
 if ! run_logged xctest swift test; then fail "swift test"; fi
 if run_logged xctest-discovery swift test list; then
   for suite in M0ContractTests ProductionBlockerTests FlowProcessorTests ModelsTests \
-      ProductionAudioTests ProductionBoundaryTests ProductionEngineTests; do
+      ProductionAudioTests ProductionBoundaryTests ProductionEngineTests ProductionOfflineTokenizerTests; do
     if ! grep -Eq "^ZephyrFlowTests[.]$suite/test" "$REPORT_DIR/xctest-discovery.log"; then
       fail "XCTest suite not discovered: $suite"
     fi
@@ -61,6 +61,12 @@ if run_logged xctest-discovery swift test list; then
   done
 else
   fail "XCTest discovery command failed"
+fi
+
+if ! run_logged offline-tokenizer bash Scripts/ci/offline_tokenizer_tests.sh; then
+  fail "network-denied tokenizer lane"
+elif ! grep -q "Test Suite 'ProductionOfflineTokenizerTests' passed" "$REPORT_DIR/offline-tokenizer.log"; then
+  fail "network-denied tokenizer tests did not execute"
 fi
 
 # 2. CLT runner (Core-only deterministic evidence, no Xcode required).

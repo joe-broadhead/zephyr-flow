@@ -23,6 +23,13 @@ production release approval.
    controlled backend: stale/cancelled loads, active-model isolation and
    cancellation that does not stop native work. No model weights are loaded;
    this does not verify WhisperKit inference or tokenizer networking.
+   `ProductionOfflineTokenizerTests` parses synthetic local vocabularies and
+   rejects missing/corrupt/mismatched artifacts. It also runs in a separate
+   network-denied process via `Scripts/ci/offline_tokenizer_tests.sh`, with a
+   loopback permission-denial probe and required suite-execution evidence.
+   This bounds the exercised loader paths; it is not a complete app privacy
+   canary or real-model inference qualification. The direct Tokenizers/Hub
+   APIs use the already-resolved swift-transformers **1.1.9** revision.
    These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

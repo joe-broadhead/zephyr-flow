@@ -12,7 +12,9 @@ let package = Package(
     ],
     dependencies: [
         // Pin to current major line used in Package.resolved (avoid silent major drift).
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.18.0")
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.18.0"),
+        // Explicit local-tokenizer API; same version/revision already resolved via WhisperKit.
+        .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9"),
     ],
     targets: [
         // Pure logic + protocols (unit-tested)
@@ -27,6 +29,8 @@ let package = Package(
             dependencies: [
                 "ZephyrFlowCore",
                 .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+                .product(name: "Hub", package: "swift-transformers"),
             ],
             path: "Sources/ZephyrFlow"
         ),

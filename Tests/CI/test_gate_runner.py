@@ -24,7 +24,7 @@ class GateRunnerTests(unittest.TestCase):
         self.products.mkdir()
         self.bin = self.base / "tools"
         self.bin.mkdir()
-        for name in ["Scripts/ci_checks.sh", "Scripts/ci/check_warnings.py"]:
+        for name in ["Scripts/ci_checks.sh", "Scripts/ci/check_warnings.py", "Scripts/ci/offline_tokenizer_tests.sh"]:
             target = self.repo / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
@@ -48,7 +48,7 @@ class GateRunnerTests(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(text)
         helper = (ROOT / "Tests/CI/fake_gate_tool.py").read_text().split("\n", 1)[1]
-        for tool in ["swift", "xcrun", "xcodebuild", "python3", "shellcheck", "actionlint", "mkdocs"]:
+        for tool in ["swift", "xcrun", "xcodebuild", "python3", "shellcheck", "actionlint", "mkdocs", "sandbox-exec"]:
             target = self.bin / tool
             target.write_text(f"#!{sys.executable}\n{helper}")
             target.chmod(0o755)
@@ -79,7 +79,7 @@ class GateRunnerTests(unittest.TestCase):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("ALL GATES PASSED", result.stdout)
-        for name in ["xctest", "xctest-discovery", "core", "strict-build", "strict-warnings",
+        for name in ["xctest", "xctest-discovery", "offline-tokenizer", "core", "strict-build", "strict-warnings",
                      "format", "actions", "docs", "coverage-tests", "coverage-core", "coverage-report", "asan", "stress"]:
             self.assertTrue((self.report / f"{name}.log").exists(), name)
         self.assertIn("exit_code=0", (self.report / "result.txt").read_text())
@@ -103,6 +103,7 @@ class GateRunnerTests(unittest.TestCase):
 
     def test_failures_cannot_be_hidden_by_success_shaped_output(self):
         modes = ["no-xctest", "no-pyyaml", "xctest", "discovery", "missing-suite", "zero-executed",
+                 "sandbox-policy", "offline-tokenizer", "offline-zero-executed",
                  "core", "clean", "strict-build", "new-warning", "format", "strings", "shellcheck", "actionlint", "yaml",
                  "regressions", "docs", "bin-path", "coverage-tests", "coverage-core", "missing-clt-profile",
                  "missing-xctest-profile", "coverage-merge", "coverage-report", "coverage-low",

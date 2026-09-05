@@ -32,21 +32,27 @@ final class WhisperKitRuntime: WhisperTranscriptionRuntime, @unchecked Sendable 
     init(backend: any WhisperTranscriptionBackend) { self.backend = backend }
 
     static func load(_ configuration: WhisperRuntimeConfiguration) async throws -> any WhisperTranscriptionRuntime {
-        let tokenizerFolder = configuration.verifiedFolder.map {
-            URL(fileURLWithPath: $0).appendingPathComponent("tokenizer", isDirectory: true)
+        if let folder = configuration.verifiedFolder {
+            let tokenizerFolder = URL(fileURLWithPath: folder).appendingPathComponent("tokenizer", isDirectory: true)
+            let tokenizer = try LocalWhisperTokenizer.load(from: tokenizerFolder, model: configuration.model)
+            let pipeline = try await LocalTokenizerWhisperKit(
+                folder: folder, model: configuration.model, tokenizer: tokenizer)
+            try await pipeline.prewarmModels()
+            try await pipeline.loadModels()
+            return WhisperKitRuntime(backend: NativeWhisperBackend(pipeline))
         }
-        // These are model-download controls. The dependency's tokenizer
-        // fallback requires separate offline-load enforcement; do not claim
-        // download:false by itself proves an offline tokenizer initialization.
+        // This legacy acquisition-only path may fetch model/tokenizer files
+        // under explicit download consent. It is never a local-only fallback.
+        guard configuration.allowDownload else {
+            throw WhisperEngineError.modelLoadFailed("A verified local artifact is required before loading.")
+        }
         let pipeline = try await WhisperKit(
             model: configuration.model.rawValue,
-            modelFolder: configuration.verifiedFolder,
-            tokenizerFolder: tokenizerFolder,
             verbose: false,
             logLevel: .error,
             prewarm: true,
             load: true,
-            download: configuration.verifiedFolder == nil && configuration.allowDownload)
+            download: configuration.allowDownload)
         return WhisperKitRuntime(backend: NativeWhisperBackend(pipeline))
     }
 
