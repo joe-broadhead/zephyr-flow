@@ -5,11 +5,7 @@
 
     final class ProductionOfflineTokenizerTests: XCTestCase {
         private func folder() throws -> URL {
-            // Directory enumeration on macOS can return the /private/var
-            // spelling even when the caller supplied /var. Compare canonical
-            // fixture paths, not two aliases of the same selected directory.
-            let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
-                .appendingPathComponent("zf-tokenizer-\(UUID())")
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("zf-tokenizer-\(UUID())")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             addTeardownBlock { try FileManager.default.removeItem(at: root) }
             return root
@@ -116,15 +112,34 @@
             }
         }
 
+        private func assertSameDirectory(
+            _ actual: URL?, _ expected: URL, file: StaticString = #filePath, line: UInt = #line
+        )
+            throws
+        {
+            // Foundation directory enumeration and URL normalization differ
+            // across macOS versions for /var vs /private/var. Compare the
+            // filesystem object (volume + inode), not either alias spelling.
+            let actual = try XCTUnwrap(actual, file: file, line: line)
+            let attributes = try FileManager.default.attributesOfItem(atPath: actual.path)
+            let expectedAttributes = try FileManager.default.attributesOfItem(atPath: expected.path)
+            XCTAssertEqual(attributes[.type] as? FileAttributeType, .typeDirectory, file: file, line: line)
+            for key in [FileAttributeKey.systemNumber, .systemFileNumber] {
+                let identity = try XCTUnwrap(attributes[key] as? NSNumber, file: file, line: line)
+                let expectedIdentity = try XCTUnwrap(expectedAttributes[key] as? NSNumber, file: file, line: line)
+                XCTAssertEqual(identity, expectedIdentity, file: file, line: line)
+            }
+        }
+
         func testAcquisitionLocatorCannotSubstituteAnotherModelsTokenizer() throws {
             let root = try folder()
             let base = root.appendingPathComponent("openai/whisper-base")
             try writeLocatorFiles(base)
             XCTAssertNil(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]))
-            XCTAssertEqual(WhisperTokenizerLocator.locate(model: .whisperBase, roots: [root])?.path, base.path)
+            try assertSameDirectory(WhisperTokenizerLocator.locate(model: .whisperBase, roots: [root]), base)
             let tiny = root.appendingPathComponent("openai/whisper-tiny")
             try writeLocatorFiles(tiny)
-            XCTAssertEqual(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root])?.path, tiny.path)
+            try assertSameDirectory(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]), tiny)
             try FileManager.default.removeItem(at: tiny.appendingPathComponent("tokenizer_config.json"))
             XCTAssertNil(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]))
         }
@@ -137,13 +152,13 @@
             let first = repository.appendingPathComponent("snapshots/\(firstID)")
             let second = repository.appendingPathComponent("snapshots/\(secondID)")
             try writeLocatorFiles(first)
-            XCTAssertEqual(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root])?.path, first.path)
+            try assertSameDirectory(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]), first)
             try writeLocatorFiles(second)
             XCTAssertNil(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]))
             let refs = repository.appendingPathComponent("refs")
             try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
             try Data(secondID.utf8).write(to: refs.appendingPathComponent("main"))
-            XCTAssertEqual(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root])?.path, second.path)
+            try assertSameDirectory(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]), second)
             try Data("invalid reference".utf8).write(to: refs.appendingPathComponent("main"))
             XCTAssertNil(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]))
         }
