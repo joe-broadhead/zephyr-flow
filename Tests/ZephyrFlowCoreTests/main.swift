@@ -213,6 +213,21 @@ private struct UnreadableHistoryFileSystem: HistoryFileSystem {
 }
 
 // ===== JOE-2255: in-memory fault-injecting model filesystem =====
+actor CoreDownloadBarrier {
+    private(set) var entered = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        entered = true
+        if !released { await withCheckedContinuation { continuation = $0 } }
+    }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     struct Node {
         var isDir: Bool
@@ -222,6 +237,8 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     private let lock = NSLock()
     private var nodes: [String: Node] = [:]
     private var perms: [String: Int] = [:]
+    private let beforeDownload: @Sendable () async -> Void
+    init(beforeDownload: @escaping @Sendable () async -> Void = {}) { self.beforeDownload = beforeDownload }
     private var _downloadCalls = 0
     private var _downloadCancellations = 0
     var downloadCalls: Int { lock.withLock { _downloadCalls } }
@@ -306,6 +323,7 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
         onProgress: @escaping @Sendable (ModelDownloadProgress) -> Void
     ) async throws {
         lock.withLock { _downloadCalls += 1 }
+        await beforeDownload()
         if downloadDelayNanos > 0 { try? await Task.sleep(nanoseconds: downloadDelayNanos) }
         if Task.isCancelled { lock.withLock { _downloadCancellations += 1 } }
         if failDownload { throw URLError(.cannotConnectToHost) }
@@ -5175,14 +5193,19 @@ struct CoreTests {
             check("2255 stale lock recovered -> ready", r9.state == .ready)
 
             // 10. Cancellation mid-download: cancelled, no artifact promoted.
-            let fs10 = FakeModelFS()
-            fs10.downloadDelayNanos = 200_000_000
+            let barrier10 = CoreDownloadBarrier()
+            let fs10 = FakeModelFS(beforeDownload: { await barrier10.wait() })
             let acq10 = ModelAcquisitionController(fs: fs10)
             let task10 = Task {
                 await acq10.acquire(model: .whisperTiny, consent: true)
             }
-            try? await Task.sleep(nanoseconds: 60_000_000)
+            for _ in 0..<5000 {
+                if await barrier10.entered { break }
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            check("2255 explicit-cancel fixture reached held download", await barrier10.entered)
             await acq10.cancel(model: .whisperTiny)
+            await barrier10.release()
             let r10 = await task10.value
             check("2255 cancel mid-download -> cancelled", r10.state == .cancelled)
             check(
@@ -5192,15 +5215,17 @@ struct CoreTests {
             let retried10 = await acq10.acquire(model: .whisperTiny, consent: true)
             check("2255 retry after cancel resets cancellation", retried10.state == .ready && fs10.downloadCalls == 2)
 
-            let fsCancelledOwner = FakeModelFS()
-            fsCancelledOwner.downloadDelayNanos = 5_000_000_000
+            let ownerBarrier = CoreDownloadBarrier()
+            let fsCancelledOwner = FakeModelFS(beforeDownload: { await ownerBarrier.wait() })
             let cancelledOwner = ModelAcquisitionController(fs: fsCancelledOwner)
             let owner = Task { await cancelledOwner.acquire(model: .whisperTiny, consent: true) }
-            for _ in 0..<500 where fsCancelledOwner.downloadCalls == 0 {
+            for _ in 0..<5000 {
+                if await ownerBarrier.entered { break }
                 try? await Task.sleep(nanoseconds: 1_000_000)
             }
-            check("2255 owner-cancel fixture reached download", fsCancelledOwner.downloadCalls == 1)
+            check("2255 owner-cancel fixture reached download", await ownerBarrier.entered)
             owner.cancel()
+            await ownerBarrier.release()
             let cancelledResult = await owner.value
             check("2255 caller cancellation reaches retained native task", fsCancelledOwner.downloadCancellations == 1)
             check(
