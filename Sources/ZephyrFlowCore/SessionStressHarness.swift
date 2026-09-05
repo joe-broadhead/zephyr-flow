@@ -133,7 +133,11 @@ public actor StressSessionProvider: DictationSessionStageProviding {
             roll < 70 ? .complete : (roll < 85 ? .partial : .truncated)
         return EngineResult(
             text: "hello world", completeness: completeness,
-            frameAccounting: nil,
+            // Matches this fixture's synthetic 16k-frame drain. No native
+            // capture/inference evidence is claimed by the stress harness.
+            frameAccounting: EngineFrameAccounting(
+                capturedSourceSamples: 16_000,
+                deliveredEngineSamples: 16_000, decodedEngineSamples: 16_000, droppedSourceSamples: 0),
             engine: EngineIdentity(
                 kind: .whisper, modelName: "Fake",
                 modelVersion: "1.0", modelDigest: "x"),

@@ -26,9 +26,12 @@
 
         func testTerminalGateExactlyOnce() async {
             let gate = SessionTerminalGate()
-            XCTAssertTrue(await gate.record(.completed))
-            XCTAssertFalse(await gate.record(.failed))
-            XCTAssertEqual(await gate.terminalState?.outcome, .completed)
+            let firstAccepted = await gate.record(.completed)
+            let duplicateAccepted = await gate.record(.failed)
+            let terminal = await gate.terminalState
+            XCTAssertTrue(firstAccepted)
+            XCTAssertFalse(duplicateAccepted)
+            XCTAssertEqual(terminal?.outcome, .completed)
         }
 
         // JOE-2241
@@ -99,4 +102,6 @@
         }
     }
 
+#else
+    #error("XCTest requires full Xcode; use swift run ZephyrFlowCoreTests on CommandLineTools-only machines.")
 #endif

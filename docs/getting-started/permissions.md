@@ -31,7 +31,13 @@ Or use the in-app prompts / menu item **Enable Accessibility…**.
 
 ## System Fn / Globe key
 
-While **Fn** is the hotkey, ZephyrFlow may set the system Globe-key action to “Do Nothing” so the emoji picker does not steal the key. Your previous preference is restored on quit, and recovered automatically after a crash. Settings → Privacy → **Reset system Fn / Globe key preference** if needed.
+New installations use Control-Option-Space. Fn is experimental. Selecting Fn
+does not authorize a system Globe-key change: a separate explicit override
+opt-in and verified tap preparation are required. An acknowledged recovery
+journal preserves the exact supported prior value/type. Failed/uncertain
+recovery blocks Fn; use the explicit retry/reset control and check its result.
+Never guess/remove the original global preference. Real crash/power-loss and
+keyboard/OS support remain unqualified.
 
 ## Ad-hoc signing note
 

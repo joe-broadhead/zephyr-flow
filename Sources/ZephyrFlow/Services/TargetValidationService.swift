@@ -3,6 +3,12 @@ import ApplicationServices
 import Darwin
 import ZephyrFlowCore
 
+struct TargetApplicationMetadata: Sendable, Equatable {
+    let pid: Int32
+    let bundleID: String
+    let version: String?
+}
+
 // MARK: JOE-2268 — AX-backed target capture + revalidation service.
 //
 // All content-free: process/window/element identity and capability flags only;
@@ -21,123 +27,112 @@ final class TargetValidationService: TargetValidationProviding {
     static let shared = TargetValidationService()
 
     private let ownBundleID = Bundle.main.bundleIdentifier ?? "dev.zephyrflow.app"
-    private let textLikeRoles: Set<String> = [
-        "AXTextField", "AXTextArea", "AXComboBox", "AXSecureTextField",
-        "AXTextView", "AXSearchField",
-    ]
 
-    private init() {}
+    private let application: @MainActor () -> TargetApplicationMetadata?
+    private let trusted: @MainActor () -> Bool
+    private let readMetadata: @Sendable (TargetApplicationMetadata, UInt64) -> TargetValidationContext?
+    private let readLane: AxOperationLane
+    private let readBudgetNanos: UInt64
 
-    var isAxTrusted: Bool { AXIsProcessTrusted() }
+    init(
+        application: (@MainActor () -> TargetApplicationMetadata?)? = nil,
+        trusted: @escaping @MainActor () -> Bool = { AXIsProcessTrusted() },
+        readMetadata: (@Sendable (TargetApplicationMetadata, UInt64) -> TargetValidationContext?)? = nil,
+        readLane: AxOperationLane = AxOperationLane(), readBudgetNanos: UInt64 = 1_500_000_000
+    ) {
+        self.application =
+            application ?? {
+                guard let app = NSWorkspace.shared.frontmostApplication, let bundle = app.bundleIdentifier else {
+                    return nil
+                }
+                let version = app.bundleURL.flatMap {
+                    Bundle(url: $0)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                }
+                return TargetApplicationMetadata(pid: app.processIdentifier, bundleID: bundle, version: version)
+            }
+        self.trusted = trusted
+        self.readMetadata = readMetadata ?? { Self.nativeContext(application: $0, nowNanos: $1) }
+        self.readLane = readLane
+        self.readBudgetNanos = readBudgetNanos
+    }
+
+    var isAxTrusted: Bool { trusted() }
 
     // MARK: capture (session start)
 
     func captureSnapshot(sessionID: SessionID, nowNanos: UInt64) async -> TargetSnapshot? {
-        guard isAxTrusted else {
-            ZFLog.info("revalidate: capture skipped (AX untrusted) sid=\(sessionID.token)")
-            return nil
-        }
-        guard let app = focusedAXApplication() else {
-            ZFLog.info("revalidate: no focused target")
-            return nil
-        }
-        let pid = app.processIdentifier
-        guard let bundle = app.bundleIdentifier, !isIgnorable(bundleID: bundle) else {
-            ZFLog.info("revalidate: target ignored pid=\(pid)")
-            return nil
-        }
-        let element = focusedElement(of: app)
-        let role = element.flatMap { attr($0, kAXRoleAttribute) }
-        let subrole = element.flatMap { attr($0, kAXSubroleAttribute) }
-        let identifier = element.flatMap { attr($0, kAXIdentifierAttribute) }
-        let settable = element.map { self.axSettable($0) } ?? false
-        let editable = element.map { textLikeRoles.contains(attr($0, kAXRoleAttribute) ?? "") } ?? false
-        let enabled = element.map { axBool($0, kAXEnabledAttribute) } ?? false
-
-        let isSecure = role == "AXSecureTextField"
-        let sensitivity: SensitivityAssessment
-        if isSecure {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .secure,
-                source: .accessibilityRole,
-                capturedAtNanos: nowNanos)
-        } else if editable {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .normal,
-                source: .accessibilityRole,
-                capturedAtNanos: nowNanos)
-        } else {
-            // No evidence: fail closed to unknown (JOE-2258/2259).
-            sensitivity = SensitivityAssessment(
-                sensitivity: .unknown,
-                source: .noEvidence,
-                capturedAtNanos: nowNanos)
-        }
-
+        guard let (app, context) = await boundedContext(nowNanos: nowNanos) else { return nil }
         let snapshot = TargetSnapshot(
             sessionID: sessionID,
             capturedAtUptimeNanos: nowNanos,
             target: .init(
-                pid: pid,
-                bundleID: bundle,
-                processStartUptimeNanos: processStartNanos(pid: pid),
-                windowID: frontmostWindowID(pid: pid, element: element),
-                appVersion: bundleShortVersion(bundle)),
-            element: .init(
-                role: role ?? "unknown",
-                subrole: subrole,
-                resolutionToken: identifier),
-            settable: settable,
-            editable: editable,
-            enabled: enabled,
+                pid: context.pid, bundleID: context.bundleID,
+                processStartUptimeNanos: context.processStartUptimeNanos,
+                windowID: context.windowID, appVersion: app.version),
+            element: context.element,
+            settable: context.settable,
+            editable: context.editable,
+            enabled: context.enabled,
             selectionRange: nil,
-            sensitivity: sensitivity)
-        ZFLog.info("revalidate: snapshot pid=\(pid) role=\(role ?? "nil") sens=\(sensitivity.sensitivity.rawValue)")
+            sensitivity: context.sensitivity)
+        ZFLog.info("revalidate: snapshot pid=\(context.pid) sens=\(context.sensitivity.sensitivity.rawValue)")
         return snapshot
     }
 
     // MARK: re-resolution (immediately before insertion)
 
     func currentContext(nowNanos: UInt64) async -> TargetValidationContext? {
-        guard isAxTrusted else { return nil }
-        guard let app = focusedAXApplication() else { return nil }
-        let pid = app.processIdentifier
-        guard let bundle = app.bundleIdentifier, !isIgnorable(bundleID: bundle) else { return nil }
-        let element = focusedElement(of: app)
-        let role = element.flatMap { attr($0, kAXRoleAttribute) }
-        let subrole = element.flatMap { attr($0, kAXSubroleAttribute) }
+        await boundedContext(nowNanos: nowNanos)?.1
+    }
+
+    private func boundedContext(nowNanos: UInt64) async -> (TargetApplicationMetadata, TargetValidationContext)? {
+        guard !Task.isCancelled, isAxTrusted, let app = application(), app.pid > 0,
+            !isIgnorable(bundleID: app.bundleID)
+        else { return nil }
+        let read = readMetadata
+        let start = DispatchTime.now().uptimeNanoseconds
+        let result = await AxBoundedRunner.run(
+            deadlineNanosAhead: readBudgetNanos,
+            startedAtNanos: start, nowNanos: { DispatchTime.now().uptimeNanoseconds }, lane: readLane,
+            operation: { read(app, nowNanos) })
+        // No native handles cross this await. Late/failed/busy reads are
+        // unknown, and a frontmost-app or trust change invalidates publication.
+        guard !Task.isCancelled, isAxTrusted, application() == app,
+            let optionalContext = result.value, let context = optionalContext,
+            context.pid == app.pid, context.bundleID == app.bundleID
+        else { return nil }
+        return (app, context)
+    }
+
+    private nonisolated static func nativeContext(application app: TargetApplicationMetadata, nowNanos: UInt64)
+        -> TargetValidationContext?
+    {
+        let pid = app.pid
+        guard let processStart = ProcessStartIdentity.read(pid: pid) else { return nil }
+        let element = focusedElement(pid: pid)
+        let evidence = element.map { AXSensitivityReader.read($0) }
+        let role = evidence?.role.value
+        let subrole = evidence?.subrole.value
         let identifier = element.flatMap { attr($0, kAXIdentifierAttribute) }
-        let isSecure = role == "AXSecureTextField"
-        let editable = element.map { textLikeRoles.contains(attr($0, kAXRoleAttribute) ?? "") } ?? false
-        let sensitivity: SensitivityAssessment
-        if isSecure {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .secure,
-                source: .accessibilityRole,
-                capturedAtNanos: nowNanos)
-        } else if editable {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .normal,
-                source: .accessibilityRole,
-                capturedAtNanos: nowNanos)
-        } else {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .unknown,
-                source: .noEvidence,
-                capturedAtNanos: nowNanos)
-        }
+        let editable = evidence?.editable ?? false
+        let classification = evidence?.sensitivity ?? .unknown
+        let sensitivity = SensitivityAssessment(
+            sensitivity: classification,
+            source: classification == .unknown ? .noEvidence : .accessibilityRole, capturedAtNanos: nowNanos)
+        let windowID = frontmostWindowID(pid: pid, element: element)
+        guard ProcessStartIdentity.read(pid: pid) == processStart else { return nil }
         return TargetValidationContext(
             pid: pid,
-            bundleID: bundle,
-            processStartUptimeNanos: processStartNanos(pid: pid),
-            windowID: frontmostWindowID(pid: pid, element: element),
+            bundleID: app.bundleID,
+            processStartUptimeNanos: processStart,
+            windowID: windowID,
             element: .init(
                 role: role ?? "unknown",
                 subrole: subrole,
                 resolutionToken: identifier),
             settable: element.map { axSettable($0) } ?? false,
             editable: editable,
-            enabled: element.map { axBool($0, kAXEnabledAttribute) } ?? false,
+            enabled: evidence?.enabled ?? false,
             sensitivity: sensitivity,
             nowNanos: nowNanos)
     }
@@ -187,59 +182,37 @@ final class TargetValidationService: TargetValidationProviding {
 
     // MARK: AX helpers
 
-    private func focusedAXApplication() -> NSRunningApplication? {
-        if let frontmost = NSWorkspace.shared.frontmostApplication,
-            let bundle = frontmost.bundleIdentifier,
-            !isIgnorable(bundleID: bundle)
-        {
-            return frontmost
-        }
-        // Fall back to the AX focused application (without stealing focus).
-        let systemWide = AXUIElementCreateSystemWide()
-        var focusedApp: CFTypeRef?
-        guard
-            AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &focusedApp)
-                == .success,
-            let appElement = focusedApp
-        else { return nil }
-        var pid: pid_t = 0
-        guard AXUIElementGetPid((appElement as! AXUIElement), &pid) == .success else { return nil }
-        guard let app = NSRunningApplication(processIdentifier: pid),
-            let bundle = app.bundleIdentifier, !isIgnorable(bundleID: bundle)
-        else { return nil }
-        return app
-    }
-
-    private func focusedElement(of app: NSRunningApplication) -> AXUIElement? {
-        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+    private nonisolated static func focusedElement(pid: Int32) -> AXUIElement? {
+        let appElement = AXUIElementCreateApplication(pid)
+        guard AXUIElementSetMessagingTimeout(appElement, 0.5) == .success else { return nil }
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(appElement, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
             let element = focused, CFGetTypeID(element) == AXUIElementGetTypeID()
         else { return nil }
-        return (element as! AXUIElement)
+        let handle = unsafeBitCast(element, to: AXUIElement.self)
+        var elementPID: pid_t = 0
+        guard AXUIElementGetPid(handle, &elementPID) == .success, elementPID == pid,
+            AXUIElementSetMessagingTimeout(handle, 0.5) == .success
+        else { return nil }
+        return handle
     }
 
-    private func attr(_ element: AXUIElement, _ attribute: String) -> String? {
-        attrValue(element, attribute) as? String
+    private nonisolated static func attr(_ element: AXUIElement, _ attribute: String) -> String? {
+        guard let string = attrValue(element, attribute) as? String, string.utf8.count <= 1024 else { return nil }
+        return string
     }
 
     /// Round-6 B3: raw AX attribute value (CFTypeRef). kAXPositionAttribute
     /// and kAXSizeAttribute return AXValue, not String — the old code read
     /// them through the String accessor, so window bounds were never captured
     /// and the captured windowID was always nil.
-    private func attrValue(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+    private nonisolated static func attrValue(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value
     }
 
-    private func axBool(_ element: AXUIElement, _ attribute: String) -> Bool {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return false }
-        return value as? Bool ?? false
-    }
-
-    private func axSettable(_ element: AXUIElement) -> Bool {
+    private nonisolated static func axSettable(_ element: AXUIElement) -> Bool {
         var settable = DarwinBoolean(false)
         guard AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settable) == .success
         else { return false }
@@ -251,7 +224,7 @@ final class TargetValidationService: TargetValidationProviding {
     /// Returns nil when the AX window cannot be resolved or its bounds cannot
     /// be matched to a CGWindowID — callers fail closed (nil window id means
     /// paste requires a lease that cannot be re-validated, so it is refused).
-    private func frontmostWindowID(pid: Int32, element: AXUIElement?) -> UInt32? {
+    private nonisolated static func frontmostWindowID(pid: Int32, element: AXUIElement?) -> UInt32? {
         guard let element else { return nil }
         var windowRef: CFTypeRef?
         guard
@@ -261,6 +234,7 @@ final class TargetValidationService: TargetValidationProviding {
             CFGetTypeID(window) == AXUIElementGetTypeID()
         else { return nil }
         let windowElement = unsafeBitCast(window, to: AXUIElement.self)
+        guard AXUIElementSetMessagingTimeout(windowElement, 0.5) == .success else { return nil }
         // Read the AX window's bounds (position+size) via the CFTypeRef
         // accessor — these attributes return AXValue (round-6 B3).
         var position = CGPoint.zero
@@ -270,14 +244,12 @@ final class TargetValidationService: TargetValidationProviding {
         if let posRef = attrValue(windowElement, kAXPositionAttribute as String),
             CFGetTypeID(posRef) == AXValueGetTypeID()
         {
-            AXValueGetValue(unsafeBitCast(posRef, to: AXValue.self), .cgPoint, &position)
-            posOK = true
+            posOK = AXValueGetValue(unsafeBitCast(posRef, to: AXValue.self), .cgPoint, &position)
         }
         if let sizeRef = attrValue(windowElement, kAXSizeAttribute as String),
             CFGetTypeID(sizeRef) == AXValueGetTypeID()
         {
-            AXValueGetValue(unsafeBitCast(sizeRef, to: AXValue.self), .cgSize, &size)
-            sizeOK = true
+            sizeOK = AXValueGetValue(unsafeBitCast(sizeRef, to: AXValue.self), .cgSize, &size)
         }
         guard
             let list = CGWindowListCopyWindowInfo(
@@ -287,43 +259,30 @@ final class TargetValidationService: TargetValidationProviding {
         // Match the CG window owned by this PID whose bounds match the AX
         // window's bounds (same origin within tolerance + same size). No
         // bounds match => nil (fail closed; never the first PID window).
+        var candidate: UInt32?
         for w in list {
             guard let ownerPID = w[kCGWindowOwnerPID as String] as? NSNumber,
                 ownerPID.int32Value == pid,
-                let winID = w[kCGWindowNumber as String] as? NSNumber
+                let winID = w[kCGWindowNumber as String] as? NSNumber,
+                let id = UInt32(exactly: winID.int64Value), id > 0
             else { continue }
             guard posOK, sizeOK,
                 let bounds = w[kCGWindowBounds as String] as? [String: CGFloat]
             else { continue }
-            let bx = bounds["X"] ?? 0
-            let by = bounds["Y"] ?? 0
-            let bw = bounds["Width"] ?? 0
-            let bh = bounds["Height"] ?? 0
+            guard let bx = bounds["X"], let by = bounds["Y"], let bw = bounds["Width"], let bh = bounds["Height"],
+                [bx, by, bw, bh, position.x, position.y, size.width, size.height].allSatisfy(\.isFinite),
+                bw > 0, bh > 0, size.width > 0, size.height > 0
+            else { continue }
             let matches =
                 abs(bx - position.x) < 2 && abs(by - position.y) < 2
                 && abs(bw - size.width) < 2 && abs(bh - size.height) < 2
             if matches {
-                return UInt32(winID.int32Value)
+                // Overlapping same-size windows are ambiguous, not identity.
+                guard candidate == nil else { return nil }
+                candidate = id
             }
         }
-        return nil
-    }
-
-    private func processStartNanos(pid: Int32) -> UInt64? {
-        var info = proc_bsdinfo()
-        let size = MemoryLayout<proc_bsdinfo>.size
-        let rc = proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size))
-        guard rc > 0 else { return nil }
-        let seconds = UInt64(info.pbi_start_tvsec)
-        let micros = UInt64(info.pbi_start_tvusec)
-        return seconds * 1_000_000_000 + micros * 1_000
-    }
-
-    private func bundleShortVersion(_ bundleID: String) -> String? {
-        guard let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID),
-            let bundle = Bundle(url: appURL)
-        else { return nil }
-        return bundle.infoDictionary?["CFBundleShortVersionString"] as? String
+        return candidate
     }
 
     private func isIgnorable(bundleID: String) -> Bool {

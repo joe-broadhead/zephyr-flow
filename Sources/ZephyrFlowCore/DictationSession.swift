@@ -76,19 +76,28 @@ public struct SessionUIState: Sendable, Equatable {
     public var interimLength: Int
     public var audioLevel: Float
     public var outputs: SessionStageOutputs
+    public var recordingSecondsRemaining: Int?
+    public var recordingLimitReached: Bool
+    public var captureEndedEarly: Bool
 
     public init(
         phase: SessionPhase = .idle,
         interimText: String = "",
         interimLength: Int = 0,
         audioLevel: Float = 0.05,
-        outputs: SessionStageOutputs = SessionStageOutputs()
+        outputs: SessionStageOutputs = SessionStageOutputs(),
+        recordingSecondsRemaining: Int? = nil,
+        recordingLimitReached: Bool = false,
+        captureEndedEarly: Bool = false
     ) {
         self.phase = phase
         self.interimText = interimText
         self.interimLength = interimLength
         self.audioLevel = audioLevel
         self.outputs = outputs
+        self.recordingSecondsRemaining = recordingSecondsRemaining
+        self.recordingLimitReached = recordingLimitReached
+        self.captureEndedEarly = captureEndedEarly
     }
 }
 
@@ -239,19 +248,26 @@ public struct SessionValidationResult: Sendable, Equatable {
 /// is NEVER logged; the actor publishes only its length).
 public struct SessionPartial: Sendable, Equatable {
     public let text: String
-    public init(text: String) { self.text = text }
+    public let captureEnded: Bool
+    public init(text: String, captureEnded: Bool = false) {
+        self.text = text
+        self.captureEnded = captureEnded
+    }
 }
 
 public struct SessionCaptureHandle: Sendable {
     public let interim: AsyncStream<SessionPartial>
     public let levels: AsyncStream<Float>
+    public let recordingLimit: AsyncStream<Void>
 
     public init(
         interim: AsyncStream<SessionPartial>,
-        levels: AsyncStream<Float>
+        levels: AsyncStream<Float>,
+        recordingLimit: AsyncStream<Void> = AsyncStream { $0.finish() }
     ) {
         self.interim = interim
         self.levels = levels
+        self.recordingLimit = recordingLimit
     }
 }
 
@@ -262,6 +278,9 @@ public protocol DictationSessionStageProviding: Sendable {
     func prepare(sessionID: SessionID) async
     /// The AX target snapshot captured during prepare (nil = fail closed).
     func capturedTargetSnapshot() async -> TargetSnapshot?
+    /// May initialize/migrate history ONLY after normal target sensitivity is
+    /// established and saving history is enabled. Must not start recording.
+    func prepareHistoryForSession() async -> Bool
     /// Begin capture + engine streaming. Returns interim/level streams.
     func startCapture(
         sessionID: SessionID, localOnly: Bool,
@@ -285,6 +304,18 @@ public protocol DictationSessionStageProviding: Sendable {
     func insert(_ request: SessionInsertRequest) async -> InsertionOutcome
     /// Cancel engine + capture immediately (idempotent).
     func cancel() async
+}
+
+extension DictationSessionStageProviding {
+    /// In-memory providers have no at-rest initialization requirement.
+    public func prepareHistoryForSession() async -> Bool { !Task.isCancelled }
+}
+
+public enum SessionAdmissionPreparation: Sendable, Equatable {
+    case ready
+    case historyUnavailable
+    case cancelled
+    case inProgress
 }
 
 // MARK: - Shared session identity (JOE-2244)
@@ -314,6 +345,8 @@ public final class SessionIDFactory: @unchecked Sendable {
 /// stage sequencing, typed outputs and exactly-once terminal release.
 /// The MainActor coordinator only creates sessions and maps `SessionUIState`.
 public actor DictationSession {
+    private var admissionPreparation: SessionAdmissionPreparation?
+    private var preparingAdmission = false
     public enum Command: Sendable, Equatable {
         case end
         case cancel
@@ -343,6 +376,10 @@ public actor DictationSession {
     private var commandStream: AsyncStream<Command>?
     private var captureTask: Task<Void, Never>?
     private var levelsTask: Task<Void, Never>?
+    private var limitTimerTask: Task<Void, Never>?
+    private var limitEventTask: Task<Void, Never>?
+    private var captureActive = false
+    private let recordingLimitNanos: UInt64
     private var state = SessionUIState()
     private var startTime: UInt64?
     private var retainedText = ""
@@ -370,13 +407,16 @@ public actor DictationSession {
         idFactory: SessionIDFactory = SessionIDFactory(),
         nowNanos: @escaping @Sendable () -> UInt64 = {
             DispatchTime.now().uptimeNanoseconds
-        }
+        },
+        recordingLimitNanos: UInt64 = UInt64(LongDictationPolicy.maximumSeconds) * 1_000_000_000
     ) {
         self.provider = provider
         self.engineChoice = engineChoice
         self.settings = settings
         self.idFactory = idFactory
         self.nowNanos = nowNanos
+        self.recordingLimitNanos = min(
+            max(1, recordingLimitNanos), UInt64(LongDictationPolicy.maximumSeconds) * 1_000_000_000)
         var control = SessionControlModel()
         let sid = idFactory.next(createdAtNanos: nowNanos())
         guard control.begin(sessionID: sid) != nil else {
@@ -475,10 +515,33 @@ public actor DictationSession {
 
     // MARK: - Orchestration
 
+    /// Controller calls this before presenting its panel or admitting capture.
+    /// run() reuses the exact captured target rather than capturing Zephyr UI.
+    /// Callers retain/cancel their preparation task; no unowned worker is made.
+    public func prepareAdmission() async -> SessionAdmissionPreparation {
+        guard !released, !Task.isCancelled, !cancelRequested else { return .cancelled }
+        if let admissionPreparation { return admissionPreparation }
+        guard !preparingAdmission else { return .inProgress }
+        preparingAdmission = true
+        defer { preparingAdmission = false }
+        await provider.prepare(sessionID: sessionID)
+        targetSnapshot = await provider.capturedTargetSnapshot()
+        guard !Task.isCancelled, !cancelRequested else { return .cancelled }
+        if settings.saveHistory, targetSnapshot?.sensitivity.sensitivity == .normal {
+            let ready = await provider.prepareHistoryForSession()
+            guard !Task.isCancelled, !cancelRequested else { return .cancelled }
+            guard ready else {
+                admissionPreparation = .historyUnavailable
+                return .historyUnavailable
+            }
+        }
+        admissionPreparation = .ready
+        return .ready
+    }
+
     public func run() async {
         guard !released else { return }
         startTime = nowNanos()
-        publish(phase: .listening, interim: "", level: 0.05)
 
         guard let commands = commandStream else { return }
         // commandStream was created at init (durable mailbox); the consumer
@@ -488,15 +551,23 @@ public actor DictationSession {
         // preparation and microphone activation, not just be observed later.
         if await checkCancellation() { return }
 
-        // Session-scoped preparation: AX target snapshot + engine binding.
-        await provider.prepare(sessionID: sessionID)
-        targetSnapshot = await provider.capturedTargetSnapshot()
+        // Target/sensitivity before history, and both before microphone start.
+        let admission = await prepareAdmission()
 
         // Review B2v2: cancel during preparation must prevent capture start.
         if await checkCancellation() { return }
+        if admission == .inProgress { return }  // another owner is preparing, never duplicate capture
+        guard admission == .ready else {
+            _ = control.stage(.captureFailed)
+            publish(phase: .error, interim: "", level: 0.05)
+            finishTerminal(category: .failed)
+            return
+        }
+        publish(phase: .listening, interim: "", level: 0.05)
 
         // Stage 1: capture + engine streaming starts immediately (begin edge).
         let handle: SessionCaptureHandle
+        let captureBudgetStarted = ContinuousClock().now
         do {
             handle = try await provider.startCapture(
                 sessionID: sessionID,
@@ -520,10 +591,18 @@ public actor DictationSession {
             finishTerminal(category: .failed)
             return
         }
+        captureActive = true
+        limitTimerTask = Task { await monitorRecordingLimit(started: captureBudgetStarted) }
+        limitEventTask = Task {
+            for await _ in handle.recordingLimit {
+                reachRecordingLimit()
+                break
+            }
+        }
         captureTask = Task { [weak self] in
             guard let self else { return }
             for await partial in handle.interim {
-                await self.publish(phase: .listening, interim: partial.text, level: self.state.audioLevel)
+                await self.publishCapturePartial(partial)
             }
         }
         levelsTask = Task { [weak self] in
@@ -533,14 +612,27 @@ public actor DictationSession {
             }
         }
 
-        // Wait for the release edge (end/cancel) — the ONLY way out of
-        // capture. The first command is consumed HERE, after capture starts.
+        // Release/cancel or the explicit product limit ends capture. A limit
+        // uses the same stop/drain/finalize path, never discards buffered audio.
         var command: Command?
         for await c in commands {
             command = c
             break
         }
-        guard let command else { return }
+        captureActive = false
+        limitTimerTask?.cancel()
+        limitEventTask?.cancel()
+        state.recordingSecondsRemaining = nil
+        guard let command else {
+            // Cancelling run() while it awaits the command stream terminates
+            // iteration with nil; it must still stop capture and emit exactly
+            // one terminal, not leave the microphone/provider live.
+            await provider.cancel()
+            _ = control.cancel()
+            publish(phase: .hidden, interim: "", level: 0.05)
+            finishTerminal(category: .cancelled)
+            return
+        }
 
         if command == .cancel {
             await provider.cancel()
@@ -599,8 +691,11 @@ public actor DictationSession {
         }
         let final: EngineResult
         do {
-            final = try await provider.finalize()
+            final = try await provider.finalize().requiringCompletionEvidence(
+                captureEndedEarly: state.captureEndedEarly)
         } catch {
+            if await checkCancellation() { return }
+            await provider.cancel()
             // Round-5 B3: finalize failure occurs in .transcribing — the legal
             // event is .transcriptionFailed (not .captureFailed, which is only
             // legal from .capturing).
@@ -609,6 +704,7 @@ public actor DictationSession {
             finishTerminal(category: .failed)
             return
         }
+        if await checkCancellation() { return }
         state.outputs.engineResult = final
         // Transcription actually finished (finalize returned): stage it now.
         if control.stage(.transcriptionFinished).isRejected {
@@ -630,7 +726,9 @@ public actor DictationSession {
             default:
                 _ = control.stage(.engineTruncated)
             }
-            publish(phase: .warning, interim: state.interimText, level: state.audioLevel)
+            // Preserve all decoded hypotheses for explicit review. No automatic
+            // insertion/history or retry of an incomplete result is admitted.
+            publish(phase: .warning, interim: final.text, level: state.audioLevel)
             finishTerminal(category: final.completeness == .partial ? .partial : .truncated)
             return
         }
@@ -646,9 +744,11 @@ public actor DictationSession {
                     sessionID: sessionID, text: final.text, style: .clean,
                     language: settings.language,
                     sensitivity: targetSnapshot?.sensitivity.sensitivity ?? .unknown))
+            if await checkCancellation() { return }
             _ = control.stage(.transformationFinished)
             state.outputs.flowOutcome = conservative
-            let reviewText = conservative.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reviewText =
+                conservative.allowsAutomaticInsertion(originalText: final.text) ? conservative.text : final.text
             retainedText = reviewText
             publish(phase: .review, interim: reviewText, level: state.audioLevel)
             await handleReviewCommands(secureOnly: true)
@@ -662,6 +762,7 @@ public actor DictationSession {
                 sessionID: sessionID, text: final.text, style: settings.defaultFlowStyle,
                 language: settings.language,
                 sensitivity: targetSnapshot?.sensitivity.sensitivity ?? .unknown))
+        if await checkCancellation() { return }
         // Review B3: stage transformationFinished AFTER applyFlow returns.
         if control.stage(.transformationFinished).isRejected {
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
@@ -675,23 +776,25 @@ public actor DictationSession {
         // must NEVER be automatically inserted. The outcome's text is the
         // original input (conservative fallback), but automatic insertion is
         // disabled — surface the review surface so the user decides.
-        if flowOutcome.status == .rejected {
-            publish(phase: .review, interim: flowOutcome.text, level: state.audioLevel)
-            retainedText = flowOutcome.text
+        if !flowOutcome.allowsAutomaticInsertion(originalText: final.text) {
+            // Do not publish a cancelled, superseded or failed-preservation
+            // payload. The original engine text remains available for review.
+            publish(phase: .review, interim: final.text, level: state.audioLevel)
+            retainedText = final.text
             await handleReviewCommands(secureOnly: false)
             return
         }
-        let trimmed = flowOutcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        let insertText = flowOutcome.text
+        guard !insertText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
             finishTerminal(category: .failed)
             return
         }
-        retainedText = trimmed
+        retainedText = insertText
 
         guard let snapshot = targetSnapshot else {
             _ = control.stage(.targetUnknown)
-            publish(phase: .review, interim: trimmed, level: state.audioLevel)
+            publish(phase: .review, interim: insertText, level: state.audioLevel)
             await handleReviewCommands(secureOnly: false)
             return
         }
@@ -749,7 +852,7 @@ public actor DictationSession {
                 // Review B2: a cancel that landed DURING insertion must not be
                 // followed by history persistence or a success terminal. Check
                 // immediately before both.
-                if cancelRequested {
+                if cancelRequested || Task.isCancelled {
                     await provider.cancel()
                     publish(phase: .hidden, interim: "", level: 0.05)
                     finishTerminal(category: .cancelled)
@@ -831,7 +934,7 @@ public actor DictationSession {
     /// read by every side-effecting stage). Non-consuming — does not disturb
     /// the command stream for review phases.
     private func checkCancellation() async -> Bool {
-        guard cancelRequested else { return false }
+        guard cancelRequested || Task.isCancelled else { return false }
         await provider.cancel()
         publish(phase: .hidden, interim: "", level: 0.05)
         finishTerminal(category: .cancelled)
@@ -889,13 +992,47 @@ public actor DictationSession {
         broadcaster.publish(state)
     }
 
-    /// Exactly-once terminal release: owned tasks cancelled, stream finished.
-    /// Round-5 B3: terminal release is ONLY performed when the authoritative
-    /// control state accepted the transition AND the reached terminal matches
-    /// the requested category. If the machine stayed nonterminal (or reached
-    /// a different terminal), the session must NOT claim the requested
-    /// terminal: no telemetry, no broadcaster finish, no release — the
-    /// mismatch is surfaced (observably) so the caller can reconcile.
+    /// A producer terminal event exits Listening; later partials cannot undo it.
+    private func publishCapturePartial(_ partial: SessionPartial) {
+        guard captureActive, !released, !cancelRequested, !state.captureEndedEarly else { return }
+        if partial.captureEnded {
+            state.captureEndedEarly = true
+            state.recordingSecondsRemaining = nil
+            publish(phase: .processing, interim: partial.text, level: 0.05)
+            commandContinuation?.yield(.end)
+        } else {
+            publish(phase: .listening, interim: partial.text, level: state.audioLevel)
+        }
+    }
+
+    private func reachRecordingLimit() {
+        guard captureActive, !released, !cancelRequested, !state.recordingLimitReached, !state.captureEndedEarly else {
+            return
+        }
+        state.recordingLimitReached = true
+        state.recordingSecondsRemaining = 0
+        broadcaster.publish(state)
+        commandContinuation?.yield(.end)
+    }
+
+    private func monitorRecordingLimit(started: ContinuousClock.Instant) async {
+        let clock = ContinuousClock()
+        let deadline = started.advanced(by: .nanoseconds(Int64(recordingLimitNanos)))
+        while captureActive, !state.captureEndedEarly, !Task.isCancelled, !released {
+            let now = clock.now
+            guard now < deadline else {
+                reachRecordingLimit()
+                return
+            }
+            let remaining = now.duration(to: deadline).components
+            state.recordingSecondsRemaining = Int(remaining.seconds) + (remaining.attoseconds > 0 ? 1 : 0)
+            broadcaster.publish(state)
+            do { try await clock.sleep(until: min(deadline, now.advanced(by: .seconds(1)))) } catch { return }
+        }
+    }
+
+    /// Exactly-once release. Report the reached outcome (or controlled failure)
+    /// and a mismatch marker when the requested terminal was not accepted.
     private func finishTerminal(category: TerminalCategory) {
         guard !released else { return }
         // Review R1.5: drive the control state machine to the matching
@@ -967,6 +1104,11 @@ public actor DictationSession {
         levelsTask?.cancel()
         captureTask = nil
         levelsTask = nil
+        captureActive = false
+        limitTimerTask?.cancel()
+        limitEventTask?.cancel()
+        limitTimerTask = nil
+        limitEventTask = nil
         commandContinuation = nil
         commandStream = nil
         broadcaster.finish()

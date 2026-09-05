@@ -103,8 +103,8 @@ public struct FlowRequest: Sendable, Equatable {
     public let style: FlowStyle
     public let language: SupportedLanguage
     public let sensitivity: SessionSensitivity
-    /// Hard deadline; a non-cooperative backend must never block past it and
-    /// a late result must never overwrite the fallback.
+    /// Caller deadline, not a native-completion or hard-real-time guarantee.
+    /// A late result must never overwrite the fallback.
     public let deadlineNanosAhead: UInt64
 
     public init(
@@ -143,11 +143,25 @@ public enum FlowWarning: String, Codable, CaseIterable, Sendable, Equatable {
     case structuralFallback
     case enhancedTimeout
     case lateResultIgnored
+    /// Original text returned without token scanning; protectedSpanCount is
+    /// not a measured census on this zero-transformation deadline path.
+    case verbatimFallback
 }
 
 /// Typed Flow outcome: transformation risk, actual changes, fallback and
 /// timing are visible to policy, UI and evidence systems (JOE-2279).
 public struct FlowOutcome: Sendable, Equatable {
+    /// Session-side admission validates the status/termination pair as well as
+    /// preservation evidence. A deadline may supply exact-input verbatim text,
+    /// but cancelled/superseded/inconsistent output is never auto-inserted.
+    public func allowsAutomaticInsertion(originalText: String) -> Bool {
+        guard protectedSpansPreserved else { return false }
+        if status == .accepted && termination == .completed { return true }
+        return status == .deadlineExceeded && termination == .deadlineExceeded
+            && resolvedLossClass == .verbatim && warnings.contains(.verbatimFallback)
+            && text.utf8.elementsEqual(originalText.utf8)
+    }
+
     public let text: String
     public let requestedStyle: FlowStyle
     public let resolvedLossClass: FlowLossClass

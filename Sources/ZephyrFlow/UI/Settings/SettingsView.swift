@@ -74,14 +74,19 @@ struct SettingsView: View {
             .padding(24)
         }
         .frame(minWidth: 720, minHeight: 480)
+        .safeAreaInset(edge: .bottom) {
+            if let error = settings.persistenceError {
+                Text(error).font(.callout).foregroundStyle(.orange).padding()
+            }
+        }
         .zephyrDarkChrome()
         .onAppear {
             privacy.refresh()
+            login.refresh(persistedEnabled: settings.settings.launchAtLogin)
             NSApp.appearance = NSAppearance(named: .darkAqua)
             copyOnlyOverridesText = settings.settings.copyOnlyOverrideBundleIDs.joined(separator: ", ")
-            // Review R4.1: load history from the actor repository (single
-            // source of truth) before the pane is shown.
-            history.start()
+            // Opening unrelated settings must not initialize history. Only
+            // the explicit History pane requests key/storage access below.
         }
     }
 
@@ -107,13 +112,35 @@ struct SettingsView: View {
             }
 
             Section("Startup") {
-                Toggle(AppStrings.key("settings.toggle.launchAtLogin"), isOn: binding(\.launchAtLogin))
-                    .onChange(of: settings.settings.launchAtLogin) { _, enabled in
-                        setLaunchAtLogin(enabled)
-                    }
+                Toggle(
+                    AppStrings.key("settings.toggle.launchAtLogin"),
+                    isOn: Binding(
+                        get: { login.observedEnabled }, set: { setLaunchAtLogin($0) })
+                )
+                .disabled(launchLoginPending || login.transaction.isPending)
+                if launchLoginPending || login.transaction.isPending {
+                    ProgressView(AppStrings.key("login.pending"))
+                }
+                LabeledContent(AppStrings.key("login.systemstatus"), value: login.systemStatus.rawValue)
+                if let message = login.lastError ?? login.availabilityMessage() {
+                    Text(message).foregroundStyle(.orange)
+                }
+                if login.needsReconciliation
+                    || !LaunchAtLoginTransaction.statusConverges(
+                        status: login.systemStatus, desiredEnabled: settings.settings.launchAtLogin)
+                {
+                    Text(AppStrings.key("login.reconciliation.required")).font(.caption)
+                }
+                Button(AppStrings.key("login.open")) { openLoginItemsSettings() }
+                Button(AppStrings.key("login.refresh")) {
+                    login.refresh(persistedEnabled: settings.settings.launchAtLogin)
+                }
             }
+            .onAppear { login.refresh(persistedEnabled: settings.settings.launchAtLogin) }
 
             Section("Engine") {
+                Text(AppStrings.key("settings.qualificationTarget"))
+                    .font(.caption).foregroundStyle(.secondary)
                 LabeledContent("Active engine", value: controller.engineLabel)
                 // JOE-2254: validated language selection (auto + supported
                 // BCP-47 matrix); affects the NEXT session, never the active one.
@@ -130,7 +157,7 @@ struct SettingsView: View {
                 if controller.isModelLoading {
                     ProgressView("Loading model…")
                 }
-                if let banner = modelReadiness.bannerMessage {
+                if let banner = controller.statusMessage {
                     Text(banner)
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -168,11 +195,16 @@ struct SettingsView: View {
         Form {
             Section("Global Hotkey") {
                 Picker(AppStrings.key("settings.picker.hotkey"), selection: hotkeySelection) {
+                    Text(AppStrings.key("settings.hotkey.controlOptionSpace")).tag(HotkeyChoice.controlOptionSpace)
                     Text(AppStrings.key("settings.hotkey.fn")).tag(HotkeyChoice.fn)
                     Text(AppStrings.key("settings.hotkey.rightOption")).tag(HotkeyChoice.rightOption)
                     Text(AppStrings.key("settings.hotkey.rightCommand")).tag(HotkeyChoice.rightCommand)
+                    Text(AppStrings.key("settings.hotkey.rightControl")).tag(HotkeyChoice.rightControl)
                     Text(AppStrings.key("settings.hotkey.controlSpace")).tag(HotkeyChoice.controlSpace)
                     Text(AppStrings.key("settings.hotkey.optionSpace")).tag(HotkeyChoice.optionSpace)
+                    if hotkeySelection.wrappedValue == .custom {
+                        Text(AppStrings.key("settings.hotkey.custom")).tag(HotkeyChoice.custom)
+                    }
                 }
                 .onChange(of: settings.settings.hotkey) { _, _ in
                     controller.reloadHotkey()
@@ -186,11 +218,11 @@ struct SettingsView: View {
             }
 
             Section("Tips") {
-                Text(
-                    "Fn works like Wispr Flow: hold to talk, release to insert. ZephyrFlow sets the Globe key action to “Do Nothing” while running so the emoji picker doesn’t steal the key. If Fn still misbehaves, use **Right Option** instead."
-                )
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                Text(AppStrings.key("settings.hotkey.experimentalNote"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(AppStrings.key("settings.hotkey.conflictNote"))
+                    .font(.callout).foregroundStyle(.secondary)
                 Text(AppStrings.key("settings.axNote"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -248,6 +280,20 @@ struct SettingsView: View {
                     modelReadiness.refreshAll()
                 }
             }
+            Section(AppStrings.key("engine.preparation.title")) {
+                if let message = controller.statusMessage {
+                    Text(message).font(.callout)
+                }
+                if controller.isModelLoading {
+                    ProgressView(AppStrings.key("engine.preparation.progress"))
+                    Button(AppStrings.key("engine.preparation.cancel")) { controller.cancelModelPreparation() }
+                } else {
+                    Button(AppStrings.key("engine.preparation.retry")) { controller.reloadEngine() }
+                }
+                if settings.settings.preferredModel.isWhisperKit {
+                    Button(AppStrings.key("engine.preparation.apple")) { selectModel(.appleSpeech) }
+                }
+            }
         }
         .formStyle(.grouped)
         .navigationTitle(AppStrings.key("settings.section.model"))
@@ -293,11 +339,9 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
                 Toggle(AppStrings.key("settings.toggle.allowDownloads"), isOn: binding(\.allowModelDownloads))
-                Text(
-                    "One-time model file download only (default on for Whisper Tiny). Never uploads your audio. Files stay in Application Support and run on-device."
-                )
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                Text(AppStrings.key("engine.downloads.disclosure"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Permissions") {
@@ -367,10 +411,18 @@ struct SettingsView: View {
                 Button(AppStrings.key("settings.clearAll"), role: .destructive) {
                     history.clear()
                 }
-                .disabled(history.entries.isEmpty)
+                .disabled(history.entries.isEmpty || history.isLoading)
             }
 
-            if history.entries.isEmpty {
+            if history.isLoading {
+                ProgressView(AppStrings.key("history.loading"))
+            }
+            if let error = history.lastError {
+                Text(error).foregroundStyle(.orange)
+                Button(AppStrings.key("history.retry")) { history.start() }
+                    .disabled(history.isLoading)
+            }
+            if history.entries.isEmpty && !history.isLoading && history.lastError == nil {
                 ContentUnavailableView(
                     "No transcriptions yet",
                     systemImage: "text.bubble",
@@ -413,6 +465,7 @@ struct SettingsView: View {
             }
         }
         .navigationTitle(AppStrings.key("settings.section.history"))
+        .onAppear { history.start() }
     }
 
     // MARK: - About
@@ -528,6 +581,7 @@ struct SettingsView: View {
 
     private func modelBlocked(_ model: ModelIdentifier) -> Bool {
         model.isWhisperKit && !settings.settings.allowModelDownloads
+            && !modelReadiness.readiness(for: model).state.isReady
     }
 
     private func readinessLabel(for model: ModelIdentifier) -> String {
@@ -539,9 +593,10 @@ struct SettingsView: View {
             return "Downloading…"
         case .ready:
             if let b = r.bytesOnDisk, b > 0 {
-                return "Ready · \(ByteCountFormatter.string(fromByteCount: b, countStyle: .file))"
+                return AppStrings.format(
+                    "engine.files.verified.size", ByteCountFormatter.string(fromByteCount: b, countStyle: .file))
             }
-            return "Ready"
+            return AppStrings.key("engine.files.verified")
         case .queued: return "Queued…"
         case .verifying: return "Verifying…"
         case .cancelled: return "Cancelled"
@@ -593,7 +648,7 @@ struct SettingsView: View {
     }
 
     @State private var launchLoginPending = false
-    @State private var launchLoginError: String?
+    @ObservedObject private var login = LaunchAtLoginService.shared
 
     /// JOE-2290: transactional toggle — pending -> external change -> verify ->
     /// commit settings only on convergence; roll back + persistent error on
@@ -601,25 +656,11 @@ struct SettingsView: View {
     private func setLaunchAtLogin(_ enabled: Bool) {
         guard !launchLoginPending else { return }
         launchLoginPending = true
-        launchLoginError = nil
         Task { @MainActor in
-            let state = await LaunchAtLoginService.shared.apply(enabled: enabled)
-            launchLoginPending = false
-            switch state {
-            case .applied:
-                // Converged with verified system status — commit settings.
-                settings.update { $0.launchAtLogin = enabled }
-                launchLoginError = nil
-            case .rolledBack:
-                // Failed: settings JSON keeps the VERIFIED system state.
-                let status = LaunchAtLoginService.shared.authoritativeStatus()
-                settings.update { $0.launchAtLogin = (status == .registered) }
-                launchLoginError =
-                    LaunchAtLoginService.shared.availabilityMessage()
-                    ?? "Could not change Launch at Login. Open Login Items settings to fix."
-            default:
-                break
+            _ = await login.apply(enabled: enabled) { value in
+                settings.update { $0.launchAtLogin = value }
             }
+            launchLoginPending = false
         }
     }
 
@@ -629,7 +670,7 @@ struct SettingsView: View {
 
     // Hotkey picker bridge
     private enum HotkeyChoice: Hashable {
-        case fn, rightOption, rightCommand, controlSpace, optionSpace
+        case fn, rightOption, rightCommand, rightControl, controlOptionSpace, controlSpace, optionSpace, custom
     }
 
     private var hotkeySelection: Binding<HotkeyChoice> {
@@ -640,8 +681,13 @@ struct SettingsView: View {
                 case .rightOption: return .rightOption
                 case .rightCommand: return .rightCommand
                 case .rightControl:
-                    return .fn
+                    return .rightControl
                 case .none:
+                    if settings.settings.hotkey.keyCode == 49,
+                        settings.settings.hotkey.modifiers == HotkeyConfig.controlOptionSpace.modifiers
+                    {
+                        return .controlOptionSpace
+                    }
                     if settings.settings.hotkey.keyCode == 49,
                         settings.settings.hotkey.modifiers == CGEventFlags.maskControl.rawValue
                     {
@@ -652,20 +698,28 @@ struct SettingsView: View {
                     {
                         return .optionSpace
                     }
-                    return .fn
+                    return .custom
                 }
             },
             set: { choice in
                 let config: HotkeyConfig
                 switch choice {
                 case .fn:
-                    config = .default
+                    config = .fnKey
+                case .controlOptionSpace:
+                    config = .controlOptionSpace
                 case .rightOption:
                     config = .rightOption
                 case .rightCommand:
                     config = HotkeyConfig(
                         keyCode: nil, modifiers: 0, displayName: AppStrings.key("settings.hotkey.rightCommand"),
                         specialKey: .rightCommand)
+                case .rightControl:
+                    config = HotkeyConfig(
+                        keyCode: nil, modifiers: 0,
+                        displayName: AppStrings.key("settings.hotkey.rightControl"), specialKey: .rightControl)
+                case .custom:
+                    return  // Display a saved custom choice without changing it.
                 case .controlSpace:
                     config = HotkeyConfig(
                         keyCode: 49,

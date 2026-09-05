@@ -93,29 +93,44 @@
         }
 
         // Blocker 5 (round 5): verified manifest enumerates all components.
-        func testVerifiedManifestEnumeratesWhisperKitComponents() {
+        func testVerifiedManifestEnumeratesWhisperKitComponents() throws {
             let m = ModelAcquisitionController.makeManifest(for: .whisperTiny, createdAtUptimeNanos: 0)
             let names = Set(m.artifacts.map { $0.name })
-            XCTAssertTrue(names.contains("config.json"))
-            XCTAssertTrue(names.contains("MelSpectrogram.mlmodelc"))
-            XCTAssertTrue(names.contains("AudioEncoder.mlmodelc"))
-            XCTAssertTrue(names.contains("TextDecoder.mlmodelc"))
-            XCTAssertTrue(names.contains("TextDecoderContextPrefill.mlmodelc"))
-            XCTAssertTrue(names.contains("tokenizer.json"))
+            XCTAssertEqual(
+                names,
+                Set([
+                    "config.json", "MelSpectrogram.mlmodelc", "AudioEncoder.mlmodelc",
+                    "TextDecoder.mlmodelc", "TextDecoderContextPrefill.mlmodelc", "tokenizer",
+                ]))
+            XCTAssertEqual(names.count, m.artifacts.count, "manifest must not contain duplicate assets")
+            XCTAssertEqual(
+                Set(m.artifacts.filter { $0.isOptional }.map { $0.name }),
+                Set(["TextDecoderContextPrefill.mlmodelc"]))
+            let tokenizer = try XCTUnwrap(m.artifacts.first { $0.name == "tokenizer" })
+            XCTAssertFalse(tokenizer.isOptional, "the staged tokenizer directory is required")
         }
 
         // REQ-5: explicit history states.
-        func testHistoryStorageStates() async {
+        func testHistoryStorageStates() async throws {
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("zf-xctest-req5-\(UUID().uuidString)", isDirectory: true)
             let file = dir.appendingPathComponent("history.json")
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer {
+                do {
+                    try FileManager.default.removeItem(at: dir)
+                } catch {
+                    XCTFail("temporary history cleanup failed")
+                }
+            }
             let key = HistoryCryptoKey(keyID: "k", material: Data(repeating: 0x11, count: 32))
             let repo = ActorHistoryRepository(fileURL: file, keyProvider: { key })
             await repo.configureEncryption(keyProvider: { key })
-            try? await repo.load()
-            XCTAssertEqual(await repo.storageState, .readyEncrypted)
-            try? FileManager.default.removeItem(at: dir)
+            try await repo.load()
+            let state = await repo.storageState
+            XCTAssertEqual(state, .readyEncrypted)
         }
     }
+#else
+    #error("XCTest requires full Xcode; use swift run ZephyrFlowCoreTests on CommandLineTools-only machines.")
 #endif

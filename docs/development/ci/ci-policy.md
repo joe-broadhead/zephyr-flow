@@ -1,58 +1,319 @@
 # CI Policy (JOE-2291)
 
-Every pull request must pass every gate below. No gate can be skipped by path
-filters; all gates run on every PR and every push to the integration branch.
-A gate that fails blocks merge. Coverage is measured over the **trust
-boundary only** (ZephyrFlowCore) so it cannot be inflated by adding untested
-code elsewhere — adding untested Core code lowers the measured percentage.
+Every pull request must pass every gate below before acceptance. The CI Gates
+job has no path filters and returns failure when a required tool or lane fails.
+**Repository enforcement is separate:** the job must also be configured as a
+required status check. The existing required checks do not yet include Gates;
+changing branch protection requires explicit approval. A passing job is not a
+production release approval.
 
-## Gates (in order, all required)
+## Gates (all required; drift runs last)
 
 1. **XCTest** — `swift test` is the authoritative test target and must pass;
-   on CI (macos-15 with Xcode) `swift test list` must discover the XCTest
-   files (execution enforced — a zero-test list fails CI). The custom CLT
-   runner (`swift run ZephyrFlowCoreTests`) is retained for its distinct
-   purpose (no Xcode required — local CommandLineTools machines cannot run
-   xctest) and is kept in parity: both run in CI.
-2. **Swift 6 strict concurrency** — the app and tests compile with
-   `-Xswiftc -strict-concurrency=complete` (strongest supported setting).
-   NEW warnings fail CI against the pinned baseline
-   `docs/development/ci/strict-concurrency-warnings-baseline.txt`
-   (93 normalized entries at baseline; shrink over time — the ZephyrFlowCore
-   trust boundary is already clean). Regeneration instructions are in the
-   baseline header; regenerating requires a deliberate, reviewed commit.
-3. **Formatting** — `swift format lint --strict --recursive Sources Tests`
-   with warnings treated as failures (config: `.swift-format`).
-4. **Lint** — `bash -n` + `shellcheck` on `Scripts/*.sh`; YAML syntax check
-   on `.github/workflows/*.yml`; markdown is validated by the docs strict
-   build (Material for MkDocs).
-5. **Docs** — `mkdocs build --strict` (broken links, warnings and missing
-   pages fail).
-6. **Version/manifest/link checks** — VERSION must equal
-   `Constants.version`, `Resources/Info.plist` and the `CHANGELOG.md`
-   `## [x.y.z]` heading.
-7. **Drift** — after all gates, `git diff --exit-code` must be clean: no
-   generated artifacts may be left dirty by the build/test/docs steps.
-8. **Trust-boundary coverage** — instrumented CLT run + `llvm-cov` restricted
-   to ZephyrFlowCore: line ≥ 70%, region ≥ 70% (measured baseline
-   82.40% lines / 74.35% regions). The Swift toolchain emits no literal
-   branch data for this target; REGION coverage is the equivalent signal.
-   Thresholds are policy; the required module set (`ZephyrFlowCore`) is
-   fixed by policy and cannot be bypassed — adding untested Core code
-   lowers the measured percentage.
+   `swift test list` must succeed and discover each existing suite. Execution
+   logs must confirm those suites passed. Missing XCTest cannot compile to an
+   empty test target. Most suites test Core contracts. `ProductionAudioTests`
+   exercises in-memory native PCM snapshot/conversion adapters, while
+   `ProductionBoundaryTests` exercises settings/permission reads with injected
+    sources and detached callers, speech callback value/error snapshots, and
+    serialized AX-handle ownership without AX messages. The boundary suite
+    also tests checked process-start
+    conversion and read-only libproc identity queries of its own XCTest process.
+    Neither suite opens a
+   microphone or personal store, requests permissions, or writes to another app.
+   `ProductionEngineTests` exercises the app's WhisperKit engine with a
+   controlled runtime factory and the runtime's exclusive-call owner with a
+   controlled backend: stale/cancelled loads, active-model isolation and
+   cancellation that does not stop native work. No model weights are loaded;
+   this does not verify WhisperKit inference or tokenizer networking.
+   `ProductionOfflineTokenizerTests` parses synthetic local vocabularies and
+   rejects missing/corrupt/mismatched artifacts. It also runs in a separate
+   network-denied process via `Scripts/ci/offline_tokenizer_tests.sh`, with a
+   loopback permission-denial probe and required suite-execution evidence.
+   This bounds the exercised loader paths; it is not a complete app privacy
+   canary or real-model inference qualification. The direct Tokenizers/Hub
+    APIs use the already-resolved swift-transformers **1.1.9** revision.
+    `ProductionPreparationTests` exercises the application preparation
+    coordinator using injected artifact/acquisition closures and held engine
+    actors: consent, verification vs loaded readiness, explicit Apple loading,
+    supersession, retry, quarantine and cancellation before native completion.
+    Capability-failure, fresh/cached language preflight, disk-headroom and
+    onboarding consent-versus-loaded-state checks use injected capability data.
+    Actual Apple Speech checks authorization, the exact requested locale and
+    Local Only support before candidate publication and again before capture;
+    permission prompts remain explicit Setup actions, not engine-load effects.
+    The controller now consumes that coordinator and the environment's engine
+    factories; these tests do not instantiate the full UI controller or perform
+    real acquisition, Speech authorization, capture, or inference.
+    `ProductionAcquisitionTests` uses the production filesystem with private
+    temporary roots, tiny synthetic components and held download closures. It
+    checks cancellation propagation, retained singleflight ownership, retry,
+    consent on joining requests, and generation-bound progress. It does not
+    exercise a real transport or qualify pinned model provenance.
+    `ProductionPasteboardTests` uses unique named AppKit pasteboards with
+    synthetic type/data representations (never the general pasteboard). It
+    exercises shared failure/success restoration, empty/multi-item round trips,
+    duplicate cleanup, ownership changes and snapshot rejection. Posting state
+    is simulated: no keyboard events or target-app writes occur. NSPasteboard
+    has no cross-process conditional-write primitive; these checks do not prove
+    atomic exclusion, provider IPC deadlines, provider allocation bounds, crash
+    recovery or six-app insertion qualification.
+    `ProductionHistoryTests` injects synthetic key providers and temporary
+    history stores into the shared preparation service and actual history view
+    model. It checks disabled-history non-access, key-before-load ordering,
+    cancellation/deadline waiters, retained initialization ownership, controlled
+    read/key failures and retry. No personal history or Keychain item is read or
+    changed; these tests do not qualify reboot/login Keychain availability or
+    secure-session behavior across the full controller.
+    Flow release-gate tests reject missing/zero/malformed style statistics.
+    **The inherited Flow corpus has no Raw cases despite the policy's Raw
+    budget. Its qualification result is INCOMPLETE, not PASS.** The Core runner
+    asserts that rejection as an evaluator regression; passing Core/XCTest is
+    not a passing Flow release gate. The corpus and numeric budgets are not
+    changed by this fix. Reviewed corpus completion and independently verified
+    policy/candidate provenance remain separate acceptance work.
+    `FlowDeadlineTests` holds synthetic backend/configuration actors across
+    caller deadlines and cancellation. Flow's typed request deadline covers
+    routing, configuration, regex and enhanced work; callers do not join a
+    noncooperative child task. One outstanding worker remains owned until its
+    actual return; requests while busy receive an explicit verbatim fallback
+    rather than queue more native work. Deadline fallback preserves the exact
+    input without token scanning (the diagnostic span count is not a census).
+    OS scheduling is not a hard-real-time guarantee, and a stuck worker can
+    retain one request until it finishes. No semantic-quality or device-latency
+    qualification is inferred from these controlled tests.
+    `ProductionSettingsTests` injects in-memory settings persistence and fake
+    ServiceManagement operations into the actual settings/login services. It
+    checks publish-after-acknowledgment, encoding/write rejection, pending
+    admission, authoritative verification, failed/approval states and external
+    compensation after failed settings persistence. It never changes real
+    preferences or login registration. UserDefaults synchronization/read-back
+    is not fsync or a cross-process transaction; power-loss/relaunch durability,
+    real ServiceManagement approval and login behavior remain device work.
+    Startup, app activation and Settings opening explicitly refresh observed
+    login status without mutating registration or persistence. A saved desired
+    value is not presented as proof registration is enabled; all native status
+    variants and external-revocation reconciliation are tested with fake reads.
+    `ProductionFnPreferenceTests` uses only an injected in-memory journal and
+    synthetic preference values. It checks typed property-list round trips,
+    journal-before-mutation, pending-apply crash-state simulation, read-back
+    failure, explicit retry, unknown/legacy records and preservation of a
+    later unrelated value. No global Fn preference, event tap, login item or
+    TCC permission is changed. Legacy present-value journals cannot reconstruct
+    an exact value and remain blocked rather than guessing/removing a key.
+    CFPreferences has no compare-and-swap and synchronization is not an fsync
+    guarantee; real crash/power-loss and supported-macOS qualification remain
+    required. Native tap startup is checked separately from thread creation;
+    this is not full hotkey native-lifecycle or hung-thread qualification.
+    Native sensitivity-reader mapping tests inject role/subrole/enabled replies
+    into the same helper used by target capture/revalidation, AX-write preflight
+    and paste/copy checks. Secure subrole evidence confines an ordinary role;
+    optional-attribute absence is distinguished from IPC/type/read failure,
+    which stays unknown. These tests issue no AX messages or field reads. The
+    synchronous reader is not a bounded IPC/atomic-focus guarantee; live hung
+    targets, same-app field races and the six-app matrix remain unqualified.
+    `ProductionAdmissionTests` runs the actual session actor's admission path
+    with production stages and injected target/history/engine dependencies.
+    Captured sensitivity precedes history initialization; secure/unknown/missing
+    target or disabled history skips that dependency. Preparation starts no
+    recording, reuses one snapshot, and rejects cancellation/key-storage failure.
+    The controller awaits this path before showing its panel, so stage startup
+    does not recapture the app's own UI. These are not whole-controller event,
+    actual AX focus, TCC, microphone, continuously changing sensitivity or
+    device qualification tests. Later validation still applies the restrictive
+    session history/insertion policy.
+    `AxBoundedRunnerTests` uses held synchronous closures and injected scheduling,
+    not actual AX IPC. It checks cancellation before/after worker admission,
+    deadlines rechecked at admission, retained singleflight after timeout,
+    rejection of retries, and late-result isolation. Infinite-loop fixtures are
+    not used. The shared production AX-write lane remains occupied until native
+    completion; cancellation/timeout is not proof a write did not apply. This
+    does not bound preflight/capture AX IPC, make scheduling hard real time,
+    prove native memory bounds, or provide atomic target/clipboard exclusion.
+    `ProductionTargetReadTests` exercises the production target-capture and
+    current-context service with injected app/trust/metadata readers. External
+    metadata reads run on a dedicated bounded lane, not MainActor; timeout or
+    cancellation returns unknown and retains one reader until native completion.
+    Frontmost application/trust is rechecked before publication. Tests hold the
+    synthetic reader while MainActor runs, reject stale/cancelled results and
+    prevent concurrent retries. No real AX messages or target app activation
+    occurs. Native messaging timeout requests are an additional best effort,
+    not a proven OS cancellation guarantee. Full insertion preflight still has
+    AX calls outside this service; live field/window races and all-app deadline
+    qualification remain open. Missing frontmost-app metadata now fails unknown
+    instead of performing an unbounded AX fallback on MainActor.
+    Flow outcome-admission tests reject mismatched status/termination,
+    cancellation/supersession and failed preservation evidence. Only an explicit
+    byte-identical verbatim deadline fallback can take the deadline auto-insert
+    path. Core session tests preserve the returned whitespace/Unicode rather
+    than trimming after Flow and check review-only cancellation/supersession.
+    These tests do not qualify Flow semantic quality or complete the missing
+    Raw release corpus. Session-stage cancellation checks also observe task
+    cancellation after finalization and Flow, not only the control flag.
+    `LongDictationTests` covers the human-selected ten-minute chunking policy's
+    Core primitives: bounded append-only PCM blocks, full sample-range plans,
+    exact overlap word/timing matching and incomplete fallback when alignment
+    is missing/conflicting/ambiguous. Synthetic PCM and timestamps are not
+    real speech/inference or named-hardware memory/latency qualification. These
+    primitives do not, by themselves, qualify the production decoder.
+    `ProductionChunkDecodeTests` injects a runtime into the actual Whisper
+    engine: ordered <=30s windows with 2s overlap, unique original-range
+    accounting, ten-minute prefix retention/excess counts, missing alignment,
+    middle failure, cancellation and the absolute finalization deadline. The
+    deadline cancels the waiter, retains a busy native worker and quarantines
+    its engine; it does not prove native interruption. Final decode requests
+    word timestamps and zero SDK tail clipping; partials remain rolling 15s.
+    Native timestamp snapshots reject invalid/nonfinite ranges before integer
+    conversion. Real model accuracy/alignment, silence seams, languages,
+    hardware memory/latency and recording-limit UI/control need qualification.
+    Core session tests exercise automatic stop via a short injected monotonic
+    budget and the sample-limit stream; both use normal stop/drain/finalize.
+    The panel projects remaining minutes/seconds and the ten-minute notice.
+    The sample cap rejects/counts excess rather than discarding the prefix;
+    OS scheduling/capture shutdown is not hard real time. Incomplete hypotheses
+    reach explicit review with no automatic insertion/history or retry, rather
+    than being replaced by a misleading discarded-text status. Real device,
+    UI accessibility and ten-minute microphone runs remain unqualified.
+    Release tooling tests run with synthetic Mach-O headers and private
+    codesign/ditto/xcrun/spctl doubles. They cover every native-command failure,
+    invalid/missing notary responses, signature/runtime/identity checks, output
+    ownership, post-staple packaging and read-only manual workflow contracts.
+    They establish orchestration only: no real certificate, Keychain, Apple
+    submission, Gatekeeper or signing qualification. Release preflights remain
+    explicitly blocked with no automated tag/publish or ad-hoc fallback. See
+    `Scripts/release/README.md` for the separate operation/acceptance boundaries.
+    Hotkey Core and production value-mapping tests cover conventional modifier-
+    first/key-first release, exact modifier admission, no repeat/repress re-arm,
+    native modifier constants and observed-key-up recovery. They never create
+    or post CGEvents, start an event tap, read keyboard state, or touch settings.
+    The native adapter now advances Core lifecycle after enabled-tap evidence;
+    a two-second elapsed hold alone is no longer a lost-release receipt. Actual
+    keyboard, native thread/restart/late callback, OS shortcut conflicts and
+    ten-minute physical hold behavior remain unqualified.
+    `EngineResultContractTests` rejects missing/zero/mismatched/dropped frame
+    evidence and non-completed terminations despite a success-shaped enum.
+    Reconciliation rejects nonfinite ratios and counts beyond exact integer
+    precision without unsigned underflow or floating-to-integer conversion
+    traps; fractional errors are not rounded down into the tolerance. Core
+    actual-session fixtures verify no Flow/insertion/history on invalid claimed
+    completion. These fixtures now provide explicit synthetic frame counts for
+    their normal path; their old nil accounting did not prove valid admission.
+    Apple Speech currently lacks nonzero frame accounting, so its results stay
+    partial/review-only rather than auto-inserting from placeholder evidence.
+    Empty final callbacks do not qualify earlier partial text. Apple timestamps
+    are monotonic; inference-only duration and detected language are unknown,
+    not fabricated from capture elapsed time or the requested locale. Native
+    Speech accounting, cancellation/cleanup and device qualification remain open.
+    `SpeechFinalizationSignalTests` exercises the actual per-recognition waiter:
+    buffered early callbacks, one terminal winner, deadline, caller cancellation
+    and independent signals. Cancellation never reaches through a mutable actor
+    continuation into a later run. Apple holds a finalization token through unwind,
+    rejects concurrent finalize/reload, stops capture before requesting endAudio,
+    binds meter updates to the recognition token, and observes cancellation after
+    the wait. These are Core signal tests, not native Speech lifecycle tests:
+    outstanding callback/append shutdown ordering, early terminal capture signals,
+    frame evidence and real native cancellation/resource cleanup remain open.
+    Early Apple final/error capture events are explicitly forwarded to the
+    session, so a stopped producer does not leave the UI listening until the
+    human releases or the ten-minute timer fires. The ordinary stop/finalize
+    path assesses retained text as review-only even if an engine later labels
+    its result complete. Core actual-session fixtures cover duplicate/empty
+    terminal updates and stale later partials with exactly one stop/finalize
+    and no Flow/insertion/history. Two production value-mapping XCTest cases
+    check callback forwarding; they do not start Speech, AVAudioEngine or UI.
+    The panel distinguishes early engine stop from the ten-minute limit. This
+    is a producer-reported event, not native thread/resource quiescence proof;
+    real Apple frame accounting and native lifecycle qualification remain open.
+    These bounded checks do **not** establish
+   full coordinator, live capture, insertion or device qualification.
+2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
+   Core evidence on CI and on CommandLineTools-only machines. It is neither
+   a replacement for XCTest nor evidence of equivalent production coverage.
+3. **Strict concurrency** — after a successful clean, the app and tests build
+   with `swift build --build-tests -Xswiftc -strict-concurrency=complete` in
+   **Swift 5 language mode**. `Scripts/ci/check_warnings.py` compares primary
+   diagnostics against `strict-concurrency-warnings-baseline.txt`, retaining
+   repository-relative file identity, diagnostic and occurrence count.
+   New/increased warnings and unrecognized warning formats fail; reductions
+   are allowed. Baseline expansion requires a separate reviewed change.
+   `warning-locations.json` additionally groups primary emissions by diagnostic
+   and line/column within that build, retaining unlocated warnings. This is
+   diagnostic evidence, **not a deduplicated replacement budget**. Coordinates
+   are not stable identities across edits; compiler changes can alter IDs,
+   messages and emission counts. The historical baseline does not identify its
+   exact compiler/build settings. Such mismatches require same-toolchain source
+   review, not automatic baseline regeneration or warning suppression.
+4. **Formatting and strings** — strict recursive Swift formatting plus
+   `Scripts/string_scan.py`. The string scan resolves known catalogue
+   references; it is not complete localization or accessibility acceptance.
+   The multiline-string reflow option retains the `never` policy using the
+   Swift 6.1-compatible object encoding. A small decoder-shape regression and
+   an installed-formatter smoke test check compatibility separately; the former
+   does not execute an older formatter. Strict recursive lint is still required.
+5. **Lint and gate regressions** — recursive Bash/ShellCheck checks,
+   `actionlint .github/workflows/ci.yml` (including Actions context rules),
+   workflow YAML syntax, and `python3 -m unittest discover -s Tests/CI -p 'test_*.py'`.
+   The isolated tool-double tests exercise error handling without running an
+   app or compiler. They are not XCTest, sanitizer or coverage measurements.
+6. **Docs and version** — required `mkdocs build --strict`, writing the site
+   outside the checkout. VERSION must match Constants, Info.plist and the
+   changelog heading. Navigation completeness is a separate review concern.
+7. **Drift** — after coverage/sanitizers, check tracked, staged and untracked
+   non-ignored changes. Run the full gate on a clean candidate checkout;
+   do not discard local work to make this check pass.
+8. **Core coverage** — instrumented XCTest and CLT profiles are merged, and
+   `llvm-cov` reports the Core executable's mapped ZephyrFlowCore sources.
+   Both profiles and a valid report are required. Existing thresholds remain
+   **line ≥ 70%, region ≥ 70%**. Missing/invalid percentages fail.
+   Region coverage is **not branch coverage**; this report does not measure
+   app-adapter coverage or prove every trust-boundary branch is exercised.
+   The checked-in baseline is historical, not a new candidate result.
+9. **ASan and simulated control/recovery** — run XCTest with Address Sanitizer
+   and the deterministic Core stress checks. Preserve full process exit codes,
+   not just selected success markers. Real native cleanup and signed-app
+   kill/relaunch qualification remain separate.
+
+## Running locally and retaining evidence
+
+On a machine with full Xcode selected and required tools installed:
+
+```bash
+python3 -m venv "$TMPDIR/zephyr-gate-venv"
+"$TMPDIR/zephyr-gate-venv/bin/python" -m pip install -r Scripts/ci/requirements.txt
+PATH="$TMPDIR/zephyr-gate-venv/bin:$PATH" bash Scripts/ci_checks.sh
+```
+
+ShellCheck and actionlint must also be installed. Without full Xcode, use the Core runner,
+gate regression tests, formatting and docs commands separately; the full gate
+fails its preflight rather than claiming skipped lanes passed.
+
+`ZF_CI_REPORT_DIR` selects an **external** report directory; otherwise a unique
+temporary directory is created and printed. Retained output includes source
+SHA, tool versions, full command logs, `commands.tsv` (command name and exit
+code), `result.txt` (overall exit and failure count), profiles and coverage.
+CI uploads reports even after setup/gate failure. Cancellation or runner loss
+may prevent artifact upload and must not be interpreted as completed evidence.
 
 ## Tool versions and reproducibility
 
-- Toolchain: Swift 6.x on `macos-15` (GitHub-hosted), matching the local
-  `swift --version` used for the baseline.
-- `Package.resolved` pins WhisperKit; `docs/requirements.txt` pins docs deps.
-- CI cache keys include the package lockfile hash; no floating dependencies.
-- A green baseline report is retained at
-  `docs/development/ci/coverage-baseline-report.txt`.
+- Both macOS jobs select `/Applications/Xcode_16.4.app/Contents/Developer` and
+  require Xcode **16.4 / 16F6** before building; a missing or mismatched toolchain
+  fails rather than falling back to the runner default. CI records actual
+  macOS/Xcode/Swift/formatter versions. This selection does not retroactively
+  qualify the historical warning baseline or establish Swift 6 language-mode
+  acceptance. `macos-15`, Python 3.12 patch and Homebrew ShellCheck/actionlint
+  remain unpinned; this is not a fully reproducible runner image.
+- Python gate packages are installed in a temporary virtual environment, never
+  into Homebrew/system Python. Setup errors are not suppressed. Direct versions
+  in `Scripts/ci/requirements.txt` constrain the shared docs requirements;
+  transitive versions are recorded with `pip freeze`, not fully hash-locked.
+- `Package.resolved` remains unchanged. The gate's final drift check rejects
+  tracked lockfile changes. Full reproducibility and broader coverage policy
+  remain acceptance work; do not relabel historical reports as current proof.
 
 ## Privacy in CI output
 
-- Test/coverage artifacts contain **no transcript bodies, audio, keys or
-  private fixture content** — Core tests assert lengths/equality only and
-  fixtures are synthetic. Artifacts are published for failed AND successful
-  runs (build log, coverage report) with `actions/upload-artifact`.
+- Use synthetic fixtures only. Do not log real transcript bodies, audio,
+  keys, private fixture payloads or credentials. Full failure logs are retained,
+  so assertion messages must also respect this restriction. CI does not load
+  personal app state or require signing credentials for these gates.

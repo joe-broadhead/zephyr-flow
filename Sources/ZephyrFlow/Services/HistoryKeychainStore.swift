@@ -8,8 +8,7 @@ import ZephyrFlowCore
 // permissive accessibility compatible with launch-at-login behavior. Key
 // material never enters logs, metrics, backups, iCloud sync or support
 // bundles.
-@MainActor
-final class HistoryKeychainStore {
+actor HistoryKeychainStore {
     static let shared = HistoryKeychainStore()
 
     private let service = "com.zephyrflow.history-key"

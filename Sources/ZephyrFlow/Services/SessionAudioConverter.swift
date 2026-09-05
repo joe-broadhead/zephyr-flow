@@ -83,15 +83,9 @@ final class SessionAudioConverter {
         else { return nil }
 
         var error: NSError?
-        var consumed = false
+        let input = ConverterInput(buffer: inBuf)
         let status = converter.convert(to: outBuf, error: &error) { _, outStatus in
-            if consumed {
-                outStatus.pointee = .noDataNow
-                return nil
-            }
-            consumed = true
-            outStatus.pointee = .haveData
-            return inBuf
+            input.nextBuffer(status: outStatus)
         }
         guard status != .error, outBuf.frameLength > 0,
             let channel = outBuf.floatChannelData?[0]
@@ -119,8 +113,7 @@ final class SessionAudioConverter {
         var all: [Float] = []
         var iterations = 0
         let maxIterations = 64
-        var sawEndOfStream = false
-        while iterations < maxIterations, !sawEndOfStream {
+        while iterations < maxIterations {
             iterations += 1
             guard
                 let outBuf = AVAudioPCMBuffer(
@@ -137,24 +130,39 @@ final class SessionAudioConverter {
             if status == .error {
                 break
             }
-            // Round-6 NIT 2: the converter's RETURN status is the real
-            // end-of-stream signal (AVAudioConverterOutputStatus.endOfStream).
-            if status == .endOfStream {
-                sawEndOfStream = true
+            // A short or end-of-stream output buffer can contain the final
+            // samples. Account for it BEFORE interpreting terminal status.
+            // Short output alone is not evidence that the converter is drained.
+            if outBuf.frameLength > 0, let channel = outBuf.floatChannelData?[0] {
+                all.append(
+                    contentsOf: UnsafeBufferPointer(
+                        start: channel, count: Int(outBuf.frameLength)))
             }
-            if outBuf.frameLength < capacity / 2 || sawEndOfStream {
-                break
-            }
-            guard outBuf.frameLength > 0,
-                let channel = outBuf.floatChannelData?[0]
-            else {
-                // No data: converter drained — stop.
-                break
-            }
-            all.append(
-                contentsOf: UnsafeBufferPointer(
-                    start: channel, count: Int(outBuf.frameLength)))
+            if status == .endOfStream || outBuf.frameLength == 0 { break }
         }
         return all
+    }
+}
+
+/// A narrowly scoped bridge for AVAudioConverter's Sendable input callback.
+/// The application never mutates the PCM after handing it to this object.
+/// The lock guards one-time delivery to the native converter; the application
+/// neither reads nor mutates the handed-off buffer from another task/thread.
+private final class ConverterInput: @unchecked Sendable {
+    private let lock = NSLock()
+    private var buffer: AVAudioPCMBuffer?
+
+    init(buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+
+    func nextBuffer(status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        lock.withLock {
+            guard let buffer else {
+                status.pointee = .noDataNow
+                return nil
+            }
+            self.buffer = nil
+            status.pointee = .haveData
+            return buffer
+        }
     }
 }

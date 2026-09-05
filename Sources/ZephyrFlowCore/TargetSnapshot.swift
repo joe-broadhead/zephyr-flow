@@ -12,7 +12,10 @@ public struct TargetSnapshot: Sendable, Equatable {
         public let pid: Int32
         /// Bundle identifier, when resolvable.
         public let bundleID: String?
-        /// Audit/process start-time identity to detect PID reuse.
+        /// Process start-time identity to detect PID reuse (not an audit token).
+        /// Legacy field name: production stores libproc epoch time scaled to
+        /// nanoseconds, with microsecond precision. Never use it as uptime or
+        /// a deadline; capture and revalidation must use the same representation.
         public let processStartUptimeNanos: UInt64?
         /// Global window id (CGWindowID, stored as UInt32) atop the AX element, when available.
         public let windowID: UInt32?

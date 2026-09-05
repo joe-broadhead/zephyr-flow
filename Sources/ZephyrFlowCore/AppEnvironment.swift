@@ -67,19 +67,27 @@ public protocol MetricsSinking: Sendable {
 
 /// Settings repository (production = SettingsStore; fakes = static).
 public protocol SettingsRepository: Sendable {
-    var current: AppSettings { get }
+    // Production settings are MainActor-owned. An async requirement permits
+    // that isolation without exposing a synchronous nonisolated witness.
+    var current: AppSettings { get async }
 }
 
-/// History repository (production = HistoryStore; fakes = in-memory).
+/// History repository (production bridges ActorHistoryRepository; fakes are in-memory).
 public protocol HistoryRepository: Sendable {
+    func prepareForSession(saveHistory: Bool) async -> Bool
     func add(_ entry: HistoryEntry) async
+}
+
+extension HistoryRepository {
+    /// In-memory/test repositories need no encrypted disk initialization.
+    public func prepareForSession(saveHistory: Bool) async -> Bool { !Task.isCancelled }
 }
 
 /// Permission/capability provider.
 public protocol PermissionProviding: Sendable {
-    var microphoneGranted: Bool { get }
-    var accessibilityTrusted: Bool { get }
-    var speechRecognitionGranted: Bool { get }
+    var microphoneGranted: Bool { get async }
+    var accessibilityTrusted: Bool { get async }
+    var speechRecognitionGranted: Bool { get async }
 }
 
 /// Target validation service boundary (JOE-2268/2249).
@@ -203,6 +211,7 @@ public struct AppEnvironment: Sendable {
         settings: AppSettings = .default,
         engine: (any WhisperEngineProtocol)? = nil,
         flow: any FlowProcessorProtocol = FlowProcessor.shared,
+        history: (any HistoryRepository)? = nil,
         insertion: (any InsertionServiceProtocol)? = nil,
         target: (any TargetValidationProviding)? = nil
     ) -> AppEnvironment {
@@ -212,7 +221,7 @@ public struct AppEnvironment: Sendable {
             idGenerator: FakeIDGenerator(),
             metrics: RecordingMetricsSink(),
             settings: StaticSettingsRepository(settings),
-            history: InMemoryHistoryRepository(),
+            history: history ?? InMemoryHistoryRepository(),
             permissions: FakePermissionProvider(),
             engines: EngineRegistry(
                 whisper: engine ?? FakeWhisperEngine(),
@@ -225,17 +234,31 @@ public struct AppEnvironment: Sendable {
 
 // MARK: - Engine registry
 
-/// Registry of available transcription engines (content-free identity).
+/// Factories for isolated engine candidates. Production factories must return
+/// a fresh actor per load; reloading a session-owned actor is not permitted.
 public struct EngineRegistry: Sendable {
-    public let whisper: (any WhisperEngineProtocol)?
-    public let appleSpeech: (any WhisperEngineProtocol)?
+    private let makeWhisper: (@Sendable () -> any WhisperEngineProtocol)?
+    private let makeAppleSpeech: (@Sendable () -> any WhisperEngineProtocol)?
 
+    /// Shared instances are useful for deterministic test fixtures only.
     public init(
         whisper: (any WhisperEngineProtocol)?,
         appleSpeech: (any WhisperEngineProtocol)?
     ) {
-        self.whisper = whisper
-        self.appleSpeech = appleSpeech
+        if let whisper { makeWhisper = { whisper } } else { makeWhisper = nil }
+        if let appleSpeech { makeAppleSpeech = { appleSpeech } } else { makeAppleSpeech = nil }
+    }
+
+    public init(
+        makeWhisper: (@Sendable () -> any WhisperEngineProtocol)?,
+        makeAppleSpeech: (@Sendable () -> any WhisperEngineProtocol)?
+    ) {
+        self.makeWhisper = makeWhisper
+        self.makeAppleSpeech = makeAppleSpeech
+    }
+
+    public func makeEngine(for model: ModelIdentifier) -> (any WhisperEngineProtocol)? {
+        model.isWhisperKit ? makeWhisper?() : makeAppleSpeech?()
     }
 }
 
@@ -249,6 +272,7 @@ public actor FakeWhisperEngine: WhisperEngineProtocol {
     public func recordVerifiedDigest(_ digest: String?) { verifiedDigest = digest }
     public private(set) var modelName = "Fake"
     public private(set) var appended: [Float] = []
+    public private(set) var streamStarts = 0
     private var partial: (@Sendable (PartialTranscription) -> Void)?
     public var finalText = "fake transcript"
 
@@ -260,6 +284,7 @@ public actor FakeWhisperEngine: WhisperEngineProtocol {
         language: SupportedLanguage,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws {
+        streamStarts += 1
         partial = onPartial
     }
     public func appendAudio(_ samples: [Float]) async { appended.append(contentsOf: samples) }

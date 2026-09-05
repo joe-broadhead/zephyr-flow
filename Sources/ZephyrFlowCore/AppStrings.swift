@@ -12,10 +12,31 @@ public enum AppStrings {
     /// Semantic keys with translator context. Values are the English (source)
     /// strings; a future Localizable pipeline maps key+locale -> translation.
     public static let catalog: [String: (value: String, context: String)] = [
+        "panel.captureEndedEarly": (
+            "Speech engine stopped before release — review required",
+            "Early terminal capture event; not a ten-minute limit or complete-audio claim"
+        ),
+        "panel.recordingTimeRemaining": (
+            "%d:%02d remaining · 10-minute maximum", "Recording countdown; minutes and seconds"
+        ),
+        "panel.recordingLimitReached": (
+            "10-minute limit reached — finishing admitted audio",
+            "Automatic stop notice; not a complete-transcript claim"
+        ),
+        "panel.incompleteReview": (
+            "Incomplete transcript — review only", "No insertion retry for incomplete audio/alignment"
+        ),
+        "panel.incompleteReviewDetail": (
+            "Audio or chunk alignment is incomplete. Retained text may repeat overlap or omit undecoded audio. Nothing was inserted or saved. Review before explicitly copying.",
+            "Incomplete-result warning; copy still requires confirmation"
+        ),
+        "panel.incompleteNoText": (
+            "Transcript incomplete — no decoded text available", "Incomplete engine result without recoverable text"
+        ),
         // Onboarding (graph steps)
         "onboarding.welcome.title": ("Private dictation,\non your machine", "Onboarding welcome heading"),
         "onboarding.welcome.explanation": (
-            "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default. Steps below ask only for what the selected product path needs.",
+            "Hold your configured shortcut, speak, then release to process the text. New installations use Control + Option + Space; saved shortcuts are preserved. Local Only is on by default.",
             "Onboarding welcome explanation"
         ),
         "onboarding.mic.title": ("Microphone", "Onboarding microphone step heading"),
@@ -50,18 +71,19 @@ public enum AppStrings {
         ),
         "onboarding.ready.title": ("You're set", "Onboarding completion heading"),
         "onboarding.ready.explanation": (
-            "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default.",
+            "Hold your configured shortcut, speak, then release for validated insertion or review. Local Only is on by default.",
             "Onboarding completion explanation"
         ),
         "onboarding.ready.copy.explanation": (
-            "Hold Fn, speak, release — text is copied for you to paste. Local Only is on by default.",
+            "Hold your configured shortcut, speak, then release to review before copying. Local Only is on by default.",
             "Onboarding completion explanation (clipboard mode)"
         ),
         "onboarding.ready.apple.explanation": (
-            "Hold Fn, speak, release — text appears at your cursor.", "Onboarding completion explanation (Apple Speech)"
+            "Hold your configured shortcut, speak, then release for validated insertion or review.",
+            "Onboarding completion explanation (Apple Speech)"
         ),
         "onboarding.ready.apple.copy.explanation": (
-            "Hold Fn, speak, release — text is copied for you to paste.",
+            "Hold your configured shortcut, speak, then release to review before copying.",
             "Onboarding completion explanation (Apple Speech clipboard)"
         ),
         "onboarding.back": ("Back", "Onboarding back button"),
@@ -75,6 +97,16 @@ public enum AppStrings {
         "onboarding.continue": ("Continue", "Onboarding default primary action"),
         "onboarding.granted": ("Granted", "Onboarding status chip"),
         "onboarding.notGranted": ("Not granted yet", "Onboarding status chip"),
+        "onboarding.checklanguage": ("Check selected language", "Explicit no-capture capability/load check"),
+        "onboarding.preparelocal": ("Load verified local model", "Cache hit does not grant download consent"),
+        "onboarding.limited.title": ("Setup is incomplete", "A skipped/failed capability must not appear ready"),
+        "onboarding.limited.continue": (
+            "Continue in limited mode", "Close setup without claiming capabilities are complete"
+        ),
+        "onboarding.limited.explanation": (
+            "Missing permissions or an unloaded engine still limit dictation. You can go back now, or reopen Setup later. No microphone starts before the selected engine is prepared.",
+            "Truthful limited-mode completion page"
+        ),
         // Settings
         "settings.history": ("History", "Settings history section"),
         "settings.clearAll": ("Clear All", "Settings history clear button"),
@@ -92,10 +124,25 @@ public enum AppStrings {
             "Update check privacy explanation"
         ),
         "settings.openSettings": ("Open Settings", "Menu bar settings action"),
-        "settings.hotkey.fn": ("Fn", "Hotkey choice label"),
+        "settings.hotkey.fn": ("Fn / Globe (experimental)", "Hotkey choice label; not the new-install default"),
         "settings.hotkey.rightOption": ("Right Option (⌥)", "Hotkey choice label"),
         "settings.hotkey.rightCommand": ("Right Command (⌘)", "Hotkey choice label"),
         "settings.hotkey.controlSpace": ("Control + Space", "Hotkey choice label"),
+        "settings.hotkey.controlOptionSpace": ("Control + Option + Space", "New-install default shortcut label"),
+        "settings.hotkey.rightControl": ("Right Control", "Existing modifier-only shortcut choice"),
+        "settings.hotkey.custom": ("Saved custom shortcut", "Preserve a previously saved non-preset shortcut"),
+        "settings.qualificationTarget": (
+            "Initial qualification target: macOS 15.x on Apple Silicon, US English, Whisper Tiny or on-device Apple Speech; Notes, TextEdit, Terminal, Safari, VS Code and Slack. Device qualification is still pending. Other combinations, including auto-detection, are experimental.",
+            "Target is human approved; not a production-qualified claim"
+        ),
+        "settings.hotkey.experimentalNote": (
+            "Fn / Globe is experimental. Choosing it alone does not change the system Globe action. A separate experimental override opt-in and verified tap preparation are required; failed recovery blocks Fn until explicitly resolved.",
+            "Fn risk and recovery disclosure"
+        ),
+        "settings.hotkey.conflictNote": (
+            "New installations use Control + Option + Space. Existing saved shortcuts are preserved. Check System Settings → Keyboard → Keyboard Shortcuts and other apps for conflicts; ZephyrFlow cannot guarantee a shortcut is available. Global shortcuts need Accessibility; menu controls remain available.",
+            "Default, conflict and permission guidance"
+        ),
         "settings.hotkey.optionSpace": ("Option + Space", "Hotkey choice label"),
         "settings.axNote": (
             "Requires Accessibility permission. After enabling it, quit and reopen ZephyrFlow.",
@@ -105,6 +152,70 @@ public enum AppStrings {
             "Model downloads are off — Whisper needs a cached model, or pick Apple Speech.", "Model downloads warning"
         ),
         "settings.refreshModelStatus": ("Refresh model status", "Model status refresh button"),
+        "engine.preparation.title": ("Engine preparation", "Selected speech engine preparation section"),
+        "engine.preparation.diskspace": (
+            "Model preparation needs at least 1.5 GB of free space under the current policy. Free space in your home volume, then retry.",
+            "Existing ModelUIPolicy minimum headroom check; not a measured final model size"
+        ),
+        "engine.capability.speechpermission": (
+            "Apple Speech needs Speech Recognition permission. Open Setup to grant it, then retry.",
+            "Preparation cannot prompt; user must explicitly authorize Speech Recognition"
+        ),
+        "engine.capability.microphonepermission": (
+            "Microphone permission is missing. Open Setup to grant it, then retry.", "Microphone preflight failure"
+        ),
+        "engine.capability.language": (
+            "Apple Speech does not support the selected language on this Mac. Choose another language or Whisper.",
+            "No silent language fallback"
+        ),
+        "engine.capability.ondevice": (
+            "Local Only: the selected Apple Speech language is not available on device. Check language packs in System Settings or choose Whisper.",
+            "Never fall back to network when on-device support is missing"
+        ),
+        "engine.capability.unavailable": (
+            "Apple Speech is unavailable. Check Dictation in System Settings, then retry or choose Whisper.",
+            "Recognizer availability preflight; does not claim a specific OS failure cause"
+        ),
+        "engine.preparation.progress": ("Preparing selected engine…", "Indeterminate preparation indicator"),
+        "engine.preparation.cancel": (
+            "Cancel preparation", "Stop waiting for preparation; native work may still finish"
+        ),
+        "engine.preparation.retry": ("Retry preparation", "Explicitly retry failed or cancelled engine preparation"),
+        "engine.preparation.apple": ("Use Apple Speech", "Explicitly select Apple Speech; does not grant permissions"),
+        "engine.preparation.waiting": (
+            "Waiting for the previous model operation to finish…", "Retained native initializer has not completed"
+        ),
+        "engine.preparation.verifying": (
+            "Verifying model files…", "Integrity checks before loading a selected artifact"
+        ),
+        "engine.preparation.acquiring": ("Acquiring model files…", "Model acquisition with no fabricated percentage"),
+        "engine.preparation.loading": ("Loading speech engine…", "Artifact availability alone is not loaded readiness"),
+        "engine.preparation.ready": (
+            "Speech engine loaded", "Current engine candidate is loaded; not a device qualification claim"
+        ),
+        "engine.preparation.consent": (
+            "Model files are missing. Enable Model Downloads or choose Apple Speech.", "No download without consent"
+        ),
+        "engine.preparation.cancelled": (
+            "Preparation cancelled. Native work may still be finishing.",
+            "UI cancellation does not imply native completion"
+        ),
+        "engine.preparation.failed": (
+            "Could not prepare the speech engine. Retry or choose another engine.",
+            "Controlled error without framework payloads"
+        ),
+        "engine.preparation.deferred": (
+            "The selected model will load after this session finishes.", "Active session retains its original engine"
+        ),
+        "engine.preparation.notloaded": ("The selected speech engine is not loaded.", "Preparation admission refused"),
+        "engine.files.verified": ("Verified files", "Artifact integrity status, not engine readiness"),
+        "engine.files.verified.size": (
+            "Verified files · %@", "Verified artifact status; parameter is localized byte count"
+        ),
+        "engine.downloads.disclosure": (
+            "Model downloads are off until enabled. Downloads fetch model files from Hugging Face, never upload audio. Verified files are stored in ~/Library/Application Support/ZephyrFlow/VerifiedModels; the transport may also retain a Hugging Face cache.",
+            "Model network purpose and actual storage locations; separate from Local Only audio policy"
+        ),
         "settings.refreshStatus": ("Refresh status", "Permission status refresh button"),
         "settings.clearHistory": ("Clear local history", "History clear button"),
         "settings.debugNote": (
@@ -166,7 +277,57 @@ public enum AppStrings {
         "settings.toggle.localOnly": ("Local Only mode", "Settings toggle"),
         "settings.toggle.allowDownloads": ("Allow Whisper model downloads", "Settings toggle"),
         "settings.toggle.launchAtLogin": ("Launch at login", "Settings toggle"),
+        "hotkey.fnRecovery.failed": (
+            "Fn preference recovery could not be verified. Fn capture is disabled. Use Reset in Settings to retry; incomplete legacy records need manual review. The override will not reapply this launch.",
+            "Persistent controlled recovery error; never log preference payloads"
+        ),
+        "login.pending": (
+            "Changing login registration…", "External registration pending; do not persist desired setting yet"
+        ),
+        "login.systemstatus": (
+            "Observed system status", "Authoritative ServiceManagement state, separate from saved preference"
+        ),
+        "login.open": ("Open Login Items settings", "Explicit recovery action"),
+        "login.refresh": ("Refresh login status", "Read authoritative state without changing registration"),
+        "login.change.failed": (
+            "Could not change Launch at Login. Check Login Items settings and retry.",
+            "Controlled registration/unregistration error"
+        ),
+        "login.reconciliation.required": (
+            "System registration and saved settings may differ. Review Login Items settings and refresh status before retrying.",
+            "Compensation was not verified or external state differs; not a successful rollback claim"
+        ),
+        "login.unavailable": (
+            "Launch at login is unavailable in this unpackaged development build.", "Missing app registration"
+        ),
+        "login.unsupported": (
+            "Launch at login is not supported in this environment.", "Unsupported ServiceManagement state"
+        ),
+        "login.approval": (
+            "Approval required — open Login Items settings to confirm.", "System user-approval state is not enabled"
+        ),
+        "settings.persistence.failed": (
+            "Settings could not be saved. The previous confirmed settings remain active. Check storage access and retry.",
+            "Persistence failure without private paths or framework payloads; OS preference durability is not guaranteed"
+        ),
         "settings.toggle.saveHistory": ("Save transcription history", "Settings toggle"),
+        "history.preparation.failed": (
+            "Encrypted history is unavailable. Check history storage and Keychain access, then retry, or turn off saving history.",
+            "Controlled initialization failure; never interpolate file paths or framework error payloads"
+        ),
+        "history.loading": ("Loading encrypted history…", "Explicit history access is pending"),
+        "history.retry": ("Retry history access", "Explicit retry after key or storage failure"),
+        "history.delete.failed": (
+            "Could not delete the history entry. Retry after checking storage access.",
+            "Controlled durable delete failure"
+        ),
+        "history.clear.failed": (
+            "Could not clear history. Retry after checking storage access.", "Controlled durable clear failure"
+        ),
+        "history.write.failed": (
+            "A history entry could not be saved. Check storage access before retrying.",
+            "No arbitrary storage error payload in UI"
+        ),
         "settings.toggle.debug": ("Debug logging", "Settings toggle"),
         "panel.help.stopInsert": ("Stop & Insert", "Panel button help"),
         "panel.help.cancelDiscard": ("Cancel (discard)", "Panel button help"),

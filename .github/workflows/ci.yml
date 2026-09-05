@@ -19,9 +19,11 @@ concurrency:
 jobs:
   test-macos:
     name: Test & Build (macOS)
-    # macos-15 ships Swift 6.x required by WhisperKit → swift-jinja 2.x
+    # Keep the app and validation toolchains aligned, not the image's default.
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -31,9 +33,16 @@ jobs:
       - name: Show toolchain
         run: |
           set -euo pipefail
+          test -d "$DEVELOPER_DIR"
           sw_vers
           swift --version
-          xcodebuild -version || true
+          swift format --version
+          xcode_version="$(xcodebuild -version)" || exit 1
+          printf '%s\n' "$xcode_version"
+          if [[ "$xcode_version" != $'Xcode 16.4\nBuild version 16F6' ]]; then
+            echo "Required Xcode 16.4 / 16F6 is not selected" >&2
+            exit 1
+          fi
 
       - name: Core tests
         run: swift run ZephyrFlowCoreTests
@@ -64,48 +73,75 @@ jobs:
     name: Gates (XCTest, strict concurrency, lint, format, docs, version, drift, coverage)
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - name: Show toolchain
+      - name: Prepare gate reports and verify Xcode
         run: |
           set -euo pipefail
-          swift --version
-          xcodebuild -version || true
+          export ZF_CI_REPORT_DIR="$RUNNER_TEMP/zephyr-gates"
+          echo "ZF_CI_REPORT_DIR=$ZF_CI_REPORT_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$ZF_CI_REPORT_DIR"
+          {
+            test -d "$DEVELOPER_DIR"
+            git rev-parse HEAD
+            sw_vers
+            swift --version
+            swift format --version
+            xcode_version="$(xcodebuild -version)" || exit 1
+            printf '%s\n' "$xcode_version"
+            if [[ "$xcode_version" != $'Xcode 16.4\nBuild version 16F6' ]]; then
+              echo "Required Xcode 16.4 / 16F6 is not selected" >&2
+              exit 1
+            fi
+            xcrun --find xctest
+          } 2>&1 | tee "$ZF_CI_REPORT_DIR/toolchain.log"
 
-      - name: Install gate dependencies (ShellCheck, PyYAML)
+      - name: Setup gate Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Install isolated gate dependencies
         run: |
           set -euo pipefail
-          brew install shellcheck || true
-          python3 -m pip install --upgrade pip
-          python3 -m pip install pyyaml || true
+          for tool in shellcheck actionlint; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              brew install "$tool" 2>&1 | tee "$ZF_CI_REPORT_DIR/$tool-install.log"
+            fi
+          done
+          shellcheck --version | tee "$ZF_CI_REPORT_DIR/shellcheck-version.log"
+          actionlint -version | tee "$ZF_CI_REPORT_DIR/actionlint-version.log"
+          python -m venv "$RUNNER_TEMP/zephyr-gate-venv"
+          gate_python="$RUNNER_TEMP/zephyr-gate-venv/bin/python"
+          "$gate_python" -m pip install -r Scripts/ci/requirements.txt \
+            2>&1 | tee "$ZF_CI_REPORT_DIR/dependency-install.log"
+          "$gate_python" -m pip check | tee "$ZF_CI_REPORT_DIR/dependency-check.log"
+          "$gate_python" -m pip freeze > "$ZF_CI_REPORT_DIR/python-packages.txt"
+          echo "$RUNNER_TEMP/zephyr-gate-venv/bin" >> "$GITHUB_PATH"
 
       - name: Run all gates (fail closed)
         run: |
           set -euo pipefail
-          chmod +x Scripts/ci_checks.sh
-          ./Scripts/ci_checks.sh
+          bash Scripts/ci_checks.sh 2>&1 | tee "$ZF_CI_REPORT_DIR/gates.log"
 
-      - name: Upload gate report (success)
-        if: success()
+      - name: Upload gate reports (success or failure)
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ci-gates-report
-          path: /tmp/zephyr-flow-coverage-baseline-report.txt
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Upload gate report (failure)
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ci-gates-failure-log
           path: |
-            /tmp/zephyr-flow-coverage-baseline-report.txt
-          if-no-files-found: ignore
+            ${{ runner.temp }}/zephyr-gates/*.log
+            ${{ runner.temp }}/zephyr-gates/*.txt
+            ${{ runner.temp }}/zephyr-gates/*.tsv
+            ${{ runner.temp }}/zephyr-gates/*.json
+            ${{ runner.temp }}/zephyr-gates/coverage.*/
+          if-no-files-found: error
           retention-days: 30
 
 

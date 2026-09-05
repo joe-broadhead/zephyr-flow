@@ -6,11 +6,15 @@ public struct PartialTranscription: Sendable, Equatable {
     public let text: String
     public let isFinal: Bool
     public let timestamp: Date
+    /// Producer-reported terminal capture event, not proof of complete audio
+    /// or native resource quiescence. The session must stop and assess/review.
+    public let captureEnded: Bool
 
-    public init(text: String, isFinal: Bool = false, timestamp: Date = Date()) {
+    public init(text: String, isFinal: Bool = false, timestamp: Date = Date(), captureEnded: Bool = false) {
         self.text = text
         self.isFinal = isFinal
         self.timestamp = timestamp
+        self.captureEnded = captureEnded
     }
 }
 
@@ -75,11 +79,22 @@ public struct EngineFrameAccounting: Sendable, Equatable {
         converterRatio: Double,
         roundingToleranceSamples: UInt64
     ) -> Bool {
-        guard capturedSourceSamples > 0 || deliveredEngineSamples > 0 else { return false }
+        guard capturedSourceSamples > 0, deliveredEngineSamples > 0,
+            droppedSourceSamples <= capturedSourceSamples,
+            converterRatio.isFinite, converterRatio > 0
+        else { return false }
         guard deliveredEngineSamples == decodedEngineSamples else { return false }
-        let expected = Double(capturedSourceSamples &- droppedSourceSamples) * converterRatio
-        let diff = UInt64(abs(expected - Double(deliveredEngineSamples)))
-        return diff <= roundingToleranceSamples
+        // Counts beyond exact Double integer precision cannot support a
+        // rounding-tolerance proof. They are far above admitted session limits.
+        let exactIntegerLimit: UInt64 = (1 << 53) - 1
+        guard capturedSourceSamples <= exactIntegerLimit, deliveredEngineSamples <= exactIntegerLimit,
+            roundingToleranceSamples <= exactIntegerLimit
+        else { return false }
+        let expected = Double(capturedSourceSamples - droppedSourceSamples) * converterRatio
+        guard expected.isFinite, expected >= 0, expected <= Double(exactIntegerLimit) else { return false }
+        // Compare without truncating fractional differences or converting
+        // NaN/infinity/out-of-range Double into UInt64 (which would trap).
+        return abs(expected - Double(deliveredEngineSamples)) <= Double(roundingToleranceSamples)
     }
 }
 
@@ -138,9 +153,36 @@ public struct EngineResult: Sendable, Equatable {
 
     /// Complete results require reconciled frame evidence (conservative).
     public var isComplete: Bool {
-        guard completeness == .complete else { return false }
-        guard let accounting = frameAccounting else { return false }
+        guard completeness == .complete, termination == .completed,
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            let accounting = frameAccounting, accounting.droppedSourceSamples == 0
+        else { return false }
+        guard
+            !warnings.contains(where: { warning in
+                switch warning {
+                case .partialFallback, .shortAudioFallback, .deadlineExceeded, .truncation, .captureDegraded:
+                    return true
+                case .lowConfidence, .engineFallback: return false
+                }
+            })
+        else { return false }
         return accounting.reconciled(converterRatio: 1.0, roundingToleranceSamples: 64)
+    }
+
+    /// Session admission cannot trust a success-shaped enum alone. Preserve
+    /// text and raw evidence for review, never invent counts or a final event.
+    public func requiringCompletionEvidence(captureEndedEarly: Bool = false) -> EngineResult {
+        guard completeness == .complete, captureEndedEarly || !isComplete else { return self }
+        return EngineResult(
+            text: text, completeness: .partial, frameAccounting: frameAccounting,
+            engine: engine, languageRequested: languageRequested, languageDetected: languageDetected,
+            confidence: confidence, confidenceSource: confidenceSource,
+            startedAtUptimeNanos: startedAtUptimeNanos, endedAtUptimeNanos: endedAtUptimeNanos,
+            inferenceDurationNanos: inferenceDurationNanos,
+            warnings: warnings.contains(.captureDegraded) ? warnings : warnings + [.captureDegraded],
+            fallbackReason: captureEndedEarly
+                ? "engine capture ended before release; review required"
+                : "completion evidence missing or inconsistent; review required", termination: termination)
     }
 
     /// Diagnostics serialization EXCLUDES transcript content by default.
@@ -367,6 +409,21 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
         case rightControl
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case keyCode, modifiers, displayName, specialKey, experimentalFnOverride
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        keyCode = try values.decodeIfPresent(UInt16.self, forKey: .keyCode)
+        modifiers = try values.decode(UInt.self, forKey: .modifiers)
+        displayName = try values.decode(String.self, forKey: .displayName)
+        specialKey = try values.decodeIfPresent(SpecialHotkey.self, forKey: .specialKey)
+        // Older saved shortcuts predate the override toggle. Preserve their
+        // binding, never infer consent or replace them with the new default.
+        experimentalFnOverride = try values.decodeIfPresent(Bool.self, forKey: .experimentalFnOverride) ?? false
+    }
+
     public init(
         keyCode: UInt16?, modifiers: UInt, displayName: String, specialKey: SpecialHotkey?,
         experimentalFnOverride: Bool = false
@@ -378,14 +435,15 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
         self.experimentalFnOverride = experimentalFnOverride
     }
 
-    /// Fn / Globe hold-to-talk (Wispr Flow style). Requires Accessibility.
-    /// Right Option and Control+Space are available in Settings as alternatives.
-    public static let `default` = HotkeyConfig(
-        keyCode: nil,
-        modifiers: 0,
-        displayName: "Fn",
-        specialKey: .fn
-    )
+    /// Human-selected new-install default (JOE-2285). Saved configurations are
+    /// decoded unchanged; selecting this combo never enables the Fn override.
+    public static let `default` = controlOptionSpace
+
+    public static let controlOptionSpace = HotkeyConfig(
+        keyCode: 49,
+        modifiers: (1 << 18) | (1 << 19),
+        displayName: "Control + Option + Space",
+        specialKey: nil)
 
     public static let controlSpace = HotkeyConfig(
         keyCode: 49,  // space
@@ -439,7 +497,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var launchAtLogin: Bool
     public var listeningMode: ListeningMode
     public var hasCompletedOnboarding: Bool
-    /// When false, dictations are not written to HistoryStore.
+    /// When false, dictations are not written to the history repository.
     public var saveHistory: Bool
     /// Verbose hotkey/engine diagnostics written to the local log file.
     public var debugLogging: Bool

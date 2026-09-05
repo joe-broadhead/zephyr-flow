@@ -9,6 +9,8 @@ import ZephyrFlowCore
 struct OnboardingView: View {
     @ObservedObject private var privacy = PrivacyService.shared
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var controller = DictationController.shared
+    @ObservedObject private var modelReadiness = ModelReadinessStore.shared
     var onFinished: () -> Void
 
     @State private var steps: [OnboardingStep] = []
@@ -16,6 +18,23 @@ struct OnboardingView: View {
     @State private var isRequesting = false
     @State private var completed: Set<OnboardingCapability> = []
     @State private var skipNote: String?
+    @State private var actionTask: Task<Void, Never>?
+    @State private var actionGeneration = UUID()
+
+    private var readiness: OnboardingReadinessSnapshot {
+        .init(
+            microphone: privacy.status.microphone, speech: privacy.status.speechRecognition,
+            accessibility: privacy.status.accessibility, downloadConsent: settings.settings.allowModelDownloads,
+            engineLoaded: controller.isSelectedEnginePrepared)
+    }
+
+    private var currentCapabilities: Set<OnboardingCapability> {
+        Set(completed.filter { readiness.satisfies($0) })
+    }
+
+    private var pathReady: Bool {
+        CapabilityGraph.isComplete(for: productPath, completed: currentCapabilities.union([.localOnlyImplications]))
+    }
 
     private var current: OnboardingStep? {
         index >= 0 && index < steps.count ? steps[index] : nil
@@ -53,15 +72,17 @@ struct OnboardingView: View {
 
                 Spacer(minLength: 12)
 
-                stepContent
-                    .padding(.horizontal, 36)
-                    .transition(
-                        .asymmetric(
-                            insertion: .move(edge: .trailing).combined(with: .opacity),
-                            removal: .move(edge: .leading).combined(with: .opacity)
+                ScrollView {
+                    stepContent
+                        .padding(.horizontal, 36)
+                        .transition(
+                            .asymmetric(
+                                insertion: .move(edge: .trailing).combined(with: .opacity),
+                                removal: .move(edge: .leading).combined(with: .opacity)
+                            )
                         )
-                    )
-                    .id(index)
+                        .id(index)
+                }
 
                 Spacer(minLength: 12)
 
@@ -73,8 +94,10 @@ struct OnboardingView: View {
         .zephyrDarkChrome()
         .onAppear {
             privacy.refresh()
+            modelReadiness.refreshAll()
             rebuildSteps()
         }
+        .onDisappear { cancelPendingAction() }
         .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
             privacy.refresh()
             autoAdvanceIfGranted()
@@ -90,7 +113,7 @@ struct OnboardingView: View {
                 id: "welcome", capability: .localOnlyImplications,
                 title: AppStrings.key("onboarding.welcome.title"),
                 explanation:
-                    "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default. Steps below ask only for what the selected product path needs.",
+                    "Hold your configured shortcut, speak, then release to process the text. New installations use Control + Option + Space; saved shortcuts are preserved. Local Only is on by default.",
                 requiresSystemPrompt: false)
         ]
         all.append(contentsOf: CapabilityGraph.steps(for: productPath))
@@ -108,24 +131,16 @@ struct OnboardingView: View {
     /// Only the missing delta is requested; already-granted capabilities are
     /// skipped WITHOUT hiding required system switches.
     private func advancePastGrantedSteps() {
-        while let s = current, s.id != "welcome", stepSatisfied(s) {
-            if s.capability != .localOnlyImplications || s.id != "ready" {
-                completed.insert(s.capability)
-            }
+        // Skip granted permission steps, never an unread disclosure, a model
+        // preparation action, a language check or the final status page.
+        while let s = current, s.requiresSystemPrompt, stepSatisfied(s) {
+            completed.insert(s.capability)
             index += 1
         }
     }
 
     private func stepSatisfied(_ s: OnboardingStep) -> Bool {
-        switch s.capability {
-        case .microphone: return privacy.status.microphone
-        case .speechRecognition: return privacy.status.speechRecognition
-        case .accessibility: return privacy.status.accessibility
-        case .modelAcquisition, .networkModelDownload:
-            return settings.settings.allowModelDownloads
-        default:
-            return true  // informational steps
-        }
+        readiness.satisfies(s.capability)
     }
 
     private func icon(for capability: OnboardingCapability) -> String {
@@ -182,22 +197,61 @@ struct OnboardingView: View {
             }
 
             VStack(spacing: 10) {
-                Text(current.map { AppStrings.key($0.titleKey) } ?? "")
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
-                    .foregroundStyle(ZephyrTheme.textPrimary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    current?.id == "ready" && !pathReady
+                        ? AppStrings.key("onboarding.limited.title")
+                        : current.map { AppStrings.key($0.titleKey) } ?? ""
+                )
+                .font(.system(size: 26, weight: .bold, design: .rounded))
+                .foregroundStyle(ZephyrTheme.textPrimary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
 
-                Text(current.map { AppStrings.key($0.explanationKey) } ?? "")
-                    .font(.system(size: 14, weight: .regular, design: .rounded))
-                    .foregroundStyle(ZephyrTheme.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 400)
-                    .fixedSize(horizontal: false, vertical: true)
+                Text(
+                    current?.id == "ready" && !pathReady
+                        ? AppStrings.key("onboarding.limited.explanation")
+                        : current.map { AppStrings.key($0.explanationKey) } ?? ""
+                )
+                .font(.system(size: 14, weight: .regular, design: .rounded))
+                .foregroundStyle(ZephyrTheme.textSecondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 400)
+                .fixedSize(horizontal: false, vertical: true)
             }
 
             if let current, current.id != "welcome", current.id != "ready" {
                 statusChip(for: current.capability)
+            }
+
+            if current?.capability == .modelAcquisition {
+                Picker(
+                    AppStrings.key("settings.section.model"),
+                    selection: Binding(
+                        get: { settings.settings.preferredModel },
+                        set: { model in
+                            cancelPendingAction()
+                            controller.cancelModelPreparation()
+                            settings.update { $0.preferredModel = model }
+                        })
+                ) {
+                    ForEach(ModelIdentifier.allCases.filter(\.isWhisperKit)) { model in
+                        Text(model.displayName).tag(model)
+                    }
+                }
+                Text(settings.settings.preferredModel.detail).font(.caption)
+                Text(AppStrings.key("engine.downloads.disclosure")).font(.caption2)
+                    .foregroundStyle(ZephyrTheme.textSecondary)
+                Button(AppStrings.key("engine.preparation.apple")) { useAppleSpeech() }
+            }
+            if current?.capability == .modelAcquisition || current?.capability == .languageAvailability {
+                if let message = controller.statusMessage { Text(message).font(.caption) }
+                if isRequesting {
+                    ProgressView(AppStrings.key("engine.preparation.progress"))
+                    Button(AppStrings.key("engine.preparation.cancel")) {
+                        cancelPendingAction()
+                        controller.cancelModelPreparation()
+                    }
+                }
             }
 
             if let skipNote {
@@ -211,9 +265,14 @@ struct OnboardingView: View {
     }
 
     private func statusChip(for capability: OnboardingCapability) -> some View {
-        let satisfied = stepSatisfiedForCapability(capability)
+        let satisfied = readiness.satisfies(capability)
+        let isEngine = capability == .modelAcquisition || capability == .languageAvailability
+        let label =
+            isEngine
+            ? AppStrings.key(satisfied ? "engine.preparation.ready" : "engine.preparation.notloaded")
+            : AppStrings.key(satisfied ? "onboarding.granted" : "onboarding.notGranted")
         return Label(
-            satisfied ? AppStrings.key("onboarding.granted") : AppStrings.key("onboarding.notGranted"),
+            label,
             systemImage: satisfied ? "checkmark.seal.fill" : "circle.dashed"
         )
         .font(.system(size: 12, weight: .semibold, design: .rounded))
@@ -221,18 +280,7 @@ struct OnboardingView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .background(Capsule().fill(ZephyrTheme.bgCard.opacity(0.8)))
-        .accessibilityLabel(satisfied ? AppStrings.key("onboarding.granted") : AppStrings.key("onboarding.notGranted"))
-    }
-
-    private func stepSatisfiedForCapability(_ capability: OnboardingCapability) -> Bool {
-        switch capability {
-        case .microphone: return privacy.status.microphone
-        case .speechRecognition: return privacy.status.speechRecognition
-        case .accessibility: return privacy.status.accessibility
-        case .modelAcquisition, .networkModelDownload:
-            return settings.settings.allowModelDownloads
-        default: return true
-        }
+        .accessibilityLabel(label)
     }
 
     private var footer: some View {
@@ -250,12 +298,14 @@ struct OnboardingView: View {
                     .buttonStyle(ZephyrPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             } else if current?.id == "ready" {
-                Button(AppStrings.key("onboarding.startUsing")) { finish() }
+                Button(AppStrings.key(pathReady ? "onboarding.startUsing" : "onboarding.limited.continue")) { finish() }
                     .buttonStyle(ZephyrPrimaryButtonStyle())
                     .keyboardShortcut(.defaultAction)
             } else if let current {
                 Button(primaryActionTitle(for: current)) {
-                    Task { await runPrimaryAction(current) }
+                    let id = UUID()
+                    actionGeneration = id
+                    actionTask = Task { await runPrimaryAction(current, generation: id) }
                 }
                 .buttonStyle(ZephyrPrimaryButtonStyle())
                 .keyboardShortcut(.defaultAction)
@@ -263,6 +313,7 @@ struct OnboardingView: View {
 
                 if current.skippable {
                     Button(AppStrings.key("onboarding.skip")) {
+                        cancelPendingAction()
                         let skip = CapabilityGraph.skipExplanation(for: productPath, step: current)
                         skipNote = skip.limitations
                         completed.remove(current.capability)
@@ -279,16 +330,30 @@ struct OnboardingView: View {
         case .microphone: return AppStrings.key("onboarding.allowMic")
         case .speechRecognition: return AppStrings.key("onboarding.allowSpeech")
         case .accessibility: return AppStrings.key("onboarding.enableAX")
-        case .modelAcquisition: return AppStrings.key("onboarding.downloadModel")
+        case .modelAcquisition:
+            if controller.isSelectedEnginePrepared { return AppStrings.key("onboarding.continue") }
+            if modelReadiness.readiness(for: settings.settings.preferredModel).state.isReady {
+                return AppStrings.key("onboarding.preparelocal")
+            }
+            return AppStrings.key(
+                settings.settings.allowModelDownloads ? "engine.preparation.retry" : "onboarding.downloadModel")
+        case .languageAvailability: return AppStrings.key("onboarding.checklanguage")
         default: return AppStrings.key("onboarding.continue")
         }
     }
 
     // MARK: - Actions
 
-    private func runPrimaryAction(_ step: OnboardingStep) async {
+    private func runPrimaryAction(_ step: OnboardingStep, generation: UUID) async {
+        guard !Task.isCancelled, generation == actionGeneration, current?.id == step.id else { return }
+        let selectedModel = settings.settings.preferredModel
         isRequesting = true
-        defer { isRequesting = false }
+        defer {
+            if generation == actionGeneration {
+                isRequesting = false
+                actionTask = nil
+            }
+        }
         privacy.refresh()
 
         switch step.capability {
@@ -305,22 +370,32 @@ struct OnboardingView: View {
             if !privacy.requestAccessibility() {
                 privacy.openAccessibilitySettings()
             }
-        case .modelAcquisition, .networkModelDownload:
+        case .modelAcquisition:
             // Explicit download consent (independent of Local Only audio).
+            if !controller.isSelectedEnginePrepared {
+                if !modelReadiness.readiness(for: selectedModel).state.isReady {
+                    settings.update { $0.allowModelDownloads = true }
+                }
+                _ = await controller.prepareSelectedEngine(retry: true)
+            }
+        case .networkModelDownload:
             settings.update { $0.allowModelDownloads = true }
+        case .languageAvailability:
+            _ = await controller.prepareSelectedEngine(retry: true)
         default:
             break
         }
         privacy.refresh()
+        guard !Task.isCancelled, generation == actionGeneration, current?.id == step.id,
+            settings.settings.preferredModel == selectedModel
+        else { return }
 
         // Only advance when the step's requirement is satisfied (or it is an
         // informational step). Otherwise the user stays with an actionable
         // limited mode — never a dead end.
-        if stepSatisfied(step) || !step.requiresSystemPrompt {
-            if !step.requiresSystemPrompt || stepSatisfied(step) {
-                completed.insert(step.capability)
-                withAnimation(ZephyrTheme.spring) { goForward() }
-            }
+        if stepSatisfied(step) {
+            completed.insert(step.capability)
+            withAnimation(ZephyrTheme.spring) { goForward() }
         }
     }
 
@@ -328,6 +403,7 @@ struct OnboardingView: View {
         withAnimation(ZephyrTheme.spring) {
             if index + 1 < steps.count {
                 index += 1
+                advancePastGrantedSteps()
             } else {
                 finish()
             }
@@ -335,6 +411,7 @@ struct OnboardingView: View {
     }
 
     private func goBack() {
+        cancelPendingAction()
         skipNote = nil
         withAnimation(ZephyrTheme.spring) {
             if index > 0 { index -= 1 }
@@ -344,24 +421,38 @@ struct OnboardingView: View {
     private func autoAdvanceIfGranted() {
         guard let s = current, s.requiresSystemPrompt else { return }
         if stepSatisfied(s), !isRequesting {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                if stepSatisfied(s) {
-                    completed.insert(s.capability)
-                    goForward()
-                }
-            }
+            completed.insert(s.capability)
+            goForward()
         }
     }
 
     /// Persist completed capabilities (not merely a boolean); the onboarding
     /// boolean is derived from graph completeness for the current path.
     private func finish() {
+        cancelPendingAction()
+        let confirmed = currentCapabilities.union([.localOnlyImplications])
         settings.update {
-            $0.completedCapabilities = Array(completed.map(\.rawValue)).sorted()
+            $0.completedCapabilities = Array(confirmed.map(\.rawValue)).sorted()
             $0.hasCompletedOnboarding = CapabilityGraph.isComplete(
-                for: productPath, completed: completed)
+                for: productPath, completed: confirmed)
         }
         onFinished()
         WindowRouter.closeOnboarding()
+    }
+
+    private func cancelPendingAction() {
+        actionGeneration = UUID()
+        actionTask?.cancel()
+        actionTask = nil
+        isRequesting = false
+    }
+
+    private func useAppleSpeech() {
+        cancelPendingAction()
+        controller.cancelModelPreparation()
+        settings.update { $0.preferredModel = .appleSpeech }
+        rebuildSteps()
+        index = 1
+        advancePastGrantedSteps()
     }
 }

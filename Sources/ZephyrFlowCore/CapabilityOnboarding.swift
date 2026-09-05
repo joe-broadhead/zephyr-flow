@@ -21,6 +21,36 @@ public enum OnboardingCapability: String, Codable, CaseIterable, Sendable, Equat
     case localOnlyImplications
 }
 
+/// Current capabilities, not historical consent or a persisted "done" flag.
+/// The UI's engineLoaded value comes only from current loaded/preflighted
+/// preparation. Permission checks here never trigger system prompts.
+public struct OnboardingReadinessSnapshot: Sendable {
+    public let microphone: Bool
+    public let speech: Bool
+    public let accessibility: Bool
+    public let downloadConsent: Bool
+    public let engineLoaded: Bool
+
+    public init(microphone: Bool, speech: Bool, accessibility: Bool, downloadConsent: Bool, engineLoaded: Bool) {
+        self.microphone = microphone
+        self.speech = speech
+        self.accessibility = accessibility
+        self.downloadConsent = downloadConsent
+        self.engineLoaded = engineLoaded
+    }
+
+    public func satisfies(_ capability: OnboardingCapability) -> Bool {
+        switch capability {
+        case .microphone: return microphone
+        case .speechRecognition: return speech
+        case .accessibility: return accessibility
+        case .networkModelDownload: return downloadConsent
+        case .modelAcquisition, .languageAvailability: return engineLoaded
+        default: return true  // disclosure acknowledgment is tracked separately
+        }
+    }
+}
+
 // MARK: - Steps
 
 public struct OnboardingStep: Sendable, Equatable {
@@ -108,7 +138,8 @@ public enum CapabilityGraph: Sendable {
                 OnboardingStep(
                     id: "ready", capability: .localOnlyImplications,
                     title: "You're set",
-                    explanation: "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default.",
+                    explanation:
+                        "Hold your configured shortcut, speak, then release for validated insertion or review. Local Only is on by default.",
                     requiresSystemPrompt: false),
             ]
         case .whisperKitClipboardOnly:
@@ -136,7 +167,7 @@ public enum CapabilityGraph: Sendable {
                     id: "ready", capability: .localOnlyImplications,
                     title: "You're set",
                     explanation:
-                        "Hold Fn, speak, release — text is copied for you to paste. Local Only is on by default.",
+                        "Hold your configured shortcut, speak, then release to review before copying. Local Only is on by default.",
                     requiresSystemPrompt: false),
             ]
         case .appleSpeechAutomatic:
@@ -168,7 +199,8 @@ public enum CapabilityGraph: Sendable {
                 OnboardingStep(
                     id: "ready", capability: .localOnlyImplications,
                     title: "You're set",
-                    explanation: "Hold Fn, speak, release — text appears at your cursor.",
+                    explanation:
+                        "Hold your configured shortcut, speak, then release for validated insertion or review.",
                     requiresSystemPrompt: false),
             ]
         case .appleSpeechClipboardOnly:
@@ -185,6 +217,11 @@ public enum CapabilityGraph: Sendable {
                         "Apple Speech uses the on-device recognizer. With Local Only on, audio never leaves your Mac.",
                     requiresSystemPrompt: true),
                 OnboardingStep(
+                    id: "lang", capability: .languageAvailability,
+                    title: "Language pack",
+                    explanation: "Check the selected Apple Speech language and on-device availability before capture.",
+                    requiresSystemPrompt: false),
+                OnboardingStep(
                     id: "clipboard", capability: .clipboardDisclosure,
                     title: "Clipboard mode",
                     explanation:
@@ -193,7 +230,7 @@ public enum CapabilityGraph: Sendable {
                 OnboardingStep(
                     id: "ready", capability: .localOnlyImplications,
                     title: "You're set",
-                    explanation: "Hold Fn, speak, release — text is copied for you to paste.",
+                    explanation: "Hold your configured shortcut, speak, then release to review before copying.",
                     requiresSystemPrompt: false),
             ]
         }

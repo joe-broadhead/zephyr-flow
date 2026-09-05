@@ -3,6 +3,7 @@ import SwiftUI
 import ZephyrFlowCore
 
 /// Borderless, non-activating floating panel that can appear over other apps.
+@MainActor
 final class FloatingPanelController {
     static let shared = FloatingPanelController()
 
@@ -200,7 +201,10 @@ struct FloatingPanelRoot: View {
                     reviewDetail: controller.reviewDetail,
                     reviewAllowsRetry: controller.reviewAllowsRetry,
                     reviewWarnsCopy: controller.reviewWarnsCopy,
-                    reviewAllowsSettings: controller.reviewAllowsSettings
+                    reviewAllowsSettings: controller.reviewAllowsSettings,
+                    recordingSecondsRemaining: controller.recordingSecondsRemaining,
+                    recordingLimitReached: controller.recordingLimitReached,
+                    captureEndedEarly: controller.captureEndedEarly
                 )
                 .transition(.scale(scale: 0.88).combined(with: .opacity))
             }
@@ -302,6 +306,9 @@ struct FloatingPanelView: View {
     let reviewAllowsRetry: Bool
     let reviewWarnsCopy: Bool
     let reviewAllowsSettings: Bool
+    let recordingSecondsRemaining: Int?
+    let recordingLimitReached: Bool
+    let captureEndedEarly: Bool
 
     init(
         state: PanelState, text: String, levels: [Float], activeStyle: FlowStyle,
@@ -310,7 +317,9 @@ struct FloatingPanelView: View {
         onReviewRetry: @escaping () -> Void, onReviewDiscard: @escaping () -> Void,
         onReviewSettings: @escaping () -> Void,
         reviewTitle: String?, reviewDetail: String?,
-        reviewAllowsRetry: Bool, reviewWarnsCopy: Bool, reviewAllowsSettings: Bool
+        reviewAllowsRetry: Bool, reviewWarnsCopy: Bool, reviewAllowsSettings: Bool,
+        recordingSecondsRemaining: Int? = nil, recordingLimitReached: Bool = false,
+        captureEndedEarly: Bool = false
     ) {
         self.state = state
         self.text = text
@@ -328,6 +337,9 @@ struct FloatingPanelView: View {
         self.reviewAllowsRetry = reviewAllowsRetry
         self.reviewWarnsCopy = reviewWarnsCopy
         self.reviewAllowsSettings = reviewAllowsSettings
+        self.recordingSecondsRemaining = recordingSecondsRemaining
+        self.recordingLimitReached = recordingLimitReached
+        self.captureEndedEarly = captureEndedEarly
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -343,6 +355,18 @@ struct FloatingPanelView: View {
 
     var body: some View {
         VStack(spacing: 12) {
+            if captureEndedEarly {
+                Text(AppStrings.key("panel.captureEndedEarly"))
+                    .font(.caption).foregroundStyle(ZephyrTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if recordingLimitReached {
+                Text(AppStrings.key("panel.recordingLimitReached"))
+                    .font(.caption).foregroundStyle(ZephyrTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if state == .listening, let seconds = recordingSecondsRemaining {
+                Text(AppStrings.format("panel.recordingTimeRemaining", seconds / 60, seconds % 60))
+                    .font(.caption.monospacedDigit()).foregroundStyle(ZephyrTheme.textSecondary)
+            }
             HStack(spacing: 14) {
                 orb
                 if showText { textBlock }

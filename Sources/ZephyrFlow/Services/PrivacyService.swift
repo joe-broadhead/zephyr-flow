@@ -75,7 +75,10 @@ final class PrivacyService: ObservableObject {
     /// Prompts the user with the system accessibility trust dialog when possible.
     @discardableResult
     func requestAccessibility() -> Bool {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        // Immutable spelling of the Accessibility option key. The SDK imports
+        // kAXTrustedCheckOptionPrompt as a mutable C global; no global pointer
+        // needs to cross isolation to construct this request dictionary.
+        let options = ["AXTrustedCheckOptionPrompt": true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
         refresh()
         return trusted

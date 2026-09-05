@@ -27,6 +27,9 @@ final class DictationController: ObservableObject {
     @Published var modelDownloadFraction: Double?
     @Published var activeFlowStyle: FlowStyle = .clean
     @Published var engineLabel: String = "—"
+    @Published private(set) var recordingSecondsRemaining: Int?
+    @Published private(set) var recordingLimitReached = false
+    @Published private(set) var captureEndedEarly = false
 
     // JOE-2243: dependency-injected environment.
     private let environment: AppEnvironment
@@ -34,15 +37,18 @@ final class DictationController: ObservableObject {
     private let settingsStore = SettingsStore.shared
     private let privacy = PrivacyService.shared
     private let hotkey = HotkeyService.shared
-    private let modelReadiness = ModelReadinessStore.shared
     private let focus = FocusStore.shared
 
-    private var appleEngine = AppleSpeechEngine()
-    private var whisperEngine = WhisperKitEngine()
-    private var activeEngine: any WhisperEngineProtocol
-    private var usingAppleEngine = false
-    /// Bumped on engine switch; each session captures its own token.
-    private var currentEngineToken = EngineToken()
+    private let preparation: EnginePreparationCoordinator
+    private var preparationObservation: AnyCancellable?
+    private var settingsObservation: AnyCancellable?
+    private var preparedEngine: PreparedEngine?
+    private var reloadAfterSession = false
+    var isSelectedEnginePrepared: Bool {
+        guard let preparedEngine else { return false }
+        return preparedEngine.request == EnginePreparationRequest(settings: settingsStore.settings)
+            && preparation.isCurrent(preparedEngine)
+    }
     /// Serializes begin/end/cancel so concurrent hotkey Tasks cannot race.
     private var sessionChain: Task<Void, Never>?
     /// Review R1.4: a begin-session task that may still be in model preload.
@@ -78,73 +84,32 @@ final class DictationController: ObservableObject {
     /// used by sessionDidFinish for a real identity check — NOT overwritten
     /// before the comparison).
     private var currentSessionID: SessionID?
-    /// Review R7: true once history key config + load completed (awaited in
-    /// start()). Session admission waits for this so history writes are never
-    /// made before encryption initialization.
-    private var historyReady = false
-
-    init(environment: AppEnvironment) {
+    init(environment: AppEnvironment, preparation: EnginePreparationCoordinator? = nil) {
         self.environment = environment
-        self.activeEngine = whisperEngine
+        self.preparation = preparation ?? .production(engines: environment.engines)
+        preparationObservation = self.preparation.$phase.sink { [weak self] phase in
+            self?.isModelLoading = phase.isBusy
+            self?.modelDownloadFraction = nil
+            self?.statusMessage = phase.message
+        }
+        settingsObservation = settingsStore.$settings
+            .map { EnginePreparationRequest(settings: $0) }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                // Invalidate at the setting publication edge, including consent
+                // revocation and language/privacy changes. The scheduled load
+                // reads the updated settings after @Published finishes setting.
+                self?.reloadEngine()
+            }
         configureFlowRouter()
     }
 
     // MARK: - Lifecycle
 
     func start() {
-        // JOE-2262 / review R7: at-rest history encryption — non-synchronizing
-        // Keychain key, AfterFirstUnlock. Key material never enters
-        // logs/metrics/backups/support bundles. Initialization is AWAITED
-        // before session admission (history writes are fail-closed until the
-        // repository is initialized), and load errors are surfaced rather than
-        // swallowed.
-        Task {
-            let key = HistoryKeychainStore.shared.loadOrCreate()
-            await ActorHistoryRepository.shared.configureEncryption(
-                keyProvider: { key })
-            do {
-                try await ActorHistoryRepository.shared.load()
-                // Round-5 REQ-5: historyReady reflects the real storage state.
-                // When history is DISABLED the storage is marked disabled and
-                // dictation proceeds without writes. When enabled, only a
-                // ready (encrypted or plaintext) store admits history writes;
-                // sealed-key-unavailable / read-failure / corruption surface.
-                if !self.settingsStore.settings.saveHistory {
-                    await ActorHistoryRepository.shared.markHistoryDisabled()
-                    self.historyReady = true
-                    ZFLog.info("History disabled — dictation proceeds without writes")
-                    return
-                }
-                let state = await ActorHistoryRepository.shared.storageState
-                switch state {
-                case .readyEncrypted, .readyPlaintext:
-                    // Review B8: historyReady is only true when initialization
-                    // SUCCEEDED (a Keychain failure or load error keeps it
-                    // false, so session admission errors out instead of
-                    // writing).
-                    self.historyReady = true
-                case .plaintextMigrationPending:
-                    // Round-6 REQ-2: with history ENABLED, at-rest encryption
-                    // has not actually been established — do NOT admit
-                    // history-enabled sessions (the migration persists
-                    // plaintext on disk; admitting would write new plaintext).
-                    // Surface the recovery action instead.
-                    ZFLog.error(
-                        "History migration pending — plaintext not yet encrypted; admission blocked")
-                    self.historyReady = false
-                case .sealedKeyUnavailable, .sealedKeyAuthFailed,
-                    .storageReadFailure, .corruptQuarantined:
-                    ZFLog.error("History storage not ready: \(state.rawValue)")
-                    self.historyReady = false
-                case .uninitialized, .historyDisabled:
-                    self.historyReady = false
-                }
-            } catch {
-                ZFLog.error("History load failed: \(error.localizedDescription)")
-                // historyReady stays false — beginSession will surface the
-                // initialization error and refuse to admit a session.
-            }
-        }
+        // History stays lazy. Starting the app must not read/migrate a history
+        // file or create a Keychain item when saving history is disabled.
         privacy.refresh()
         hotkey.configure(
             hotkey: settingsStore.settings.hotkey,
@@ -203,11 +168,8 @@ final class DictationController: ObservableObject {
                 self.enqueueSession { await self.endSession() }
             }
         }
-        // Review R6.1: do NOT preload/acquire models before onboarding
-        // consent. With downloads default-off and this gate, a fresh install
-        // cannot fetch a model until the user explicitly enables it in
-        // onboarding/settings. Detached so SFSpeech/mic permission callbacks
-        // (main queue) cannot deadlock with @MainActor awaiting the engine.
+        // No background preparation before completed onboarding. Download
+        // consent remains a separate setting; its default is not changed here.
         if settingsStore.settings.hasCompletedOnboarding {
             Task.detached { [weak self] in
                 await self?.preloadEngine()
@@ -221,8 +183,8 @@ final class DictationController: ObservableObject {
         privacy.refresh()
         let needUI =
             !privacy.status.microphone
-            || !privacy.status.speechRecognition
-            || !privacy.status.accessibility
+            || (settingsStore.settings.preferredModel == .appleSpeech && !privacy.status.speechRecognition)
+            || (settingsStore.settings.insertionMode != .alwaysCopy && !privacy.status.accessibility)
         guard needUI else { return }
         if !settingsStore.settings.hasCompletedOnboarding {
             ZFLog.info("Permission preflight deferred to onboarding")
@@ -244,6 +206,10 @@ final class DictationController: ObservableObject {
         // 1. Close new-session/hotkey admission first.
         hotkey.stop()
         admissionOpen = false
+        pendingIntent?.cancel()
+        pendingIntent = nil
+        pendingBeginTask?.cancel()
+        preparation.cancel()
         _ = handshake.completeStep(.admissionClosed, nowNanos: now())
 
         // 2. Finish/cancel the active session (single terminal outcome in the
@@ -313,8 +279,12 @@ final class DictationController: ObservableObject {
         _ = handshake.completeStep(.audioStopped, nowNanos: now())
 
         // 4. Quiesce engines with a bounded deadline.
-        await activeEngine.cancel()
-        _ = handshake.completeStep(.enginesQuiesced, nowNanos: now())
+        await preparedEngine?.engine.cancel()
+        if preparation.outstandingWorkers == 0 {
+            _ = handshake.completeStep(.enginesQuiesced, nowNanos: now())
+        } else {
+            _ = handshake.abandon(reason: "model preparation still owns native work")
+        }
 
         // 5. Pasteboard restoration resolved inside the insert transaction.
         //    Round-6 B2/NIT 5: when the handshake is abandoned (session did
@@ -336,8 +306,11 @@ final class DictationController: ObservableObject {
         _ = handshake.completeStep(.storageFlushed, nowNanos: now())
 
         // 7. Restore the retained Fn/global preference exactly.
-        HotkeyService.restoreFnOverrideIfNeededFromPriorLaunch()
-        _ = handshake.completeStep(.preferencesRestored, nowNanos: now())
+        if hotkey.restoreSystemFnPreferenceForShutdown() {
+            _ = handshake.completeStep(.preferencesRestored, nowNanos: now())
+        } else {
+            _ = handshake.abandon(reason: "Fn preference restoration not verified")
+        }
 
         reviewSession?.clear(reason: .appTerminating)
         reviewSession = nil
@@ -347,6 +320,10 @@ final class DictationController: ObservableObject {
     func stop() {
         hotkey.stop()
         admissionOpen = false
+        pendingIntent?.cancel()
+        pendingIntent = nil
+        pendingBeginTask?.cancel()
+        preparation.cancel()
         sessionTask?.cancel()
         stateTask?.cancel()
         sessionTask = nil
@@ -371,7 +348,7 @@ final class DictationController: ObservableObject {
         // Review B2v2 (round 5): the intent is invalidated synchronously at
         // the press edge by release/cancel — a begin that was still queued
         // aborts here without preparing or activating the microphone.
-        if intent?.isCancelled == true {
+        if intent?.isCancelled == true || Task.isCancelled {
             ZFLog.info("beginSession aborted — session intent already cancelled")
             pendingBeginTask = nil
             return
@@ -380,31 +357,9 @@ final class DictationController: ObservableObject {
             ZFLog.info("beginSession ignored — admission closed or session active")
             return
         }
-        // Review R7: do not admit a session until history encryption init has
-        // completed (fail-closed; a Keychain failure surfaces as an error).
-        if !historyReady {
-            ZFLog.info("beginSession waiting for history initialization")
-            var waited: UInt64 = 0
-            while !historyReady, waited < 5_000_000_000 {
-                // Review B2v2 (round 5): a release/cancel during the history
-                // wait must abort the begin, not start it after the user
-                // already released.
-                if intent?.isCancelled == true {
-                    pendingBeginTask = nil
-                    return
-                }
-                try? await Task.sleep(nanoseconds: 50_000_000)
-                waited += 50_000_000
-            }
-            if !historyReady {
-                showError("History storage could not be initialized — check Keychain access.")
-                return
-            }
-            if intent?.isCancelled == true {
-                pendingBeginTask = nil
-                return
-            }
-        }
+        let requestedSettings = settingsStore.settings
+        // History is prepared only after this session captures normal target
+        // sensitivity below, never merely because the global toggle is on.
         // Review B2: DO NOT clear pendingBeginTask here — the release handler
         // needs it set DURING model readiness/preload so it can preempt a
         // begin that is still waiting on the engine. It is cleared only when
@@ -417,29 +372,14 @@ final class DictationController: ObservableObject {
             Task { await ensurePermissionsUpFront() }
             return
         }
-        if usingAppleEngine && !privacy.status.speechRecognition {
+        if requestedSettings.preferredModel == .appleSpeech && !privacy.status.speechRecognition {
             pendingBeginTask = nil
             showError("Speech Recognition permission required")
             Task { await ensurePermissionsUpFront() }
             return
         }
 
-        // Surface model download state if Whisper isn't ready yet.
-        if !usingAppleEngine {
-            let model = settingsStore.settings.preferredModel
-            let ready = ModelReadinessStore.shared.readiness(for: model)
-            if case .downloading = ready.state {
-                interimText = ModelReadinessStore.shared.bannerMessage ?? "Downloading model…"
-            } else if case .failed(let msg) = ready.state {
-                showError(msg)
-                return
-            }
-        }
-
-        let ready = await activeEngine.isReady
-        if !ready {
-            await preloadEngine()
-        }
+        let candidate = await preparation.prepare(EnginePreparationRequest(settings: requestedSettings))
         // Review B2: a release during preload cancelled us — do NOT start.
         // (The release handler cancels pendingBeginTask directly; this check
         // catches the cancel and aborts before any capture begins.)
@@ -447,36 +387,40 @@ final class DictationController: ObservableObject {
             pendingBeginTask = nil
             return
         }
+        guard settingsStore.settings == requestedSettings, intent?.isCancelled != true, admissionOpen else {
+            pendingBeginTask = nil
+            return
+        }
         // JOE-2283: never enter a fake listening/capturing state when the
         // selected model is not ready (missing/unverified/failed download).
-        guard await activeEngine.isReady else {
-            showError("Selected model is not ready — download or verify it in Settings, or switch to Apple Speech.")
+        guard let candidate, preparation.isCurrent(candidate) else {
+            pendingBeginTask = nil
+            guard !preparation.phase.isBusy, preparation.phase != .cancelled else { return }
+            showError(preparation.phase.message ?? AppStrings.key("engine.preparation.notloaded"))
             return
         }
         guard admissionOpen, session == nil else { return }
-
+        guard settingsStore.settings == requestedSettings, intent?.isCancelled != true else {
+            pendingBeginTask = nil
+            return
+        }
         // Remember where the user was typing BEFORE any of our UI steals focus.
         focus.captureNow()
-
-        activeFlowStyle = settingsStore.settings.defaultFlowStyle
-        panelState = .listening
-        interimText = ""
-        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
 
         // Build a FRESH provider + FRESH actor per session: no shared mutable
         // tasks, buffers, target identity or callbacks across sessions.
         let settings = SessionSettingsSnapshot(
-            localOnly: settingsStore.settings.localOnlyMode,
-            language: settingsStore.settings.language,
-            defaultFlowStyle: settingsStore.settings.defaultFlowStyle,
-            insertionMode: settingsStore.settings.insertionMode.rawValue,
-            saveHistory: settingsStore.settings.saveHistory,
-            copyOnlyOverrideBundleIDs: Array(settingsStore.settings.copyOnlyOverrideBundleIDs))
+            localOnly: requestedSettings.localOnlyMode,
+            language: requestedSettings.language,
+            defaultFlowStyle: requestedSettings.defaultFlowStyle,
+            insertionMode: requestedSettings.insertionMode.rawValue,
+            saveHistory: requestedSettings.saveHistory,
+            copyOnlyOverrideBundleIDs: Array(requestedSettings.copyOnlyOverrideBundleIDs))
         let provider = ProductionSessionStages(
             environment: environment,
-            engine: activeEngine,
-            engineKind: usingAppleEngine ? .appleSpeech : .whisper,
-            engineToken: currentEngineToken)
+            engine: candidate.engine,
+            engineKind: candidate.request.model.isWhisperKit ? .whisper : .appleSpeech,
+            engineToken: candidate.token)
         // Review B2v2 (round 5): final intent check immediately before
         // session creation — the user may have released during the last
         // model-readiness await.
@@ -487,9 +431,29 @@ final class DictationController: ObservableObject {
         }
         let s = DictationSession(
             provider: provider,
-            engineChoice: usingAppleEngine ? .appleSpeech : .whisper,
+            engineChoice: candidate.request.model.isWhisperKit ? .whisper : .appleSpeech,
             settings: settings,
             idFactory: sessionIDFactory)
+        let admission = await s.prepareAdmission()
+        // This task is still pendingBeginTask: release/cancel preempts history
+        // waits without admitting a microphone or presenting a listening UI.
+        guard !Task.isCancelled, intent?.isCancelled != true, admissionOpen, session == nil,
+            settingsStore.settings == requestedSettings, preparation.isCurrent(candidate)
+        else {
+            pendingBeginTask = nil
+            return
+        }
+        guard admission == .ready else {
+            pendingBeginTask = nil
+            if admission == .historyUnavailable { showError(AppStrings.key("history.preparation.failed")) }
+            return
+        }
+        preparedEngine = candidate
+        engineLabel = candidate.request.model.displayName
+        activeFlowStyle = requestedSettings.defaultFlowStyle
+        panelState = .listening
+        interimText = ""
+        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
         session = s
         pendingBeginTask = nil  // begin completed; no longer pending
         // Review REQ-4: set the session ID authoritatively BEFORE any review
@@ -528,6 +492,7 @@ final class DictationController: ObservableObject {
     }
 
     func cancelSession() {
+        if session == nil { preparation.cancel() }
         // Review B2v2 (round 5): invalidate the press-edge intent immediately
         // so a still-queued begin aborts before starting.
         if let intent = self.pendingIntent {
@@ -550,6 +515,10 @@ final class DictationController: ObservableObject {
 
     /// Panel "stop & insert" button.
     func stopAndInsert() {
+        if session == nil {
+            cancelSession()
+            return
+        }
         enqueueSession {
             await self.session?.end()
         }
@@ -578,7 +547,9 @@ final class DictationController: ObservableObject {
         self.pendingIntent = intent
         enqueueSession {
             if self.session == nil {
-                await self.beginSession(intent: intent)
+                let beginTask = Task { @MainActor in await self.beginSession(intent: intent) }
+                self.pendingBeginTask = beginTask
+                await beginTask.value
             } else {
                 await self.endSession()
             }
@@ -697,6 +668,10 @@ final class DictationController: ObservableObject {
         sessionTask = nil
         stateTask = nil
         session = nil
+        if reloadAfterSession {
+            reloadAfterSession = false
+            reloadEngine()
+        }
         ZFLog.info("Session finished and cleared (identity-checked)")
         // Review REQ-4: do NOT unconditionally dismiss the panel. Success
         // already dismissed itself in apply(); warning/review/error terminal
@@ -708,6 +683,9 @@ final class DictationController: ObservableObject {
     }
 
     private func apply(_ state: SessionUIState) {
+        recordingSecondsRemaining = state.recordingSecondsRemaining
+        recordingLimitReached = state.recordingLimitReached
+        captureEndedEarly = state.captureEndedEarly
         switch state.phase {
         case .listening:
             panelState = .listening
@@ -739,8 +717,14 @@ final class DictationController: ObservableObject {
                 panelState = .processing
             }
         case .warning:
-            panelState = .warning
-            statusMessage = "Transcript incomplete — discarded"
+            if !state.interimText.isEmpty {
+                presentSecureReview(state.interimText)
+                reviewTitle = AppStrings.key("panel.incompleteReview")
+                reviewDetail = AppStrings.key("panel.incompleteReviewDetail")
+            } else {
+                panelState = .warning
+                statusMessage = AppStrings.key("panel.incompleteNoText")
+            }
         case .review:
             if let insertion = state.outputs.insertion {
                 presentReview(outcome: insertion, text: state.interimText)
@@ -886,175 +870,47 @@ final class DictationController: ObservableObject {
 
     /// Reload the current engine (menu/settings action).
     func reloadEngine() {
+        guard session == nil else {
+            reloadAfterSession = true
+            statusMessage = AppStrings.key("engine.preparation.deferred")
+            return
+        }
+        // Supersede synchronously at the selection edge, not inside a queued
+        // Task. A late completion cannot win before the replacement starts.
+        preparation.cancel()
         Task { await preloadEngine() }
     }
 
-    func reloadEngine(useApple: Bool) {
-        usingAppleEngine = useApple
-        activeEngine = useApple ? appleEngine : whisperEngine
-        currentEngineToken = EngineToken()
-        engineLabel = useApple ? "Apple Speech" : settingsStore.settings.preferredModel.displayName
-        // JOE-2256: supersede any in-flight load for the previous selection.
-        if !useApple {
-            let store = ModelReadinessStore.shared
-            _ = store.select(
-                settingsStore.settings.preferredModel,
-                allowDownloads: settingsStore.settings.allowModelDownloads,
-                localOnly: settingsStore.settings.localOnlyMode)
+    func cancelModelPreparation() {
+        preparation.cancel()
+        if session == nil {
+            pendingIntent?.cancel()
+            pendingIntent = nil
+            pendingBeginTask?.cancel()
         }
-        ZFLog.info("Engine switched to \(engineLabel)")
     }
 
-    /// JOE-2255: preload through the VERIFIED acquisition lifecycle.
-    /// Readiness = verified loadability (manifest+digest), never a non-empty
-    /// dir. Local Only mode fails cleanly when a verified model is absent and
-    /// download consent is denied; consent is independent of Local Only.
-    private func preloadEngine() async {
-        guard !usingAppleEngine else { return }
-        // Review R6: a quarantined engine (stuck native decode at cleanup)
-        // must be replaced with a fresh instance before reuse.
-        if await activeEngine.isQuarantined {
-            ZFLog.info("Engine quarantined — replacing with a fresh WhisperKit instance")
-            whisperEngine = WhisperKitEngine()
-            activeEngine = whisperEngine
-            currentEngineToken = EngineToken()
-            // Review B6: load the fresh engine ONLY if the verified artifact is
-            // ready (no unverified load), and record the verified digest so the
-            // engine identity binds to the verified artifact.
-            let store = ModelReadinessStore.shared
-            let model = settingsStore.settings.preferredModel
-            let verified = await store.verifiedReadiness(for: model)
-            guard verified.state.isReady else {
-                self.isModelLoading = false
-                ZFLog.info("Fresh engine not loaded — verified artifact not ready")
-                return
-            }
-            isModelLoading = true
-            do {
-                // Review B6v2: load from the verified/promoted directory (not
-                // WhisperKit's own cache) when the artifact is verified.
-                // Round-5 B5: atomic artifact — if the artifact is no longer
-                // verified here, FAIL (never fall back to identifier loading).
-                guard let artifact = await store.verifiedArtifact(for: model) else {
-                    self.isModelLoading = false
-                    ZFLog.error("Fresh engine load refused — verified artifact unavailable")
-                    return
-                }
-                try await activeEngine.load(
-                    model: model,
-                    verifiedFolder: artifact.folder.path)
-                await activeEngine.recordVerifiedDigest(artifact.aggregateDigest)
-                self.isModelLoading = false
-            } catch {
-                self.isModelLoading = false
-                ZFLog.error("Fresh engine load failed: \(error.localizedDescription)")
-            }
-            return
-        }
-        let model = settingsStore.settings.preferredModel
-        isModelLoading = true
-        modelDownloadFraction = nil
+    /// Explicit setup action using the same current-candidate admission path.
+    /// It loads/checks capabilities only; it never activates a microphone.
+    func prepareSelectedEngine(retry: Bool = false) async -> Bool {
+        guard session == nil else { return false }
+        if retry { preparation.cancel() }
+        return await preloadEngine()
+    }
 
-        let store = ModelReadinessStore.shared
-        // JOE-2256: assign the monotonic request id — only this request may
-        // publish; a newer selection supersedes it.
-        let requestID = store.select(
-            model,
-            allowDownloads: settingsStore.settings.allowModelDownloads,
-            localOnly: settingsStore.settings.localOnlyMode)
-
-        let verified = await store.verifiedReadiness(for: model)
-        if verified.state.isReady {
-            // Verified cache hit: load directly from the verified directory
-            // (Review B6v2: NOT WhisperKit's own cache).
-            do {
-                // Round-5 B5: atomic artifact — readiness and folder travel
-                // together; a nil artifact here means the directory changed
-                // between readiness and load. FAIL CLOSED (never identifier
-                // fallback from a verified admission).
-                guard let artifact = await store.verifiedArtifact(for: model) else {
-                    self.isModelLoading = false
-                    ZFLog.error("Verified cache hit refused — artifact vanished/unverified")
-                    store.publishLoadCompletion(
-                        requestID: requestID, model: model,
-                        outcome: .failed(model: model, message: "verified artifact unavailable"))
-                    return
-                }
-                try await activeEngine.load(
-                    model: model,
-                    verifiedFolder: artifact.folder.path)
-                // Review B8: record the verified artifact digest (from the
-                // reviewed manifest) so session evidence ties the loaded
-                // engine to the verified artifact.
-                await activeEngine.recordVerifiedDigest(
-                    artifact.aggregateDigest)
-                self.isModelLoading = false
-                store.publishLoadCompletion(
-                    requestID: requestID, model: model,
-                    outcome: .ready(model: model))
-            } catch {
-                ZFLog.error("Model load failed: \(error.localizedDescription)")
-                self.isModelLoading = false
-                store.publishLoadCompletion(
-                    requestID: requestID, model: model,
-                    outcome: .failed(model: model, message: error.localizedDescription))
-            }
-            return
-        }
-
-        // No verified model. Explicit download consent gates acquisition
-        // (independent of Local Only audio policy).
-        let consent = settingsStore.settings.allowModelDownloads
-        guard consent else {
-            self.isModelLoading = false
-            store.markFailed(
-                model,
-                message: settingsStore.settings.localOnlyMode
-                    ? "Model not downloaded and downloads are disabled — enable Model Downloads in Settings."
-                    : "Model not downloaded — enable Model Downloads in Settings to acquire it.")
-            return
-        }
-
-        store.markDownloading(model, progress: nil)
-        let result = await store.acquire(model, consent: true)
-        guard result.state == .ready else {
-            self.isModelLoading = false
-            let msg = result.error?.localizedDescription ?? "Model acquisition failed"
-            store.publishLoadCompletion(
-                requestID: requestID, model: model,
-                outcome: .failed(model: model, message: msg))
-            return
-        }
-        do {
-            // Review B6v2: the just-acquired artifact was promoted to the
-            // verified cache — load from that directory.
-            // Round-5 B5: atomic artifact (folder + digest); nil => the
-            // promotion did not produce a digest-complete manifest — fail.
-            guard let artifact = await store.verifiedArtifact(for: model) else {
-                self.isModelLoading = false
-                ZFLog.error("Post-acquisition load refused — artifact not digest-verified")
-                store.publishLoadCompletion(
-                    requestID: requestID, model: model,
-                    outcome: .failed(model: model, message: "artifact not verified"))
-                return
-            }
-            try await activeEngine.load(
-                model: model,
-                verifiedFolder: artifact.folder.path)
-            // Review B8: record the verified digest of the just-acquired
-            // artifact so the engine identity carries it.
-            await activeEngine.recordVerifiedDigest(artifact.aggregateDigest)
-            self.isModelLoading = false
-            store.publishLoadCompletion(
-                requestID: requestID, model: model,
-                outcome: .ready(model: model))
-        } catch {
-            ZFLog.error("Model load failed: \(error.localizedDescription)")
-            self.isModelLoading = false
-            store.publishLoadCompletion(
-                requestID: requestID, model: model,
-                outcome: .failed(model: model, message: error.localizedDescription))
-        }
+    /// Same coordinator as session admission; Apple Speech is selected from
+    /// settings and loaded explicitly. Artifact verification and engine load
+    /// are distinct phases. No active-session engine is mutated by reloading.
+    private func preloadEngine() async -> Bool {
+        guard session == nil, admissionOpen else { return false }
+        let request = EnginePreparationRequest(settings: settingsStore.settings)
+        guard let candidate = await preparation.prepare(request), preparation.isCurrent(candidate),
+            request == EnginePreparationRequest(settings: settingsStore.settings),
+            session == nil, admissionOpen, !Task.isCancelled
+        else { return false }
+        preparedEngine = candidate
+        engineLabel = request.model.displayName
+        return true
     }
 
     private func configureFlowRouter() {

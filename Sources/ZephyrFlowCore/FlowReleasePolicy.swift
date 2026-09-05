@@ -1,9 +1,9 @@
 import Foundation
 
 // JOE-2281: preregistered Flow release budgets + exact-candidate regression
-// gate. Thresholds are fixed BEFORE the candidate runs; the current candidate
-// can never modify its own thresholds or corpus (policy is an immutable const
-// versioned against the corpus + a named baseline commit).
+// gate. Policy/corpus review and immutable exact-candidate provenance must be
+// enforced outside this evaluator. A Swift let in the candidate's own source
+// does not establish preregistration or prevent a later source edit.
 
 /// Per-style release budget (preregistered, immutable).
 public struct FlowStyleBudget: Sendable, Equatable {
@@ -102,7 +102,7 @@ public struct FlowStyleStats: Sendable, Equatable {
 
     public var fallbackRate: Double { totalCases == 0 ? 0 : Double(fallbackCount) / Double(totalCases) }
     public var noopRate: Double { totalCases == 0 ? 0 : Double(noopCount) / Double(totalCases) }
-    public var deterministicStability: Double { totalCases == 0 ? 1 : Double(deterministicCount) / Double(totalCases) }
+    public var deterministicStability: Double { totalCases <= 0 ? 0 : Double(deterministicCount) / Double(totalCases) }
 }
 
 /// Gate verdict (machine-readable).
@@ -116,7 +116,7 @@ public enum FlowReleaseGate {
     /// - Parameters:
     ///   - corpusVersion: the corpus version the candidate ran against.
     ///   - stats: per-style corpus statistics.
-    ///   - policy: the preregistered policy (candidate cannot modify it).
+    ///   - policy: the reviewed policy. Callers must verify its provenance.
     public static func evaluate(
         corpusVersion: Int,
         stats: [FlowStyle: FlowStyleStats],
@@ -126,8 +126,26 @@ public enum FlowReleaseGate {
         guard corpusVersion == policy.corpusVersion else {
             return .fail(reason: "corpus version mismatch: candidate=\(corpusVersion) policy=\(policy.corpusVersion)")
         }
-        for (style, budget) in policy.budgets {
-            guard let s = stats[style] else { continue }
+        guard !policy.budgets.isEmpty, policy.version > 0, !policy.baselineCommit.isEmpty else {
+            return .fail(reason: "missing or invalid release policy")
+        }
+        guard Set(stats.keys).isSubset(of: Set(policy.budgets.keys)) else {
+            return .fail(reason: "statistics include a style with no reviewed budget")
+        }
+        // Stable diagnostics order, independent of Dictionary enumeration.
+        for style in policy.budgets.keys.sorted(by: { $0.rawValue < $1.rawValue }) {
+            guard let budget = policy.budgets[style], budget.style == style, budget.maxCriticalViolations >= 0,
+                [budget.maxFallbackRate, budget.minDeterministicStability, budget.maxNoopRate]
+                    .allSatisfy({ $0.isFinite && (0...1).contains($0) })
+            else {
+                return .fail(reason: "\(style.rawValue): invalid release budget")
+            }
+            guard let s = stats[style] else { return .fail(reason: "\(style.rawValue): missing statistics") }
+            guard s.style == style, s.totalCases > 0, s.criticalViolations >= 0,
+                [s.fallbackCount, s.noopCount, s.deterministicCount].allSatisfy({ (0...s.totalCases).contains($0) })
+            else {
+                return .fail(reason: "\(style.rawValue): empty or invalid statistics")
+            }
             if s.criticalViolations > budget.maxCriticalViolations {
                 return .fail(
                     reason:

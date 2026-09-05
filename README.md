@@ -3,7 +3,7 @@
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black.svg?logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![Qualification target: macOS 15](https://img.shields.io/badge/qualification%20target-macOS%2015-black.svg?logo=apple&logoColor=white)](docs/development/contracts/supported-platform-matrix.md)
 [![Swift 5.10+](https://img.shields.io/badge/Swift-5.10%2B-F05138.svg?logo=swift&logoColor=white)](https://swift.org/)
 [![Docs](https://img.shields.io/badge/docs-mkdocs%20material-blue.svg?logo=materialformkdocs&logoColor=white)](https://joe-broadhead.github.io/zephyr-flow/)
 [![CI](https://github.com/joe-broadhead/zephyr-flow/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/joe-broadhead/zephyr-flow/actions/workflows/ci.yml)
@@ -24,9 +24,9 @@
 
 <div align="center">
 
-Hold **Fn** · speak · release — polished text lands where you were typing.  
+Hold **Control-Option-Space** · speak · release for validated insertion or review.
 **Local Only by default** (your audio stays on-device). No analytics. No telemetry.  
-Default engine: **Whisper Tiny** (one-time ~75 MB model download, then fully local).
+Default engine: **Whisper Tiny** (model download requires explicit consent).
 
 [Docs](https://joe-broadhead.github.io/zephyr-flow/) · [Quickstart](docs/getting-started/quickstart.md) · [Privacy](docs/guide/privacy.md) · [Releases](https://github.com/joe-broadhead/zephyr-flow/releases)
 
@@ -54,40 +54,54 @@ Default engine: **Whisper Tiny** (one-time ~75 MB model download, then fully loc
 
 ## What it does
 
+**Current forward candidate: proposed/unreleased, not approved for production.**
+The human-selected qualification target is macOS 15.x / Apple Silicon / US
+English / Whisper Tiny or on-device Apple Speech / Notes, TextEdit, Terminal,
+Safari, VS Code and Slack. Exact-device/app evidence and independent review are
+still required. Other combinations are experimental/unqualified; the source
+deployment minimum of macOS 14 is not a production support claim. See the
+[qualification boundary](docs/development/contracts/supported-platform-matrix.md).
+
 ZephyrFlow is a macOS menu-bar dictation app:
 
-1. Hold **Fn** (configurable)
+1. Hold **Control-Option-Space** (new-install default; saved shortcuts are preserved)
 2. A glass panel appears near the cursor with live waveform + interim text
-3. Release → text is cleaned and inserted at the caret
+3. Release → text is processed and either validated for insertion or held for review
 
-> Public preview (`v0.x`): latest is on [GitHub Releases](https://github.com/joe-broadhead/zephyr-flow/releases). Builds are **ad-hoc signed** (not Developer ID / notarized) until Apple Developer validation is configured.
+> Historical GitHub release assets are not acceptance evidence for this candidate.
+> Production requires Developer ID + notarization, exact-candidate qualification,
+> independent review and explicit human GO. Release preflights are blocked;
+> credentials alone do not complete release implementation or approval.
 
 ## Highlights
 
-- **Hold-to-talk Fn** — Wispr-style global hotkey on a dedicated event-tap thread  
+- **Hold-to-talk shortcut** — Control-Option-Space by default; Fn / Globe remains experimental
 - **Whisper Tiny by default** — downloads once, then runs fully on-device (Neural Engine), with **live interim text** while you hold  
 - **Local Only** — your voice/transcripts stay on this Mac; Apple Speech remains a built-in fallback  
-- **Focus restore + smart insert** — per-app paste/AX strategies; secure fields stay copy-only  
+- **Target-aware insertion** — per-app paste/AX strategies; secure/unknown fields prohibit automatic clipboard/AX/history side effects
 - **Flow styles** — clean, bullets, professional, summary, raw (optional Enhanced on-device rules)  
 - **Check for Updates** — on-demand GitHub Releases (no background pings)  
 - **Auditable** — greppable privacy posture + core tests  
 
-## 30-second install (from source)
+## Developer build (not production installation)
 
 ```bash
 git clone https://github.com/joe-broadhead/zephyr-flow.git
 cd zephyr-flow
-./Scripts/build_app.sh release
-xattr -cr Dist/ZephyrFlow.app
+./Scripts/build_app.sh debug
 open Dist/ZephyrFlow.app
 ```
 
-If macOS blocks the app: right-click → **Open** (ad-hoc preview signing).
+This developer bundle is ad-hoc signed, not a qualified production artifact.
+Do not use a Gatekeeper bypass as distribution acceptance.
 
-Then grant **Microphone** and **Accessibility**, allow the first-run Whisper Tiny download if prompted, click into Notes, hold **Fn**, speak, release.  
-(Apple Speech fallback also needs **Speech Recognition** + **Keyboard → Dictation → On**.)
+Use explicit Setup actions for **Microphone**, **Accessibility** (global shortcut
+and automatic insertion) and model-download consent. Apple Speech also needs
+Speech authorization and the selected on-device locale; no network fallback is
+allowed with Local Only on. The menu controls remain available without a global
+shortcut. New installations use **Control-Option-Space**; check keyboard conflicts.
 
-**Platform:** Apple Silicon (arm64) recommended; release artifacts are arm64.
+**Planned platform:** macOS 15.x / arm64; exact hardware/app qualification pending.
 
 ## Architecture
 
@@ -111,7 +125,7 @@ flowchart TB
   subgraph Output
     FL[FlowProcessor]
     IN[InsertionService<br/>paste / AX]
-    HS[HistoryStore<br/>optional]
+    HS[ActorHistoryRepository<br/>opted-in encrypted history]
   end
 
   HK -->|press / release| DC

@@ -3,20 +3,43 @@ import Foundation
 import SwiftUI
 import ZephyrFlowCore
 
+/// Injectable acknowledgment boundary. UserDefaults synchronization/read-back
+/// is not an fsync or a cross-process transaction; restart/device durability
+/// still needs qualification. Tests use in-memory closures only.
+@MainActor
+struct SettingsPersistence {
+    let read: () -> Data?
+    let write: (Data) -> Bool
+    let quarantine: (Data, String) -> Void
+
+    static let standard = SettingsPersistence(
+        read: { UserDefaults.standard.data(forKey: "zephyrflow.settings") },
+        write: { data in
+            let defaults = UserDefaults.standard
+            let key = "zephyrflow.settings"
+            let previous = defaults.data(forKey: key)
+            defaults.set(data, forKey: key)
+            guard defaults.synchronize(), defaults.data(forKey: key) == data else {
+                // Best effort to restore our previous preference. Failure is
+                // surfaced, never relabeled as a confirmed settings change.
+                if let previous { defaults.set(previous, forKey: key) } else { defaults.removeObject(forKey: key) }
+                _ = defaults.synchronize()
+                return false
+            }
+            return true
+        }, quarantine: { data, key in UserDefaults.standard.set(data, forKey: key) })
+}
+
 @MainActor
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
 
-    @Published var settings: AppSettings {
-        didSet {
-            _ = commit()
-            ZFLog.debugEnabled = settings.debugLogging
-        }
-    }
+    @Published private(set) var settings: AppSettings
+    @Published private(set) var persistenceError: String?
 
     @Published var recoveryState: SettingsRecoveryState = .ok
 
-    private let defaultsKey = "zephyrflow.settings"
+    private let persistence: SettingsPersistence
     private let quarantinePrefix = "zephyrflow.settings.quarantine"
     private var provenance: [String] = []
 
@@ -26,13 +49,15 @@ final class SettingsStore: ObservableObject {
         case unknownSchema(Int)
     }
 
-    private init() {
-        let data = UserDefaults.standard.data(forKey: defaultsKey)
+    init(persistence: SettingsPersistence? = nil) {
+        let persistence = persistence ?? .standard
+        self.persistence = persistence
+        let data = persistence.read()
         let result = SettingsStorageCoordinator.load(data: data)
         if result.recoveredFromCorruption {
             // Quarantine the ORIGINAL bytes for recovery, then safe baseline.
             if let data {
-                UserDefaults.standard.set(data, forKey: result.quarantinePath ?? "\(quarantinePrefix).1")
+                persistence.quarantine(data, result.quarantinePath ?? "\(quarantinePrefix).1")
             }
             if let unknown = result.unknownSchemaVersion {
                 recoveryState = .unknownSchema(unknown)
@@ -53,17 +78,24 @@ final class SettingsStore: ObservableObject {
         ZFLog.debugEnabled = settings.debugLogging
     }
 
-    /// Atomic commit; returns success so UI never claims a change that was
-    /// not durably written.
+    /// Publish only after the persistence boundary acknowledges the candidate.
     @discardableResult
     func commit() -> Bool {
+        persistAndPublish(settings)
+    }
+
+    private func persistAndPublish(_ candidate: AppSettings) -> Bool {
         do {
             let data = try SettingsStorageCoordinator.encode(
-                settings: settings,
+                settings: candidate,
                 provenance: provenance)
-            UserDefaults.standard.set(data, forKey: defaultsKey)
+            guard persistence.write(data) else { throw CocoaError(.fileWriteUnknown) }
+            settings = candidate
+            ZFLog.debugEnabled = candidate.debugLogging
+            persistenceError = nil
             return true
         } catch {
+            persistenceError = AppStrings.key("settings.persistence.failed")
             ZFLog.error("Settings commit failed")
             return false
         }
@@ -103,16 +135,17 @@ final class SettingsStore: ObservableObject {
         _ = commit()
     }
 
-    func update(_ mutate: (inout AppSettings) -> Void) {
+    @discardableResult
+    func update(_ mutate: (inout AppSettings) -> Void) -> Bool {
         var copy = settings
         mutate(&copy)
-        settings = copy
+        return persistAndPublish(copy)
     }
 
-    func resetToDefaults() {
+    @discardableResult
+    func resetToDefaults() -> Bool {
         // JOE-2263: transactional reset preserving only documented fields.
         let next = SettingsStorageCoordinator.resetPayload(current: settings)
-        settings = next
-        _ = commit()
+        return persistAndPublish(next)
     }
 }

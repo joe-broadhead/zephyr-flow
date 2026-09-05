@@ -37,10 +37,12 @@ public struct LaunchAtLoginTransaction: Sendable, Equatable {
         self.desiredEnabled = desiredEnabled
     }
 
-    /// The external change succeeded and the re-read status matches the
-    /// desired state => commit (durable settings + UI converge).
+    /// The service must acknowledge settings persistence before calling this.
+    /// State validation alone is not proof of a durable write or OS mutation.
     public mutating func commit(verifiedStatus: LaunchAtLoginState) {
-        guard state == .pending else { return }
+        guard state == .pending, let desiredEnabled,
+            Self.statusConverges(status: verifiedStatus, desiredEnabled: desiredEnabled)
+        else { return }
         state = .applied
         self.verifiedStatus = verifiedStatus
     }

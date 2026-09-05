@@ -89,6 +89,7 @@ actor AudioCapture: AudioCaptureProtocol {
             // on engine/inference scheduling.
             guard let copy = Self.copyPCMBuffer(buffer) else { return }
             guard let self else { return }
+            let samples = Self.makeFloatArray(copy)
             // Real-time safe: push owned samples into the bounded ring with NO
             // actor hop, then a Task hop only for level polling.
             if let producer {
@@ -105,13 +106,15 @@ actor AudioCapture: AudioCaptureProtocol {
                     sessionID: sessionID, sequence: seq, startSample: start,
                     sampleRate: copy.format.sampleRate,
                     channelCount: 1,
-                    samples: Self.makeFloatArray(copy))
+                    samples: samples)
                 if boundChannel.enqueue(chunk) != .accepted, !producer.overflowLogged {
                     producer.overflowLogged = true
                     ZFLog.info("AudioCapture channel non-enqueue (overflow/cross-session) — degraded")
                 }
             }
-            Task { await self.noteLevels(copy) }
+            // AVAudioPCMBuffer stays on the tap callback. Only owned value
+            // data crosses the actor boundary; never send a framework buffer.
+            Task { await self.noteLevels(samples, sessionID: sessionID) }
         }
 
         engine.prepare()
@@ -195,12 +198,9 @@ actor AudioCapture: AudioCaptureProtocol {
         return copy
     }
 
-    /// Level metering from the owned raw copy (first channel downmix); the
-    /// UI meter never touches payload buffers beyond summary statistics.
-    private func noteLevels(_ buffer: AVAudioPCMBuffer) {
-        guard buffer.frameLength > 0 else { return }
-        let samples = Self.makeFloatArray(buffer)
-        guard !samples.isEmpty else { return }
+    /// Reject callbacks from a stopped/replaced capture before updating meters.
+    private func noteLevels(_ samples: [Float], sessionID: SessionID) {
+        guard isCapturing, self.sessionID == sessionID, !samples.isEmpty else { return }
         var rms: Float = 0
         vDSP_rmsqv(samples, 1, &rms, vDSP_Length(samples.count))
         if rms > peakRMS { peakRMS = rms }

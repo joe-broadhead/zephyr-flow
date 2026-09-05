@@ -32,11 +32,10 @@ public actor FlowProcessor: FlowProcessorProtocol {
 
     /// JOE-2279: typed outcome for the deterministic rules backend.
     public func process(_ request: FlowRequest) async -> FlowOutcome {
-        let started = Date()
+        let started = DispatchTime.now().uptimeNanoseconds
         let output = await process(
             request.text, style: request.style,
             language: request.language)
-        let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
         let loss = FlowOutcome.lossClass(for: request.style)
         // Deterministic backend: guardrails already applied inside rules.
         let protectedSpanCount = FlowGuardrails.tokens(in: request.text).count
@@ -71,7 +70,7 @@ public actor FlowProcessor: FlowProcessorProtocol {
             status: status,
             warnings: warnings,
             fallbackReason: fallbackReason,
-            durationNanos: duration,
+            durationNanos: DispatchTime.now().uptimeNanoseconds &- started,
             termination: .completed)
     }
 

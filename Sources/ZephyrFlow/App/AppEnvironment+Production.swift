@@ -17,8 +17,8 @@ extension AppEnvironment {
             history: HistoryStoreRepository(),
             permissions: PrivacyPermissionProvider(),
             engines: EngineRegistry(
-                whisper: WhisperKitEngine(),
-                appleSpeech: AppleSpeechEngine()),
+                makeWhisper: { WhisperKitEngine() },
+                makeAppleSpeech: { AppleSpeechEngine() }),
             flow: FlowRouter.shared,
             insertion: InsertionService.shared,
             targetValidation: TargetValidationService.shared)
@@ -49,11 +49,28 @@ struct ZFLogMetricsSink: MetricsSinking {
 
 /// Settings repository backed by SettingsStore.
 @MainActor struct SettingsStoreRepository: SettingsRepository {
-    var current: AppSettings { SettingsStore.shared.settings }
+    private let read: @MainActor @Sendable () -> AppSettings
+
+    init(read: @escaping @MainActor @Sendable () -> AppSettings = { SettingsStore.shared.settings }) {
+        self.read = read
+    }
+
+    var current: AppSettings { read() }
 }
 
 /// History repository backed by the actor repository (JOE-2261).
 struct HistoryStoreRepository: HistoryRepository {
+    // Created lazily; the key provider is invoked only by an opted-in session
+    // or an explicit history UI action, never by application startup.
+    static let preparation = HistoryStoragePreparation(repository: .shared) {
+        await HistoryKeychainStore.shared.loadOrCreate()
+    }
+
+    func prepareForSession(saveHistory: Bool) async -> Bool {
+        guard saveHistory else { return !Task.isCancelled }
+        return await Self.preparation.prepareForSession(saveHistory: true)
+    }
+
     func add(_ entry: HistoryEntry) async {
         await ActorHistoryRepository.shared.add(entry)
     }
@@ -61,7 +78,13 @@ struct HistoryStoreRepository: HistoryRepository {
 
 /// Permission provider backed by PrivacyService.
 @MainActor struct PrivacyPermissionProvider: PermissionProviding {
-    var microphoneGranted: Bool { PrivacyService.shared.status.microphone }
-    var accessibilityTrusted: Bool { PrivacyService.shared.status.accessibility }
-    var speechRecognitionGranted: Bool { PrivacyService.shared.status.speechRecognition }
+    private let read: @MainActor @Sendable () -> PermissionStatus
+
+    init(read: @escaping @MainActor @Sendable () -> PermissionStatus = { PrivacyService.shared.status }) {
+        self.read = read
+    }
+
+    var microphoneGranted: Bool { read().microphone }
+    var accessibilityTrusted: Bool { read().accessibility }
+    var speechRecognitionGranted: Bool { read().speechRecognition }
 }

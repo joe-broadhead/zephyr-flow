@@ -4,7 +4,7 @@ import ZephyrFlowCore
 
 /// Review R4.1: single source of truth for history is the actor repository.
 /// The Settings UI observes this async view model instead of the legacy
-/// plaintext HistoryStore, so production history is never written by two
+/// removed plaintext store, so production history is never written by two
 /// incompatible stores to the same file.
 @MainActor
 final class HistoryViewModel: ObservableObject {
@@ -14,30 +14,41 @@ final class HistoryViewModel: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var isLoading = false
 
-    private init() {}
+    private let repository: ActorHistoryRepository
+    private let preparation: HistoryStoragePreparation
+    private var loadTask: Task<Void, Never>?
+    private var generation = UUID()
+
+    init(
+        repository: ActorHistoryRepository = .shared,
+        preparation: HistoryStoragePreparation = HistoryStoreRepository.preparation
+    ) {
+        self.repository = repository
+        self.preparation = preparation
+    }
 
     func start() {
-        Task {
-            // Review R7/B8: ensure the repository is loaded (not just reading
-            // in-memory entries); surface load errors. reload() must NOT
-            // clear a load error we just set.
-            if !(await ActorHistoryRepository.shared.isInitialized) {
-                do {
-                    try await ActorHistoryRepository.shared.load()
-                    await reload()
-                } catch {
-                    lastError = "Could not load history: \(error.localizedDescription)"
-                }
-            } else {
-                await reload()
-            }
-        }
+        loadTask?.cancel()
+        loadTask = Task { await reload() }
     }
 
     func reload() async {
+        let id = UUID()
+        generation = id
         isLoading = true
-        defer { isLoading = false }
-        let storage = await ActorHistoryRepository.shared.entries()
+        defer { if generation == id { isLoading = false } }
+        // UI access and session admission share key-before-load ordering.
+        // Merely constructing this view model never opens the repository.
+        let ready = await preparation.prepareForAccess()
+        guard !Task.isCancelled, generation == id else { return }
+        guard ready else {
+            entries = []
+            lastError = AppStrings.key("history.preparation.failed")
+            return
+        }
+        let storage = await repository.entries()
+        let writeError = await repository.lastWriteError
+        guard !Task.isCancelled, generation == id else { return }
         entries = storage.map { entry in
             HistoryEntry(
                 id: entry.id,
@@ -49,18 +60,19 @@ final class HistoryViewModel: ObservableObject {
         }
         lastError = nil
         // Surface any silent write failure from add() (review R4.1).
-        if let writeError = await ActorHistoryRepository.shared.lastWriteError {
-            lastError = "History write issue: \(writeError)"
+        if writeError != nil {
+            lastError = AppStrings.key("history.write.failed")
         }
     }
 
     func delete(_ id: UUID) {
         Task {
             do {
-                try await ActorHistoryRepository.shared.delete(id)
+                guard await preparation.prepareForAccess() else { throw HistoryRepositoryError.ioFailed }
+                try await repository.delete(id)
                 await reload()
             } catch {
-                lastError = "Could not delete entry: \(error.localizedDescription)"
+                lastError = AppStrings.key("history.delete.failed")
             }
         }
     }
@@ -68,10 +80,11 @@ final class HistoryViewModel: ObservableObject {
     func clear() {
         Task {
             do {
-                try await ActorHistoryRepository.shared.clear()
+                guard await preparation.prepareForAccess() else { throw HistoryRepositoryError.ioFailed }
+                try await repository.clear()
                 await reload()
             } catch {
-                lastError = "Could not clear history: \(error.localizedDescription)"
+                lastError = AppStrings.key("history.clear.failed")
             }
         }
     }

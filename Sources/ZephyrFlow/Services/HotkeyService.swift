@@ -50,160 +50,31 @@ final class HotkeyService: ObservableObject {
     private var lostReleaseTimer: Timer?
 
     // JOE-2286 transaction state.
-    private var fnTransaction: FnPreferenceTransaction?
+    private let fnOverride = FnPreferenceOverrideService.shared
     private var started = false
-
-    private static let fnRecordKey = "zephyrflow.fnOverride.record.v1"
 
     private init() {
         // Crash recovery: previous run may have left AppleFnUsageType overridden.
         Self.restoreFnOverrideIfNeededFromPriorLaunch()
+        projectFnRecovery()
     }
 
     /// User-visible recovery if Globe/Fn system preference was left stuck.
     func resetSystemFnPreferenceNow() {
         restoreSystemFnBehavior(force: true)
-        Self.restoreFnOverrideIfNeededFromPriorLaunch()
-        // Re-apply override only if Fn is still the configured hotkey, the
-        // override is opted in, and we're running.
-        if started,
-            FnOverridePolicy.shouldOverride(
-                experimentalOptIn: config.experimentalFnOverride,
-                configuredSpecialKeyIsFn: config.specialKey == .fn,
-                tapPrepared: tapHealthy)
-        {
-            disableSystemFnBehavior()
-        }
+        // Reset means restore the original, never immediately reapply zero.
     }
 
-    /// Call as early as possible (even before HotkeyService.shared if needed).
-    /// Reads the versioned transaction record and resolves it idempotently:
-    /// only an ACTIVE override (applied/pendingRestore) is restored; a
-    /// COMPLETED transaction (restored/failedRestore) is never mistaken for
-    /// an active override; pendingApply means the mutation never confirmed.
-    static func restoreFnOverrideIfNeededFromPriorLaunch() {
-        let ud = UserDefaults.standard
-        guard let data = ud.data(forKey: fnRecordKey),
-            let record = try? JSONDecoder().decode(FnPreferenceRecord.self, from: data)
-        else {
-            // Legacy marker (pre-2286): treat as applied with no snapshot.
-            guard ud.bool(forKey: "zephyrflow.fnOverride.active") else { return }
-            let defaults = UserDefaults(suiteName: "com.apple.HIToolbox")
-            if ud.object(forKey: "zephyrflow.fnOverride.original") != nil {
-                defaults?.set(
-                    ud.integer(forKey: "zephyrflow.fnOverride.original"),
-                    forKey: "AppleFnUsageType")
-            } else {
-                defaults?.removeObject(forKey: "AppleFnUsageType")
-            }
-            CFPreferencesAppSynchronize("com.apple.HIToolbox" as CFString)
-            ud.set(false, forKey: "zephyrflow.fnOverride.active")
-            ud.removeObject(forKey: "zephyrflow.fnOverride.original")
-            ZFLog.info("Recovered legacy AppleFnUsageType from prior unclean shutdown")
-            return
-        }
-
-        var tx = FnPreferenceTransaction(record: record)
-        let status = tx.recoverAfterCrash()
-        switch status {
-        case .idle, .restored, .failedRestore:
-            ZFLog.info("Fn override record \(record.status.rawValue) — nothing to restore")
-        case .pendingApply:
-            ZFLog.info("Fn override pendingApply — mutation never confirmed, idle")
-        case .applied, .pendingRestore:
-            ZFLog.info("Fn override active — restoring exact snapshot")
-            restoreSnapshotExact(record.snapshot)
-            tx.finishRestore(verifiedExact: true)
-        }
-        Self.persistRecord(tx.record)
+    /// Pending apply means uncertain mutation, not idle. Legacy/corrupt
+    /// snapshots that cannot prove exact restoration remain blocked.
+    @discardableResult
+    static func restoreFnOverrideIfNeededFromPriorLaunch() -> Bool {
+        FnPreferenceOverrideService.shared.recoverPriorLaunch()
     }
 
-    private static func persistRecord(_ record: FnPreferenceRecord) {
-        let ud = UserDefaults.standard
-        if let data = try? JSONEncoder().encode(record) {
-            ud.set(data, forKey: fnRecordKey)
-        }
-    }
-
-    private static func readPreference(_ snapshot: FnPreferenceSnapshot) -> (
-        present: Bool, value: Int64?, type: String?
-    ) {
-        let defaults = UserDefaults(suiteName: snapshot.suiteName)
-        guard let obj = defaults?.object(forKey: snapshot.keyName) else {
-            return (false, nil, nil)
-        }
-        let typeID = CFGetTypeID(obj as CFTypeRef)
-        var cfType: String?
-        if typeID == CFNumberGetTypeID() {
-            cfType = "CFNumber"
-        } else if typeID == CFStringGetTypeID() {
-            cfType = "CFString"
-        } else if typeID == CFBooleanGetTypeID() {
-            cfType = "CFBoolean"
-        } else {
-            cfType = "CFType-\(typeID)"
-        }
-        return (true, (obj as? NSNumber)?.int64Value, cfType)
-    }
-
-    /// Restore the EXACT original state (presence-aware; never an
-    /// unconditional key removal after a value was present).
-    private static func restoreSnapshotExact(_ snapshot: FnPreferenceSnapshot) {
-        let defaults = UserDefaults(suiteName: snapshot.suiteName)
-        if snapshot.keyPresent {
-            if let value = snapshot.value {
-                defaults?.set(value, forKey: snapshot.keyName)
-            } else {
-                // A present non-numeric value: restore a type-preserving
-                // placeholder is impossible without the raw object; the
-                // captured CF type tells us the shape. For CFString/CFBoolean
-                // we restore the documented original raw value where known.
-                switch snapshot.cfTypeTag {
-                case "CFBoolean":
-                    defaults?.set(false, forKey: snapshot.keyName)
-                default:
-                    defaults?.removeObject(forKey: snapshot.keyName)
-                }
-            }
-        } else {
-            defaults?.removeObject(forKey: snapshot.keyName)
-        }
-        CFPreferencesAppSynchronize(snapshot.suiteName as CFString)
-    }
-
-    private static func verifyRestoredExact(_ snapshot: FnPreferenceSnapshot) -> Bool {
-        let current = readPreference(snapshot)
-        if snapshot.keyPresent {
-            guard current.present else { return false }
-            if let v = snapshot.value {
-                return current.value == v
-            }
-            // Non-numeric: presence + type match is the best exactness proxy.
-            return current.type == snapshot.cfTypeTag
-        }
-        return !current.present
-    }
-
-    private static func captureSnapshot() -> FnPreferenceSnapshot {
-        let defaults = UserDefaults(suiteName: "com.apple.HIToolbox")
-        guard let obj = defaults?.object(forKey: "AppleFnUsageType") else {
-            return FnPreferenceSnapshot(keyPresent: false, value: nil, cfTypeTag: nil)
-        }
-        let typeID = CFGetTypeID(obj as CFTypeRef)
-        var cfType: String?
-        if typeID == CFNumberGetTypeID() {
-            cfType = "CFNumber"
-        } else if typeID == CFStringGetTypeID() {
-            cfType = "CFString"
-        } else if typeID == CFBooleanGetTypeID() {
-            cfType = "CFBoolean"
-        } else {
-            cfType = "CFType-\(typeID)"
-        }
-        return FnPreferenceSnapshot(
-            keyPresent: true,
-            value: (obj as? NSNumber)?.int64Value,
-            cfTypeTag: cfType)
+    func restoreSystemFnPreferenceForShutdown() -> Bool {
+        restoreSystemFnBehavior(force: false)
+        return fnOverride.settled
     }
 
     func configure(hotkey: HotkeyConfig, mode: ListeningMode) {
@@ -228,9 +99,17 @@ final class HotkeyService: ObservableObject {
         }
         engine.onStatus = { [weak self] message, healthy in
             DispatchQueue.main.async {
-                self?.tapHealthy = healthy
-                self?.lastError = healthy ? nil : message
-                self?.lifecycleState = healthy ? .healthy : .degraded
+                guard let self, self.started else { return }
+                self.tapHealthy = healthy && self.engine.isTapPrepared
+                if self.tapHealthy && self.accessibilityTrusted {
+                    self.disableSystemFnBehavior()
+                } else {
+                    self.restoreSystemFnBehavior(force: false)
+                }
+                self.lastError =
+                    self.fnRecoveryRequired
+                    ? AppStrings.key("hotkey.fnRecovery.failed") : (self.tapHealthy ? nil : message)
+                self.lifecycleState = self.tapHealthy && !self.fnRecoveryRequired ? .healthy : .degraded
                 ZFLog.info("Hotkey engine: \(message)")
             }
         }
@@ -297,7 +176,7 @@ final class HotkeyService: ObservableObject {
         }
     }
 
-    /// Bounded lost-release sweep: never leaves hold/toggle armed forever.
+    /// Recover observed key-up, not merely two seconds of elapsed hold time.
     private func startLostReleaseSweep() {
         lostReleaseTimer?.invalidate()
         lostReleaseTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -314,6 +193,7 @@ final class HotkeyService: ObservableObject {
     }
 
     private func restartEngine() {
+        tapHealthy = false
         engine.stop()
         restoreSystemFnBehavior(force: false)
 
@@ -329,81 +209,45 @@ final class HotkeyService: ObservableObject {
         }
 
         lastError = nil
-        let joined = engine.start(preferDefaultTap: true)
-        // JOE-2286: begin the override only after explicit opt-in AND
-        // successful hotkey/tap preparation. Production default path never
-        // touches the preference.
-        if FnOverridePolicy.shouldOverride(
-            experimentalOptIn: config.experimentalFnOverride,
-            configuredSpecialKeyIsFn: config.specialKey == .fn,
-            tapPrepared: joined)
-        {
-            disableSystemFnBehavior()
-        } else {
-            restoreSystemFnBehavior(force: false)
-        }
+        engine.start(preferDefaultTap: true)
+        // Starting a thread is not proof of tap preparation. Only the native
+        // status callback plus a current enabled-tap readback can admit apply.
+        projectFnRecovery()
     }
 
     // MARK: - System Fn override (JOE-2286, transactional)
 
     private func disableSystemFnBehavior() {
-        // Already applied? Idempotent.
-        if fnTransaction?.record.status == .applied { return }
-
-        let snapshot = Self.captureSnapshot()
-        var tx = FnPreferenceTransaction(snapshot: snapshot, version: FnPreferenceTransaction.recordVersion)
-        guard tx.beginApply() else { return }
-        Self.persistRecord(tx.record)  // record BEFORE mutation
-
-        let defaults = UserDefaults(suiteName: snapshot.suiteName)
-        defaults?.set(0, forKey: snapshot.keyName)
-        CFPreferencesAppSynchronize(snapshot.suiteName as CFString)
-
-        tx.markApplied(mutationSucceeded: true)
-        Self.persistRecord(tx.record)
-        fnTransaction = tx
-        ZFLog.info("Fn override applied (was present=\(snapshot.keyPresent) type=\(snapshot.cfTypeTag ?? "nil"))")
+        _ = fnOverride.apply(
+            experimentalOptIn: config.experimentalFnOverride,
+            isFn: config.specialKey == .fn, tapPrepared: tapHealthy)
+        projectFnRecovery()
     }
 
     private func restoreSystemFnBehavior(force: Bool) {
-        var tx = fnTransaction
-        if tx == nil {
-            // Recover from the persisted record if this process applied it.
-            let ud = UserDefaults.standard
-            if let data = ud.data(forKey: Self.fnRecordKey),
-                let record = try? JSONDecoder().decode(FnPreferenceRecord.self, from: data)
-            {
-                tx = FnPreferenceTransaction(record: record)
+        _ = fnOverride.restore(explicitRetry: force)
+        projectFnRecovery()
+    }
+
+    private func projectFnRecovery() {
+        fnRecoveryRequired = fnOverride.recoveryRequired
+        if fnRecoveryRequired {
+            lastError = AppStrings.key("hotkey.fnRecovery.failed")
+            lifecycleState = .degraded
+            if config.specialKey == .fn {
+                if isKeyDown || toggleArmed { onEvent?(.release) }
+                resetToggle()
             }
-        }
-        guard var transaction = tx else { return }
-        guard force || transaction.record.isActiveOverride else {
-            fnTransaction = transaction
-            return
-        }
-        guard transaction.beginRestore() else {
-            fnTransaction = transaction
-            return
-        }
-        Self.restoreSnapshotExact(transaction.record.snapshot)
-        let verified = Self.verifyRestoredExact(transaction.record.snapshot)
-        transaction.finishRestore(verifiedExact: verified)
-        Self.persistRecord(transaction.record)
-        fnTransaction = transaction
-        if verified {
-            fnRecoveryRequired = false
-            ZFLog.info("Fn preference restored exactly")
-        } else {
-            // Restore failure: disable capture + surface persistent recovery.
-            fnRecoveryRequired = true
-            lastError = "Fn preference restore failed — use Reset in Settings"
-            ZFLog.error("Fn preference restore FAILED — capture disabled; recovery action surfaced")
+        } else if lastError == AppStrings.key("hotkey.fnRecovery.failed") {
+            lastError = nil
         }
     }
 
     // MARK: - Edges
 
     private func emitEdge(down: Bool) {
+        guard started else { return }
+        guard !(config.specialKey == .fn && fnRecoveryRequired) else { return }
         if mode == .holdToTalk {
             if down && !isKeyDown {
                 isKeyDown = true
@@ -454,6 +298,7 @@ final class HotkeyTapEngine: @unchecked Sendable {
     private var tapThread: Thread?
     private var tapRunLoop: CFRunLoop?
     private var eventTap: CFMachPort?
+    private var runGeneration: UUID?
     private var runLoopSource: CFRunLoopSource?
     private var nsGlobalMonitor: Any?
     private var nsLocalMonitor: Any?
@@ -463,6 +308,13 @@ final class HotkeyTapEngine: @unchecked Sendable {
     private let fnKeyCode: Int64 = 0x3F
 
     private func nowNanos() -> UInt64 { DispatchTime.now().uptimeNanoseconds }
+
+    var isTapPrepared: Bool {
+        lock.withLock {
+            guard runGeneration != nil, runLoopSource != nil, let tap = eventTap else { return false }
+            return CGEvent.tapIsEnabled(tap: tap)
+        }
+    }
 
     func updateConfig(_ config: HotkeyConfig) {
         lock.lock()
@@ -488,14 +340,17 @@ final class HotkeyTapEngine: @unchecked Sendable {
         }
 
         threadFinished = false
+        let generation = UUID()
         let thread = Thread { [weak self] in
-            self?.threadMain(preferDefaultTap: preferDefaultTap)
+            self?.threadMain(preferDefaultTap: preferDefaultTap, generation: generation)
             self?.threadFinished = true
             self?.joinSemaphore.signal()
         }
         thread.name = "ZephyrFlow.HotkeyTap"
         thread.qualityOfService = .userInteractive
         lock.lock()
+        runGeneration = generation
+        edgeStream.setLifecycle(.starting)
         tapThread = thread
         lock.unlock()
         thread.start()
@@ -510,6 +365,8 @@ final class HotkeyTapEngine: @unchecked Sendable {
         lock.lock()
         let runLoop = tapRunLoop
         let thread = tapThread
+        runGeneration = nil
+        edgeStream.setLifecycle(.stopping)
         lock.unlock()
 
         if let runLoop {
@@ -535,6 +392,7 @@ final class HotkeyTapEngine: @unchecked Sendable {
         runLoopSource = nil
         tapRunLoop = nil
         tapThread = nil
+        edgeStream.setLifecycle(.stopped)
         lock.unlock()
 
         DispatchQueue.main.async { [weak self] in
@@ -544,10 +402,19 @@ final class HotkeyTapEngine: @unchecked Sendable {
         return joined
     }
 
-    /// Time-based fail-safe for lost releases (bounded consumer-side sweep).
+    /// Query key state read-only; tests inject the resulting Boolean in Core.
     func sweepLostRelease(nowNanos: UInt64) -> Bool {
         lock.lock()
-        let recovered = edgeStream.sweepLostRelease(nowNanos: nowNanos)
+        let observedKey: UInt16?
+        switch special {
+        case .fn: observedKey = 63
+        case .rightOption: observedKey = 61
+        case .rightCommand: observedKey = 54
+        case .rightControl: observedKey = 62
+        case .none: observedKey = keyCode
+        }
+        let observed = observedKey.map { CGEventSource.keyState(.combinedSessionState, key: $0) }
+        let recovered = edgeStream.sweepLostRelease(nowNanos: nowNanos, observedKeyDown: observed)
         lock.unlock()
         if recovered {
             onEdge?(false)
@@ -634,7 +501,7 @@ final class HotkeyTapEngine: @unchecked Sendable {
 
     // MARK: CGEvent tap thread
 
-    private func threadMain(preferDefaultTap: Bool) {
+    private func threadMain(preferDefaultTap: Bool, generation: UUID) {
         let mask: CGEventMask =
             (1 << CGEventType.flagsChanged.rawValue)
             | (1 << CGEventType.keyDown.rawValue)
@@ -682,6 +549,11 @@ final class HotkeyTapEngine: @unchecked Sendable {
         }
 
         lock.lock()
+        guard runGeneration == generation, !Thread.current.isCancelled else {
+            lock.unlock()
+            CGEvent.tapEnable(tap: tap, enable: false)
+            return
+        }
         eventTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
@@ -691,13 +563,19 @@ final class HotkeyTapEngine: @unchecked Sendable {
 
         CFRunLoopAddSource(runLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
-
-        onStatus?("Tap OK (\(label)) ax=\(AXIsProcessTrusted())", true)
+        let ready = lock.withLock {
+            guard runGeneration == generation, !Thread.current.isCancelled, CGEvent.tapIsEnabled(tap: tap) else {
+                return false
+            }
+            edgeStream.setLifecycle(.healthy)
+            return true
+        }
+        if ready { onStatus?("Tap OK (\(label)) ax=\(AXIsProcessTrusted())", true) }
 
         while !Thread.current.isCancelled {
             let result = CFRunLoopRunInMode(.defaultMode, 15.0, false)
             lock.lock()
-            let tapRef = eventTap
+            let tapRef = runGeneration == generation ? eventTap : nil
             lock.unlock()
             if let tapRef, !CGEvent.tapIsEnabled(tap: tapRef) {
                 CGEvent.tapEnable(tap: tapRef, enable: true)
@@ -708,14 +586,14 @@ final class HotkeyTapEngine: @unchecked Sendable {
         }
 
         lock.lock()
-        if let source = runLoopSource {
-            CFRunLoopRemoveSource(runLoop, source, .commonModes)
-        }
+        CFRunLoopRemoveSource(runLoop, source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: false)
-        if eventTap != nil {
+        if runGeneration == generation {
+            edgeStream.setLifecycle(.stopped)
             eventTap = nil
             runLoopSource = nil
             tapRunLoop = nil
+            runGeneration = nil
         }
         lock.unlock()
     }
@@ -734,8 +612,6 @@ final class HotkeyTapEngine: @unchecked Sendable {
 
         lock.lock()
         let special = self.special
-        let configuredKey = self.keyCode
-        let configuredMods = self.modifiers
         lock.unlock()
 
         switch special {
@@ -765,7 +641,7 @@ final class HotkeyTapEngine: @unchecked Sendable {
         case .rightControl:
             return handleRightModCG(type: type, event: event, expected: 62, mask: .maskControl)
         case .none:
-            return handleStandardCG(type: type, event: event, keyCode: configuredKey, modifiers: configuredMods)
+            return handleStandardCG(type: type, event: event)
         }
     }
 
@@ -791,50 +667,48 @@ final class HotkeyTapEngine: @unchecked Sendable {
 
     private func handleStandardCG(
         type: CGEventType,
-        event: CGEvent,
-        keyCode: UInt16?,
-        modifiers: UInt
+        event: CGEvent
     ) -> Unmanaged<CGEvent>? {
-        guard let keyCode else { return Unmanaged.passUnretained(event) }
-        let eventKey = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        guard eventKey == keyCode else { return Unmanaged.passUnretained(event) }
-
-        let needed = CGEventFlags(rawValue: UInt64(modifiers))
-        let relevant: CGEventFlags = [.maskCommand, .maskShift, .maskAlternate, .maskControl]
-        let current = event.flags.intersection(relevant)
-        let required = needed.intersection(relevant)
-        guard current == required else { return Unmanaged.passUnretained(event) }
-
-        if type == .keyDown {
-            let autorepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
-            feedRaw(
-                HotkeySourceEvent(
-                    source: .tap, down: true,
-                    keyCode: eventKey,
-                    flags: event.flags.rawValue,
-                    isFnKey: false, isAutorepeat: autorepeat,
-                    timestampNanos: nowNanos()))
-        } else if type == .keyUp {
-            feedRaw(
-                HotkeySourceEvent(
-                    source: .tap, down: false,
-                    keyCode: eventKey,
-                    flags: event.flags.rawValue,
-                    isFnKey: false, timestampNanos: nowNanos()))
+        guard
+            let input = Self.standardInput(
+                type: type,
+                keyCode: event.getIntegerValueField(.keyboardEventKeycode), flags: event.flags.rawValue,
+                isAutorepeat: event.getIntegerValueField(.keyboardEventAutorepeat) != 0)
+        else {
+            return Unmanaged.passUnretained(event)
         }
+        let edge = lock.withLock { () -> Bool? in
+            guard special == nil else { return nil }
+            return edgeStream.feedStandard(input, requiredModifiers: UInt64(modifiers), timestampNanos: nowNanos())
+        }
+        if let edge { onEdge?(edge) }
+        // Observational shortcut: event consumption/OS conflict qualification
+        // is separate. Never claim that other apps cannot see the chord.
         return Unmanaged.passUnretained(event)
+    }
+
+    static func standardInput(type: CGEventType, keyCode: Int64, flags: UInt64, isAutorepeat: Bool)
+        -> StandardHotkeyEvent?
+    {
+        if type == .flagsChanged { return .flagsChanged(flags: flags) }
+        guard let key = UInt16(exactly: keyCode) else { return nil }
+        switch type {
+        case .keyDown: return .keyDown(keyCode: key, flags: flags, isAutorepeat: isAutorepeat)
+        case .keyUp: return .keyUp(keyCode: key, flags: flags)
+        default: return nil
+        }
     }
 
     // MARK: One serial edge machine
 
     private func feedRaw(_ event: HotkeySourceEvent) {
-        var emit = false
         lock.lock()
-        emit = edgeStream.feed(event)
+        let emit = edgeStream.feed(event)
+        let down = edgeStream.heldDown
         lock.unlock()
         if emit {
-            onDebug?("logical edge down=\(event.down) src=\(event.source.rawValue)")
-            onEdge?(event.down)
+            onDebug?("logical edge down=\(down) src=\(event.source.rawValue)")
+            onEdge?(down)
         }
     }
 }

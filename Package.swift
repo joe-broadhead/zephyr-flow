@@ -12,7 +12,9 @@ let package = Package(
     ],
     dependencies: [
         // Pin to current major line used in Package.resolved (avoid silent major drift).
-        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.18.0")
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "0.18.0"),
+        // Explicit local-tokenizer API; same version/revision already resolved via WhisperKit.
+        .package(url: "https://github.com/huggingface/swift-transformers.git", exact: "1.1.9"),
     ],
     targets: [
         // Pure logic + protocols (unit-tested)
@@ -27,14 +29,16 @@ let package = Package(
             dependencies: [
                 "ZephyrFlowCore",
                 .product(name: "WhisperKit", package: "WhisperKit"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
+                .product(name: "Hub", package: "swift-transformers"),
             ],
             path: "Sources/ZephyrFlow"
         ),
         .testTarget(
             name: "ZephyrFlowTests",
-            // Review REQ-2 (round 5): the authoritative XCTest target must
-            // cover the production paths (session stages, controller, engine,
-            // insertion). It depends on the app target for those types.
+            // Keep the app dependency available for production-adapter tests.
+            // Core contracts and bounded in-memory adapter checks are tested;
+            // this does not establish full production-path coverage (JOE-2243/2291).
             dependencies: ["ZephyrFlowCore", "ZephyrFlow"],
             path: "Tests/ZephyrFlowTests"
         ),

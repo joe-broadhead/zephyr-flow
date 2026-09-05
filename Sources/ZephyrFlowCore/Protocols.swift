@@ -8,6 +8,8 @@ public protocol WhisperEngineProtocol: Actor {
     /// Review R6: true when the engine instance is quarantined (a native
     /// decode was still busy at cleanup) and must be replaced before reuse.
     var isQuarantined: Bool { get }
+    /// A content-free sample-admission limit signal, not a native stop receipt.
+    var recordingLimitReached: Bool { get }
     /// Review B8: the verified artifact digest recorded at load (from the
     /// reviewed manifest). Carried into EngineIdentity so session evidence
     /// records which verified artifact was loaded.
@@ -19,6 +21,9 @@ public protocol WhisperEngineProtocol: Actor {
     ///   from that directory (Review B6v2: not WhisperKit's own cache) and
     ///   must not use the network.
     func load(model: ModelIdentifier, verifiedFolder: String?) async throws
+    /// Check the session's language/privacy capabilities before readiness is
+    /// published. No permission prompts, network activity or capture here.
+    func preflight(localOnly: Bool, language: SupportedLanguage) async throws
     /// - Parameter localOnly: When true, must not use any network path (fail closed).
     /// - Parameter sessionID: immutable session this stream belongs to
     ///   (JOE-2249/2250: session-scoped callbacks and decode ownership).
@@ -35,6 +40,16 @@ public protocol WhisperEngineProtocol: Actor {
     /// could not be quiesced within the bounded deadline, so the engine may
     /// still be owned by an unfinished task. The instance must not be reused.
     func quarantine() async
+}
+
+extension WhisperEngineProtocol {
+    public var recordingLimitReached: Bool { false }
+    public func preflight(localOnly: Bool, language: SupportedLanguage) async throws {
+        // The default witness is isolated to the conforming engine actor.
+        let ready = isReady
+        let quarantined = isQuarantined
+        guard ready && !quarantined else { throw WhisperEngineError.notReady }
+    }
 }
 
 public enum WhisperEngineError: LocalizedError, Sendable {
@@ -116,13 +131,12 @@ extension FlowProcessorProtocol {
     }
 
     /// Default typed entry for backends that only implement the legacy string
-    /// API (e.g. NeuralFlowProcessor). Wraps the legacy output in a typed
+    /// API (e.g. a string-only test fixture). Wraps the output in a typed
     /// FlowOutcome using the same guardrail semantics as the deterministic
     /// backend so the protocol is satisfied in Swift 6 language mode.
     public func process(_ request: FlowRequest) async -> FlowOutcome {
-        let started = Date()
+        let started = DispatchTime.now().uptimeNanoseconds
         let output = await process(request.text, style: request.style, language: request.language)
-        let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
         let loss = FlowOutcome.lossClass(for: request.style)
         let inTokens = FlowGuardrails.tokens(in: request.text)
         let outTokens = FlowGuardrails.tokens(in: output)
@@ -130,7 +144,8 @@ extension FlowProcessorProtocol {
         let preserved = covered.ok
         let status: FlowOutcomeStatus = preserved ? .accepted : .rejected
         let warnings: [FlowWarning] = preserved ? [] : [.guardrailRejected]
-        let fallbackReason: String? = preserved ? nil : "protected spans not preserved; original text returned (conservative)"
+        let fallbackReason: String? =
+            preserved ? nil : "protected spans not preserved; original text returned (conservative)"
         let changed = (preserved && request.text != output) ? 1 : 0
         return FlowOutcome(
             text: preserved ? output : request.text,
@@ -146,7 +161,7 @@ extension FlowProcessorProtocol {
             status: status,
             warnings: warnings,
             fallbackReason: fallbackReason,
-            durationNanos: duration,
+            durationNanos: DispatchTime.now().uptimeNanoseconds &- started,
             termination: .completed)
     }
 

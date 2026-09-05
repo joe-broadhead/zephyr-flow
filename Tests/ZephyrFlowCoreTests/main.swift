@@ -52,6 +52,20 @@ actor FakeSessionStages: DictationSessionStageProviding {
     /// Review B5 test hook: when true, applyFlow returns a REJECTED outcome
     /// (protected spans not preserved, original text returned).
     var flowRejected = false
+    var flowOverride: FlowOutcome?
+    var engineResultOverride: EngineResult?
+    var flowCount = 0
+    var captureEndsEarly = false
+    var stopCount = 0
+    var finalizeCount = 0
+    func setEarlyCaptureEnd(_ text: String) {
+        captureEndsEarly = true
+        partials = [text]
+        finalText = text
+    }
+    func setEngineResult(_ result: EngineResult) { engineResultOverride = result }
+    var immediateRecordingLimit = false
+    func setImmediateRecordingLimit() { immediateRecordingLimit = true }
     /// Round-6 B1 test hook: block recordHistory this long so a cancel can
     /// land deterministically during history persistence.
     var historyDelayNanos: UInt64 = 0
@@ -98,14 +112,24 @@ actor FakeSessionStages: DictationSessionStageProviding {
     ) async throws -> SessionCaptureHandle {
         let (interim, cont) = AsyncStream.makeStream(of: SessionPartial.self)
         for p in partials { cont.yield(SessionPartial(text: p)) }
+        if captureEndsEarly {
+            cont.yield(SessionPartial(text: finalText, captureEnded: true))
+            cont.yield(SessionPartial(text: finalText, captureEnded: true))  // duplicate terminal cannot finalize twice
+            cont.yield(SessionPartial(text: "synthetic stale partial"))
+        }
         cont.finish()
         let (levels, lcont) = AsyncStream.makeStream(of: Float.self)
         lcont.yield(0.4)
         lcont.finish()
-        return SessionCaptureHandle(interim: interim, levels: levels)
+        let recordingLimit = AsyncStream<Void> { continuation in
+            if immediateRecordingLimit { continuation.yield(()) }
+            continuation.finish()
+        }
+        return SessionCaptureHandle(interim: interim, levels: levels, recordingLimit: recordingLimit)
     }
 
     func stopCapture() async -> SessionAudioSummary {
+        stopCount += 1
         if stopDelayNanos > 0 {
             try? await Task.sleep(nanoseconds: stopDelayNanos)
         }
@@ -119,9 +143,13 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func finalize() async throws -> EngineResult {
-        EngineResult(
+        finalizeCount += 1
+        if let engineResultOverride { return engineResultOverride }
+        return EngineResult(
             text: finalText, completeness: completeness,
-            frameAccounting: nil,
+            frameAccounting: EngineFrameAccounting(
+                capturedSourceSamples: 16_000,
+                deliveredEngineSamples: 16_000, decodedEngineSamples: 16_000, droppedSourceSamples: 0),
             engine: EngineIdentity(
                 kind: .whisper, modelName: "Fake",
                 modelVersion: "1.0", modelDigest: "x"),
@@ -134,6 +162,8 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func applyFlow(_ request: FlowRequest) async -> FlowOutcome {
+        flowCount += 1
+        if let flowOverride { return flowOverride }
         if flowRejected {
             // Review B5: rejected outcome — original text returned, no
             // automatic insertion allowed.
@@ -160,6 +190,10 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func setFlowRejected(_ v: Bool) { flowRejected = v }
+    func setFlowOverride(_ value: FlowOutcome, original: String) {
+        flowOverride = value
+        finalText = original
+    }
 
     func validateTarget() async -> SessionValidationResult {
         let next = validationOutcomes.isEmpty ? .validated : validationOutcomes.removeFirst()
@@ -213,6 +247,21 @@ private struct UnreadableHistoryFileSystem: HistoryFileSystem {
 }
 
 // ===== JOE-2255: in-memory fault-injecting model filesystem =====
+actor CoreDownloadBarrier {
+    private(set) var entered = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func wait() async {
+        entered = true
+        if !released { await withCheckedContinuation { continuation = $0 } }
+    }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     struct Node {
         var isDir: Bool
@@ -222,6 +271,12 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     private let lock = NSLock()
     private var nodes: [String: Node] = [:]
     private var perms: [String: Int] = [:]
+    private let beforeDownload: @Sendable () async -> Void
+    init(beforeDownload: @escaping @Sendable () async -> Void = {}) { self.beforeDownload = beforeDownload }
+    private var _downloadCalls = 0
+    private var _downloadCancellations = 0
+    var downloadCalls: Int { lock.withLock { _downloadCalls } }
+    var downloadCancellations: Int { lock.withLock { _downloadCancellations } }
     var lockHeld: [String: Bool] = [:]
     // Fault injection knobs
     var failDownload = false
@@ -301,7 +356,10 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
         model: ModelIdentifier, to stagingURL: URL,
         onProgress: @escaping @Sendable (ModelDownloadProgress) -> Void
     ) async throws {
+        lock.withLock { _downloadCalls += 1 }
+        await beforeDownload()
         if downloadDelayNanos > 0 { try? await Task.sleep(nanoseconds: downloadDelayNanos) }
+        if Task.isCancelled { lock.withLock { _downloadCancellations += 1 } }
         if failDownload { throw URLError(.cannotConnectToHost) }
         // Write artifact payloads into staging. Round-5 B5: the default
         // manifest enumerates EVERY WhisperKit-loaded component, so the fake
@@ -310,11 +368,21 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
         var modelData = Data(repeating: 0xCD, count: Int(downloadBytes))
         if truncateArtifact { modelData = Data(repeating: 0xCD, count: 500) }
         try createDirectory(stagingURL, permissions: 0o700)
+        writeDownloadedFixtures(to: stagingURL, config: config)
+        onProgress(
+            ModelDownloadProgress(
+                fraction: 1.0, bytesDownloaded: UInt64(modelData.count),
+                bytesExpected: UInt64(modelData.count)))
+    }
+
+    /// No suspension or callback can occur while holding the fixture lock.
+    private func writeDownloadedFixtures(to stagingURL: URL, config: Data) {
         // Round-6 B4: .mlmodelc entries are DIRECTORY BUNDLES (a file inside),
         // matching real compiled Core ML models; the tokenizer is a directory
         // with tokenizer.json + configs. This makes the fake exercise the
         // same directory-aware hashing as production.
         lock.lock()
+        defer { lock.unlock() }
         // config.json is a single file.
         nodes[key(stagingURL.appendingPathComponent("config.json"))] = Node(
             isDir: false, data: config, size: UInt64(config.count))
@@ -350,11 +418,6 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
         nodes[key(tokDir.appendingPathComponent("config.json"))] = Node(
             isDir: false, data: Data(repeating: 0x45, count: 5_000),
             size: 5_000)
-        lock.unlock()
-        onProgress(
-            ModelDownloadProgress(
-                fraction: 1.0, bytesDownloaded: UInt64(modelData.count),
-                bytesExpected: UInt64(modelData.count)))
     }
     func promote(from: URL, to: URL) throws {
         if failPromote { throw CocoaError(.fileWriteUnknown) }
@@ -486,7 +549,25 @@ final class InMemoryHistoryFS: HistoryFileSystem, @unchecked Sendable {
     func setPermissions(_ url: URL, mode: Int) throws {}
 }
 
-/// Round-6: concurrency-safe failure counter for the split test runner.
+/// Held synthetic backend for non-joining Flow deadline regression checks.
+private actor CoreHeldFlowBackend: FlowProcessorProtocol {
+    private(set) var entered = false
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+    func process(_ text: String, style: FlowStyle) async -> String { text }
+    func process(_ request: FlowRequest) async -> FlowOutcome {
+        entered = true
+        if !released { await withCheckedContinuation { continuation = $0 } }
+        return await FlowProcessor.shared.process(request)
+    }
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+/// Concurrency-safe failure counter for the split test runner.
 private final class CoreTestCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var _value = 0
@@ -495,16 +576,18 @@ private final class CoreTestCounter: @unchecked Sendable {
         defer { lock.unlock() }
         return _value
     }
-    func bump() {
-        lock.lock()
-        _value += 1
-        lock.unlock()
+    @discardableResult
+    func bump() -> Int {
+        lock.withLock {
+            _value += 1
+            return _value
+        }
     }
 }
 
 /// Round-6: Sendable boxes so test Tasks do not mutate captured locals
 /// (Swift-6 diagnostics).
-private final class MutableArrayBox<T>: @unchecked Sendable {
+private final class MutableArrayBox<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var _values: [T] = []
     var values: [T] {
@@ -517,6 +600,13 @@ private final class MutableArrayBox<T>: @unchecked Sendable {
         _values.append(v)
         lock.unlock()
     }
+}
+
+/// Keeps the weak observation in a stored property (compatible with both
+/// supported compilers), without retaining the actor under test.
+private final class WeakSessionReference {
+    private(set) weak var value: DictationSession?
+    init(_ value: DictationSession?) { self.value = value }
 }
 
 private final class MutableSequencerBox: @unchecked Sendable {
@@ -632,7 +722,11 @@ struct CoreTests {
             check("downloads off by default", !s.allowModelDownloads)
             check("mayDownload follows allow flag", !s.mayDownloadModels)
             check("default model whisper tiny", s.preferredModel == .whisperTiny)
-            check("default hotkey fn", s.hotkey.specialKey == .fn)
+            check(
+                "default hotkey Control Option Space",
+                s.hotkey == .controlOptionSpace && s.hotkey.specialKey == nil
+                    && s.hotkey.keyCode == 49 && s.hotkey.modifiers == ((1 << 18) | (1 << 19))
+                    && !s.hotkey.experimentalFnOverride)
             check("debug logging off", !s.debugLogging)
             check("save history default off", !s.saveHistory)
         }
@@ -834,6 +928,7 @@ struct CoreTests {
             check("every working state can progress", progressOK)
             // happy path
             var happy: [SessionState] = [.idle]
+            var happyTransitionsMatch = true
             for (e, expect) in [
                 (SessionEvent.begin, SessionState.preparing),
                 (.readyToCapture, .capturing),
@@ -844,8 +939,14 @@ struct CoreTests {
                 (.targetValidationSucceeded, .inserting),
                 (.insertionSucceeded, .completed),
             ] {
-                if case .to(let ns) = tr(happy.last!, e) { happy.append(ns) }
+                if case .to(let ns) = tr(happy.last!, e) {
+                    happyTransitionsMatch = happyTransitionsMatch && ns == expect
+                    happy.append(ns)
+                } else {
+                    happyTransitionsMatch = false
+                }
             }
+            check("happy path follows every expected transition", happyTransitionsMatch)
             check("happy path reaches completed", happy.last == .completed && happy.count == 9)
         }
         // JOE-2267: TargetSnapshot contract
@@ -1373,7 +1474,237 @@ struct CoreTests {
                 await provider.insertionCount == 0)
         }
 
-        // ===== REQ-1: production-wiring session test (exactly-one terminal) =====
+        // Task cancellation while waiting for the control mailbox closes the
+        // stream without a command. It must still cancel/release the provider.
+        do {
+            let provider = FakeSessionStages()
+            let session = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: .init(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                    insertionMode: "automatic", saveHistory: false, copyOnlyOverrideBundleIDs: []))
+            let states = await session.subscribe()
+            let run = Task { await session.run() }
+            let timeout = Task {
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                await session.cancel()
+            }
+            var cancelledRun = false
+            var hidden = false
+            for await state in states {
+                if state.recordingSecondsRemaining != nil && !cancelledRun {
+                    cancelledRun = true
+                    run.cancel()
+                }
+                hidden = hidden || state.phase == .hidden
+            }
+            await run.value
+            timeout.cancel()
+            let cancelledProvider = await provider.cancelCount
+            let inserted = await provider.insertionCount
+            let released = await session.awaitTerminalAndReleased()
+            check(
+                "2246 cancelled capture mailbox releases provider",
+                cancelledRun && hidden && cancelledProvider == 1 && inserted == 0 && released)
+        }
+
+        // A .complete enum is not frame/final-event evidence. The real session
+        // must confine malformed success-shaped results to explicit review.
+        for (counts, termination, warnings): (EngineFrameAccounting?, EngineResultTermination, [EngineWarning]) in [
+            (nil, .completed, []),
+            (
+                .init(
+                    capturedSourceSamples: 0, deliveredEngineSamples: 0, decodedEngineSamples: 0,
+                    droppedSourceSamples: 0), .completed, []
+            ),
+            (
+                .init(
+                    capturedSourceSamples: 16_000, deliveredEngineSamples: 16_000, decodedEngineSamples: 16_000,
+                    droppedSourceSamples: 0), .failed, []
+            ),
+            (
+                .init(
+                    capturedSourceSamples: 16_000, deliveredEngineSamples: 16_000, decodedEngineSamples: 16_000,
+                    droppedSourceSamples: 0), .completed, [.truncation]
+            ),
+        ] {
+            let provider = FakeSessionStages()
+            let result = EngineResult(
+                text: "synthetic retained hypotheses", completeness: .complete, frameAccounting: counts,
+                engine: .init(kind: .whisper, modelName: "synthetic", modelVersion: nil, modelDigest: nil),
+                languageRequested: nil, languageDetected: nil, confidence: nil, confidenceSource: nil,
+                startedAtUptimeNanos: nil, endedAtUptimeNanos: nil, inferenceDurationNanos: nil,
+                warnings: warnings, fallbackReason: nil, termination: termination)
+            check("2252 malformed completion label rejected", !result.isComplete)
+            await provider.setEngineResult(result)
+            let session = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: .init(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                    insertionMode: "automatic", saveHistory: true, copyOnlyOverrideBundleIDs: []))
+            let states = await session.subscribe()
+            let run = Task { await session.run() }
+            await session.end()
+            var reviewed = false
+            for await state in states {
+                reviewed =
+                    reviewed
+                    || (state.phase == .warning && state.interimText == result.text
+                        && state.outputs.engineResult?.completeness == .partial)
+            }
+            await run.value
+            let flow = await provider.flowCount
+            let insertion = await provider.insertionCount
+            let history = await provider.historyCount
+            check(
+                "2252 malformed completion reviews without automatic side effects",
+                reviewed && flow == 0 && insertion == 0 && history == 0)
+        }
+        do {
+            let counts = EngineFrameAccounting(
+                capturedSourceSamples: 100, deliveredEngineSamples: 101,
+                decodedEngineSamples: 101, droppedSourceSamples: 0)
+            check(
+                "2252 fractional drift not truncated into tolerance",
+                !counts.reconciled(converterRatio: 0.995, roundingToleranceSamples: 1))
+            for ratio in [Double.nan, .infinity, -.infinity, -1, 0, .greatestFiniteMagnitude] {
+                check(
+                    "2252 malformed ratio fails without trap",
+                    !counts.reconciled(converterRatio: ratio, roundingToleranceSamples: 1))
+            }
+            let underflow = EngineFrameAccounting(
+                capturedSourceSamples: 1, deliveredEngineSamples: 1,
+                decodedEngineSamples: 1, droppedSourceSamples: 2)
+            check(
+                "2252 rejected dropped count underflow",
+                !underflow.reconciled(converterRatio: 1, roundingToleranceSamples: 1))
+        }
+
+        // Early terminal capture (including empty/error callbacks) exits
+        // Listening through the ordinary stop/finalize path, never waits for
+        // the ten-minute budget or promotes a hypothetical .complete response.
+        for text in ["synthetic retained hypothesis", ""] {
+            let provider = FakeSessionStages()
+            await provider.setEarlyCaptureEnd(text)
+            let session = DictationSession(
+                provider: provider, engineChoice: .appleSpeech,
+                settings: .init(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                    insertionMode: "automatic", saveHistory: true, copyOnlyOverrideBundleIDs: []))
+            let states = await session.subscribe()
+            let run = Task { await session.run() }
+            let timeout = Task {
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                await session.cancel()
+            }
+            var noticed = false
+            var reviewed = false
+            var noListeningAfterEnd = true
+            var noLimitClaim = true
+            for await state in states {
+                noticed = noticed || state.captureEndedEarly
+                if noticed { noListeningAfterEnd = noListeningAfterEnd && state.phase != .listening }
+                noLimitClaim = noLimitClaim && !state.recordingLimitReached
+                reviewed =
+                    reviewed
+                    || (state.phase == .warning && state.interimText == text
+                        && state.outputs.engineResult?.completeness == .partial)
+            }
+            await run.value
+            timeout.cancel()
+            let stops = await provider.stopCount
+            let finalized = await provider.finalizeCount
+            let flow = await provider.flowCount
+            let inserted = await provider.insertionCount
+            let history = await provider.historyCount
+            check(
+                "2253 early engine terminal ends Listening and reviews once",
+                noticed && reviewed && noListeningAfterEnd && noLimitClaim && stops == 1 && finalized == 1
+                    && flow == 0 && inserted == 0 && history == 0)
+        }
+
+        // Product-limit timer and sample-limit signal share the normal stop
+        // path. Short injected clock budgets do not stand in for device soak.
+        for fromSamples in [false, true] {
+            let provider = FakeSessionStages()
+            if fromSamples { await provider.setImmediateRecordingLimit() }
+            let session = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: .init(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                    insertionMode: "automatic", saveHistory: false, copyOnlyOverrideBundleIDs: []),
+                recordingLimitNanos: fromSamples ? 600_000_000_000 : 50_000_000)
+            let states = await session.subscribe()
+            let run = Task { await session.run() }
+            let timeout = Task {
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                await session.cancel()
+            }
+            var reachedLimit = false
+            var remainingWasPublished = false
+            var succeeded = false
+            for await state in states {
+                reachedLimit = reachedLimit || state.recordingLimitReached
+                remainingWasPublished = remainingWasPublished || (state.recordingSecondsRemaining != nil)
+                succeeded = succeeded || state.phase == .success
+            }
+            await run.value
+            timeout.cancel()
+            let inserted = await provider.insertionCount
+            check(
+                "2251 product limit stops and finalizes through normal path",
+                reachedLimit && remainingWasPublished && succeeded && inserted == 1)
+        }
+
+        // Typed Flow boundaries through the real session actor + fake stages.
+        do {
+            let original = "  👩🏽‍💻 e\u{301}\n\tkeep trailing space  "
+            for status in [FlowOutcomeStatus.accepted, .deadlineExceeded, .cancelled, .superseded] {
+                let deadline = status == .deadlineExceeded
+                let outcome = FlowOutcome(
+                    text: original, requestedStyle: .raw,
+                    resolvedLossClass: .verbatim, backend: .regex, capabilityID: "synthetic", capabilityVersion: 1,
+                    language: .enUS, changedRangeCount: 0, protectedSpanCount: 0, protectedSpansPreserved: true,
+                    status: status, warnings: deadline ? [.verbatimFallback] : [], fallbackReason: nil,
+                    durationNanos: 1,
+                    termination: deadline ? .deadlineExceeded : (status == .accepted ? .completed : .cancelled))
+                let provider = FakeSessionStages()
+                await provider.setFlowOverride(outcome, original: original)
+                let session = DictationSession(
+                    provider: provider, engineChoice: .whisper,
+                    settings: .init(
+                        localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                        insertionMode: "automatic", saveHistory: false, copyOnlyOverrideBundleIDs: []))
+                let states = await session.subscribe()
+                let run = Task { await session.run() }
+                let timeout = Task {
+                    do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                    await session.cancel()
+                }
+                var ended = false
+                var reviewed = false
+                for await state in states {
+                    if state.phase == .listening && !ended {
+                        ended = true
+                        await session.end()
+                    }
+                    if state.phase == .review {
+                        reviewed = true
+                        await session.discard()
+                    }
+                }
+                await run.value
+                timeout.cancel()
+                let request = await provider.lastInsertRequest
+                if status == .accepted || deadline {
+                    check("2279 session preserves exact accepted/fallback text", request?.text == original && !reviewed)
+                } else {
+                    check("2279 cancelled/superseded Flow never auto-inserts", request == nil && reviewed)
+                }
+            }
+        }
+
+        // ===== REQ-1: session actor with fake stages (exactly-one terminal) =====
         do {
             // Drive a full session through capture -> end -> review(retry) ->
             // success; assert EXACTLY ONE success phase and no re-entrant
@@ -1788,7 +2119,7 @@ struct CoreTests {
             _ = ch.enqueue(
                 AudioChunk(sessionID: b, sequence: 0, startSample: 0, sampleRate: 16000, channelCount: 1, samples: [0]))
             check("cross-session chunk rejected and counted", ch.stats().wrongSessionRejected == 1 && ch.isDegraded)
-            _ = ch.close()
+            ch.close()
             _ = ch.enqueue(
                 AudioChunk(sessionID: a, sequence: 0, startSample: 0, sampleRate: 16000, channelCount: 1, samples: [0]))
             check("closed channel counted", ch.stats().closedDropped == 1)
@@ -2248,6 +2579,7 @@ struct CoreTests {
                 deadlineNanosAhead: 20_000_000,
                 startedAtNanos: start,
                 nowNanos: { start },
+                lane: AxOperationLane(),
                 operation: {
                     Thread.sleep(forTimeInterval: 0.5)  // synchronous hang, like a stuck AX target
                     return 7
@@ -2274,22 +2606,45 @@ struct CoreTests {
             } else {
                 check("R2.2 expired budget never executes", false)
             }
-            // R2.2: the wait returns at the deadline even if the operation is
-            // a never-returning sync call (bounded, no hang).
+            // R2.2: held synchronous work outlives its waiter; ownership must
+            // persist, but tests release it rather than leaking infinite work.
+            let heldLane = AxOperationLane()
+            let heldRelease = DispatchSemaphore(value: 0)
+            let heldEntered = ExecutedFlag()
             let startNs = DispatchTime.now().uptimeNanoseconds
-            let never = await AxBoundedRunner.run(
-                deadlineNanosAhead: 30_000_000,  // 30 ms
-                startedAtNanos: startNs,
-                nowNanos: { DispatchTime.now().uptimeNanoseconds },
-                operation: {
-                    while true { Thread.sleep(forTimeInterval: 1.0) }
-                })
-            let elapsed = DispatchTime.now().uptimeNanoseconds &- startNs
-            if case .deadlineExceeded = never {
-                check("R2.2 never-returning op bounded (~30ms)", elapsed < 5_000_000_000)
-            } else {
-                check("R2.2 never-returning op bounded", false)
+            let heldCall = Task {
+                await AxBoundedRunner.run(
+                    deadlineNanosAhead: 10_000_000_000,
+                    startedAtNanos: startNs,
+                    nowNanos: { DispatchTime.now().uptimeNanoseconds },
+                    lane: heldLane,
+                    operation: {
+                        heldEntered.mark()
+                        _ = heldRelease.wait(timeout: .now() + 10)
+                        return 9
+                    })
             }
+            while !heldEntered.didRun && DispatchTime.now().uptimeNanoseconds - startNs < 5_000_000_000 {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            check("2270 held worker entry observed", heldEntered.didRun)
+            heldCall.cancel()
+            let cancelled = await heldCall.value
+            if case .cancelled(let mayHaveStarted) = cancelled {
+                check("R2.2 held native cancellation waiter returns", mayHaveStarted)
+            } else {
+                check("R2.2 held native cancellation waiter returns", false)
+            }
+            check("2270 native work remains owned after cancellation", heldLane.hasOutstandingWork)
+            let busy = await AxBoundedRunner.run(
+                deadlineNanosAhead: 1_000_000_000,
+                startedAtNanos: start, nowNanos: { start }, lane: heldLane, operation: { 10 })
+            if case .busy = busy {
+                check("2270 native retries cannot overlap", true)
+            } else {
+                check("2270 native retries cannot overlap", false)
+            }
+            heldRelease.signal()
             // Already-expired budget never executes.
             let expired = await AxBoundedRunner.run(
                 deadlineNanosAhead: 10,
@@ -2590,6 +2945,33 @@ struct CoreTests {
             check(
                 "2260 changed pasteboard not overwritten",
                 t3.attemptRestore(currentChangeCount: 99, currentIsOurMarker: false) == .notRestoredBecauseChanged)
+            var copiedMarker = PasteboardTransaction(sessionID: sid, original: plain)!
+            copiedMarker.applyTemporary(changeCount: 6)
+            check(
+                "2260 marker cannot authorize a newer clipboard generation",
+                copiedMarker.attemptRestore(currentChangeCount: 7, currentIsOurMarker: true)
+                    == .notRestoredBecauseChanged)
+            var missingMarker = PasteboardTransaction(sessionID: sid, original: plain)!
+            missingMarker.applyTemporary(changeCount: 6)
+            check(
+                "2260 count alone cannot authorize restoration",
+                missingMarker.attemptRestore(currentChangeCount: 6, currentIsOurMarker: false)
+                    == .notRestoredBecauseChanged)
+            var reads = 0
+            let missingData = PasteboardSnapshot.capture(itemTypes: [["one", "two"]], changeCount: 0) { _, _ in
+                reads += 1
+                return nil
+            }
+            check("2260 unreadable representation rejects entire snapshot", missingData == nil && reads == 1)
+            reads = 0
+            let metadataOverflow = PasteboardSnapshot.capture(
+                itemTypes: [["one", "two"]], changeCount: 0,
+                budget: .init(maxTypesPerItem: 1)
+            ) { _, _ in
+                reads += 1
+                return Data()
+            }
+            check("2260 metadata budget precedes payload materialization", metadataOverflow == nil && reads == 0)
             // Budget overflow => no transaction at all (no destructive mutation).
             let huge = PasteboardSnapshot(
                 items: [
@@ -2801,7 +3183,6 @@ struct CoreTests {
                 let ratio = [0.5, 1.0, 2.0, 0.75][Int(rnd(4))]
                 var captured: UInt64 = 0
                 var converted: UInt64 = 0
-                var dropped: UInt64 = 0
                 let chunkCount = Int(rnd(40)) + 1
                 for _ in 0..<chunkCount {
                     let samples = UInt64(rnd(4000)) + 16
@@ -2813,7 +3194,12 @@ struct CoreTests {
                     acct.noteDelivered(engineSamples: out)
                 }
                 let tol: UInt64 = 32
-                if !acct.reconciles(converterRatio: ratio, roundingToleranceSamples: tol) {
+                if !acct.reconciles(converterRatio: ratio, roundingToleranceSamples: tol)
+                    || acct.capturedSourceSamples != captured
+                    || acct.convertedEngineSamples != converted
+                    || acct.deliveredEngineSamples != converted
+                    || acct.droppedSourceSamples != 0
+                {
                     propertyOK = false
                 }
             }
@@ -3128,7 +3514,7 @@ struct CoreTests {
             let bindA = SessionEngineBinding(sessionID: sidA, engineToken: tok1, engineKind: .whisper)
             let bindB = SessionEngineBinding(sessionID: sidB, engineToken: tok1, engineKind: .whisper)
 
-            var gate = CallbackGate()
+            let gate = CallbackGate()
             check(
                 "2249 open gate accepts current binding",
                 gate.accepts(binding: bindA, currentSessionID: sidA, currentEngineToken: tok1))
@@ -3873,10 +4259,15 @@ struct CoreTests {
                 corpusVersion: FlowFidelityCorpus.version,
                 stats: perStyle,
                 policy: FlowReleasePolicy.current)
-            check("2281 release gate passes", gateResult == .pass)
-            if case .fail(let reason) = gateResult { print("GATE-FAIL:", reason) }
-            // The candidate cannot modify its own thresholds: policy + corpus
-            // versions are fixed constants.
+            // The inherited corpus has NO Raw cases, although the policy has
+            // a Raw budget. Do not invent evidence or silently skip that style.
+            // This is an evaluator regression test, not a passing release gate.
+            check(
+                "2281 inherited incomplete corpus cannot qualify",
+                gateResult == .fail(reason: "raw: missing statistics"))
+            if case .fail(let reason) = gateResult { print("FLOW QUALIFICATION INCOMPLETE:", reason) }
+            // A named version/baseline is metadata, not independently verified
+            // provenance or protection against candidate source edits.
             check(
                 "2281 policy versioned + baseline named",
                 FlowReleasePolicy.current.version >= 1
@@ -3899,11 +4290,18 @@ struct CoreTests {
                 "goldenExact": stats.golden,
                 "deterministicRuns": stats.deterministic,
                 "failures": failures,
+                "releaseGatePassed": gateResult == .pass,
+                "releaseGateResult": String(describing: gateResult),
+                "requiredStyleCount": FlowReleasePolicy.current.budgets.count,
+                "measuredStyleCount": perStyle.count,
             ]
-            if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted]),
-                let text = String(data: data, encoding: .utf8)
-            {
-                try? text.write(toFile: "/tmp/flow-fidelity-report.json", atomically: true, encoding: .utf8)
+            if let path = ProcessInfo.processInfo.environment["ZF_FLOW_REPORT_PATH"] {
+                do {
+                    let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted])
+                    try data.write(to: URL(fileURLWithPath: path), options: .atomic)
+                } catch {
+                    check("2281 requested Flow evidence write must succeed", false)
+                }
             }
         }
 
@@ -3934,6 +4332,10 @@ struct CoreTests {
                 "2284 complete+verified => green success",
                 pres(.complete, .accepted, verified).semantic == .verifiedSuccess
                     && pres(.complete, .accepted, verified).colorToken == "green")
+            check(
+                "2284 explicit copy is labelled copy, not inserted",
+                pres(.complete, .accepted, copied).title == "Copied to clipboard"
+                    && pres(.complete, .accepted, copied).title != pres(.complete, .accepted, verified).title)
             check(
                 "2284 complete+unverified NOT green, distinct language",
                 pres(.complete, .accepted, unverified).semantic == .unverifiedPosted
@@ -3994,6 +4396,147 @@ struct CoreTests {
     }
 
     static func runPart5() async {
+        do {
+            var buffer = LongDictationAudioBuffer(maximumSamples: 10, blockSamples: 3)
+            check("2251 blocked buffer admits prefix", buffer.append([0, 1, 2, 3, 4, 5]) == 6)
+            check(
+                "2251 partial window does not erase final audio",
+                buffer.recentSamples(maximum: 2) == [4, 5]
+                    && buffer.samples(in: 0..<3) == [0, 1, 2])
+            check(
+                "2251 product limit counts excess",
+                buffer.append([6, 7, 8, 9, 10]) == 4
+                    && buffer.rejectedSamples == 1 && buffer.reachedLimit)
+            check("2251 final prefix still present", buffer.samples(in: 0..<10) == Array(0..<10).map(Float.init))
+            let plan = FinalDecodeChunkPlan.ranges(sampleCount: LongDictationPolicy.maximumSamples)
+            check(
+                "2251 ten-minute plan covers complete admitted range",
+                plan?.first?.lowerBound == 0 && plan?.last?.upperBound == 9_600_000)
+            check("2251 invalid length cannot plan", FinalDecodeChunkPlan.ranges(sampleCount: 9_600_001) == nil)
+            let missing = LongDictationStitcher.stitch(
+                [
+                    .init(samples: 0..<480_000, text: "first", words: nil),
+                    .init(samples: 448_000..<500_000, text: "second", words: nil),
+                ], expectedSampleCount: 500_000)
+            if case .incomplete(let text, _) = missing {
+                check("2251 missing seam preserves both hypotheses", text == "first\n\nsecond")
+            } else {
+                check("2251 missing seam preserves both hypotheses", false)
+            }
+        }
+        do {
+            check(
+                "2258 secure subrole confines ordinary text role",
+                AccessibilitySensitivity.classify(
+                    role: .value("AXTextField"), subrole: .value("AXSecureTextField"), enabled: true) == .secure)
+            check(
+                "2258 role failure cannot erase secure subrole evidence",
+                AccessibilitySensitivity.classify(
+                    role: .unavailable, subrole: .value("AXSecureTextField"), enabled: nil) == .secure)
+            check(
+                "2258 subrole read failure is unknown",
+                AccessibilitySensitivity.classify(role: .value("AXTextField"), subrole: .unavailable, enabled: true)
+                    == .unknown)
+            check(
+                "2258 unsupported optional subrole allows known enabled text role",
+                AccessibilitySensitivity.classify(role: .value("AXTextArea"), subrole: .notPresent, enabled: true)
+                    == .normal)
+            check(
+                "2258 enabled evidence failure is unknown",
+                AccessibilitySensitivity.classify(role: .value("AXTextArea"), subrole: .notPresent, enabled: nil)
+                    == .unknown)
+        }
+        do {
+            let backend = CoreHeldFlowBackend()
+            let router = FlowRouter(regex: backend)
+            let request = FlowRequest(
+                sessionID: SessionID(token: "deadline", sequence: 1, createdAtUptimeNanos: 0),
+                text: "  synthetic café -12 kg  ", style: .clean, language: .enUS,
+                sensitivity: .normal, deadlineNanosAhead: 100_000_000)
+            let output = await router.process(request)
+            let entered = await backend.entered
+            check(
+                "2279 request deadline returns before native completion", output.status == .deadlineExceeded && entered)
+            check(
+                "2279 deadline fallback preserves exact Unicode and whitespace",
+                output.text == request.text && output.resolvedLossClass == .verbatim)
+            check("2279 deadline retains native work owner", await router.hasOutstandingWork)
+            let busy = await router.process(request)
+            check("2279 busy native backend does not accumulate work", busy.status == .rejected)
+            await backend.release()
+            for _ in 0..<500 {
+                if !(await router.hasOutstandingWork) { break }
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            check("2279 actual completion releases native owner", !(await router.hasOutstandingWork))
+        }
+        do {
+            let keyCalls = CoreTestCounter()
+            let repo = ActorHistoryRepository(
+                fileURL: URL(fileURLWithPath: "/synthetic-never-accessed/history.json"),
+                fileSystem: InMemoryHistoryFS())
+            let preparation = HistoryStoragePreparation(repository: repo) {
+                keyCalls.bump()
+                return nil
+            }
+            check("2261 history off skips initialization", await preparation.prepareForSession(saveHistory: false))
+            check("2261 history off never requests a key", keyCalls.value == 0)
+            check("2261 history off leaves storage uninitialized", await repo.storageState == .uninitialized)
+            check(
+                "2261 zero history wait budget does not launch work",
+                !(await preparation.prepareForAccess(timeoutNanos: 0)))
+            check("2261 rejected wait did not request key", keyCalls.value == 0)
+        }
+        // Current readiness, not consent or historical onboarding flags.
+        do {
+            let consentOnly = OnboardingReadinessSnapshot(
+                microphone: true, speech: false, accessibility: false,
+                downloadConsent: true, engineLoaded: false)
+            check("2283 consent is not loaded readiness", !consentOnly.satisfies(.modelAcquisition))
+            check(
+                "2282 consent cannot satisfy Apple language capability", !consentOnly.satisfies(.languageAvailability))
+            let cached = OnboardingReadinessSnapshot(
+                microphone: true, speech: true, accessibility: false,
+                downloadConsent: false, engineLoaded: true)
+            check("2283 verified loaded cache needs no download consent", cached.satisfies(.modelAcquisition))
+            for path in [OnboardingProductPath.appleSpeechAutomatic, .appleSpeechClipboardOnly] {
+                check(
+                    "2282 every Apple path checks language",
+                    CapabilityGraph.steps(for: path).contains { $0.capability == .languageAvailability })
+            }
+            for localOnly in [true, false] {
+                for onDevice in [true, false] {
+                    let capabilities = SpeechReadinessCapabilities(
+                        speechAuthorized: true, microphoneAuthorized: true,
+                        requestedLocaleAvailable: true, recognizerAvailable: true, supportsOnDevice: onDevice)
+                    if localOnly && !onDevice {
+                        do {
+                            _ = try capabilities.validate(localOnly: true)
+                            check("2254 local only fails closed", false)
+                        } catch {
+                            check(
+                                "2254 local only controlled failure",
+                                error as? SpeechCapabilityFailure == .onDeviceUnavailable)
+                        }
+                    } else {
+                        check(
+                            "2254 prefer device even when network allowed",
+                            (try? capabilities.validate(localOnly: localOnly)) == onDevice)
+                    }
+                }
+            }
+            let noSpeech = SpeechReadinessCapabilities(
+                speechAuthorized: false, microphoneAuthorized: true,
+                requestedLocaleAvailable: true, recognizerAvailable: true, supportsOnDevice: true)
+            do {
+                _ = try noSpeech.validate(localOnly: true)
+                check("2254 denied speech rejects readiness", false)
+            } catch {
+                check(
+                    "2254 speech authorization failure controlled",
+                    error as? SpeechCapabilityFailure == .speechAuthorizationRequired)
+            }
+        }
         // ===== JOE-2243: AppEnvironment DI — full pipeline with fakes only =====
         do {
             var clock = FakeClock(now: 1000)
@@ -4004,15 +4547,22 @@ struct CoreTests {
             check("2243 fake clock controllable", clock.nowNanos() == 1500)
             // Sleeper records (no real wait), ids monotonic, metrics/history
             // are in-memory, permissions fake.
+            let microphone = await env.permissions.microphoneGranted
+            let accessibility = await env.permissions.accessibilityTrusted
+            let speech = await env.permissions.speechRecognitionGranted
             check(
                 "2243 fake permissions",
-                env.permissions.microphoneGranted
-                    && env.permissions.accessibilityTrusted
-                    && env.permissions.speechRecognitionGranted)
-            check("2243 fake settings repo", env.settings.current == .default)
+                microphone && accessibility && speech)
+            let currentSettings = await env.settings.current
+            check("2243 fake settings repo", currentSettings == .default)
             // Engine registry carries the fake engine.
-            let engine = env.engines.whisper as? FakeWhisperEngine
+            let engine = env.engines.makeEngine(for: .whisperTiny) as? FakeWhisperEngine
             check("2243 fake engine in registry", engine != nil)
+            let freshRegistry = EngineRegistry(makeWhisper: { FakeWhisperEngine() }, makeAppleSpeech: nil)
+            let firstCandidate = freshRegistry.makeEngine(for: .whisperTiny)
+            let secondCandidate = freshRegistry.makeEngine(for: .whisperTiny)
+            check("2243 registry factories create isolated candidates", firstCandidate !== secondCandidate)
+            check("2243 missing backend cannot substitute Whisper", freshRegistry.makeEngine(for: .appleSpeech) == nil)
             // Session pipeline smoke with fakes: start -> append -> finalize.
             let sid = SessionID(token: "env", sequence: 1, createdAtUptimeNanos: 0)
             var finalResult: EngineResult?
@@ -4036,9 +4586,9 @@ struct CoreTests {
             }
             let target = env.targetValidation as? FakeTargetValidation
             check("2243 fake target validation available", target != nil)
-            // Production env uses the real flow (no side effects at init).
-            let prodSettings = AppEnvironment.test().settings.current
-            check("2243 test env has no side effects", prodSettings == .default)
+            // The test composition uses static settings, not the production store.
+            let testSettings = await AppEnvironment.test().settings.current
+            check("2243 test env has no side effects", testSettings == .default)
         }
 
         // ===== JOE-2266: termination handshake =====
@@ -4115,7 +4665,7 @@ struct CoreTests {
             check("2264 canary detects key shape", PrivacyCanary.scan("key=sk-1234") == "sk-")
             // Bounded nonblocking sink: overflow drops counted, no stall.
             let sink = BoundedEventSink(capacity: 4)
-            var delivered: [TelemetryEvent] = []
+            let delivered = MutableArrayBox<TelemetryEvent>()
             sink.setHost { delivered.append($0) }
             for i in 0..<20 {
                 sink.record(TelemetryEvent(sessionID: tid, kind: .stageEntered, atNanos: UInt64(i)))
@@ -4123,13 +4673,12 @@ struct CoreTests {
             check("2264 sink overflow drops counted", sink.droppedCount >= 16)
             check("2264 sink never blocks", sink.pendingCount == 4)
             _ = sink.drain()
-            check("2264 sink drains to host", delivered.count == 4 && sink.pendingCount == 0)
+            check("2264 sink drains to host", delivered.values.count == 4 && sink.pendingCount == 0)
             // Reentrant host callback (records inside callback) cannot deadlock.
             let reentrant = BoundedEventSink(capacity: 8)
-            var nested = 0
+            let nested = CoreTestCounter()
             reentrant.setHost { ev in
-                nested += 1
-                if nested < 3 {
+                if nested.bump() < 3 {
                     reentrant.record(ev)  // reentrant call — must not deadlock
                 }
             }
@@ -4140,7 +4689,7 @@ struct CoreTests {
                 _ = reentrant.drain()
                 drains += 1
             }
-            check("2264 reentrant sink no deadlock", nested == 3 && drains == 3)
+            check("2264 reentrant sink no deadlock", nested.value == 3 && drains == 3)
         }
 
         // ===== JOE-2261: opt-in bounded actor history =====
@@ -4171,7 +4720,7 @@ struct CoreTests {
                     timestamp: now.addingTimeInterval(-age), text: text,
                     duration: 1, modelUsed: "Tiny", sensitivityClass: "normal")
             }
-            var list = [
+            let list = [
                 e(1, text: "aaaa"), e(2, text: "bbbb"), e(3, text: "cccc"),
                 e(4, text: "dddd"), e(5, age: 7200, text: "eeee"),
             ]
@@ -4789,7 +5338,7 @@ struct CoreTests {
                 provider: provider7,
                 engineChoice: .whisper,
                 settings: settings(false))
-            weak var weak7 = s7
+            let weak7 = WeakSessionReference(s7)
             // Round-6: the Task closure must capture an IMMUTABLE actor
             // reference (Sendable) — capturing a mutable `var` would be a
             // non-Sendable capture under Swift-6 diagnostics.
@@ -4804,7 +5353,7 @@ struct CoreTests {
             var released = false
             for _ in 0..<5 {
                 try? await Task.sleep(nanoseconds: 40_000_000)
-                if weak7 == nil {
+                if weak7.value == nil {
                     released = true
                     break
                 }
@@ -4815,7 +5364,7 @@ struct CoreTests {
         // ===== JOE-2255: verified model acquisition lifecycle =====
         do {
             // Round-6 B4: directory-aware hash mirroring FakeModelFS.
-            nonisolated func dirHash(_ entries: [(String, Data)]) -> String {
+            @Sendable nonisolated func dirHash(_ entries: [(String, Data)]) -> String {
                 let sorted = entries.sorted { $0.0 < $1.0 }
                 var hasher = SHA256()
                 for (rel, data) in sorted {
@@ -4826,7 +5375,7 @@ struct CoreTests {
                 return hasher.finalize().map { String(format: "%02x", $0) }.joined()
             }
 
-            nonisolated func manifest(
+            @Sendable nonisolated func manifest(
                 _ model: ModelIdentifier,
                 digests: [String: String] = [:]
             ) -> ModelManifest {
@@ -4986,19 +5535,55 @@ struct CoreTests {
             check("2255 stale lock recovered -> ready", r9.state == .ready)
 
             // 10. Cancellation mid-download: cancelled, no artifact promoted.
-            let fs10 = FakeModelFS()
-            fs10.downloadDelayNanos = 200_000_000
+            let barrier10 = CoreDownloadBarrier()
+            let fs10 = FakeModelFS(beforeDownload: { await barrier10.wait() })
             let acq10 = ModelAcquisitionController(fs: fs10)
             let task10 = Task {
                 await acq10.acquire(model: .whisperTiny, consent: true)
             }
-            try? await Task.sleep(nanoseconds: 60_000_000)
+            for _ in 0..<5000 {
+                if await barrier10.entered { break }
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            check("2255 explicit-cancel fixture reached held download", await barrier10.entered)
             await acq10.cancel(model: .whisperTiny)
+            await barrier10.release()
             let r10 = await task10.value
             check("2255 cancel mid-download -> cancelled", r10.state == .cancelled)
             check(
                 "2255 cancelled never ready",
                 await acq10.verifiedReadiness(for: .whisperTiny).state != .ready)
+            check("2255 explicit cancel reaches download task", fs10.downloadCancellations == 1)
+            let retried10 = await acq10.acquire(model: .whisperTiny, consent: true)
+            check("2255 retry after cancel resets cancellation", retried10.state == .ready && fs10.downloadCalls == 2)
+
+            let ownerBarrier = CoreDownloadBarrier()
+            let fsCancelledOwner = FakeModelFS(beforeDownload: { await ownerBarrier.wait() })
+            let cancelledOwner = ModelAcquisitionController(fs: fsCancelledOwner)
+            let owner = Task { await cancelledOwner.acquire(model: .whisperTiny, consent: true) }
+            for _ in 0..<5000 {
+                if await ownerBarrier.entered { break }
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            check("2255 owner-cancel fixture reached download", await ownerBarrier.entered)
+            owner.cancel()
+            await ownerBarrier.release()
+            let cancelledResult = await owner.value
+            check("2255 caller cancellation reaches retained native task", fsCancelledOwner.downloadCancellations == 1)
+            check(
+                "2255 cancelled caller cannot promote",
+                cancelledResult.state == .cancelled && cancelledResult.verifiedURL == nil)
+            check(
+                "2255 cancelled caller leaves no verified artifact",
+                await cancelledOwner.verifiedArtifact(for: .whisperTiny) == nil)
+
+            check(
+                "2255 unknown transport progress stays indeterminate",
+                ModelDownloadProgress(fraction: nil, bytesDownloaded: 0, bytesExpected: nil).fraction == nil)
+            check(
+                "2255 invalid measured progress rejected",
+                ModelDownloadProgress(fraction: .nan, bytesDownloaded: 0, bytesExpected: nil).fraction == nil
+                    && ModelDownloadProgress(fraction: 1.1, bytesDownloaded: 0, bytesExpected: nil).fraction == nil)
 
             // 11. Readiness reflects VERIFIED loadability: a manifest-less
             //     non-empty dir is NOT ready.
@@ -5079,6 +5664,32 @@ struct CoreTests {
             }
         }
 
+        // Model-bound tokenizer cache lookup (synthetic filesystem only).
+        do {
+            let fm = FileManager.default
+            let root = fm.temporaryDirectory.appendingPathComponent("zf-tokenizer-locator-\(UUID())")
+            let base = root.appendingPathComponent("openai/whisper-base")
+            do {
+                try fm.createDirectory(at: base, withIntermediateDirectories: true)
+                for name in ["tokenizer.json", "tokenizer_config.json"] {
+                    try Data("synthetic locator fixture".utf8).write(to: base.appendingPathComponent(name))
+                }
+                check(
+                    "tokenizer locator rejects other model",
+                    WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]) == nil)
+                check(
+                    "tokenizer locator selects requested namespace",
+                    WhisperTokenizerLocator.locate(model: .whisperBase, roots: [root])?.path == base.path)
+                try fm.removeItem(at: base.appendingPathComponent("tokenizer_config.json"))
+                check(
+                    "tokenizer locator requires configuration",
+                    WhisperTokenizerLocator.locate(model: .whisperBase, roots: [root]) == nil)
+                try fm.removeItem(at: root)
+            } catch {
+                check("tokenizer locator fixture must complete", false)
+            }
+        }
+
         // ===== B4 round-6: directory-aware verified model =====
         do {
             // Review B4 (round 6): a compiled .mlmodelc is a DIRECTORY bundle.
@@ -5126,7 +5737,7 @@ struct CoreTests {
 
         // ===== JOE-2262: at-rest history encryption =====
         do {
-            nonisolated func key(_ id: String = "k1") -> HistoryCryptoKey {
+            @Sendable nonisolated func key(_ id: String = "k1") -> HistoryCryptoKey {
                 HistoryCryptoKey(keyID: id, material: Data(repeating: 0x42, count: 32))
             }
             func entry(_ text: String) -> HistoryStorageEntry {
@@ -5831,20 +6442,20 @@ struct CoreTests {
                 cfTypeTag: "CFString")
             check("2286 CFString type captured", strSnap.cfTypeTag == "CFString")
 
-            // 4. Crash at EVERY transaction step recovers idempotently.
-            //    idle -> stays idle; pendingApply -> idle (mutation never
-            //    confirmed); applied -> pendingRestore (must restore);
+            // 4. Pure state transitions, not actual kill/relaunch evidence.
+            //    idle -> stays idle; pendingApply is uncertain -> restore;
+            //    applied -> pendingRestore (must restore);
             //    pendingRestore -> pendingRestore; restored -> restored.
             for status in FnPreferenceStatus.allCases {
                 let rec = FnPreferenceRecord(
-                    version: 7, status: status,
+                    version: 2, status: status,
                     snapshot: snap)
                 var txc = FnPreferenceTransaction(record: rec)
                 let after = txc.recoverAfterCrash()
                 if status == .idle || status == .restored || status == .failedRestore {
                     check("2286 crash \(status.rawValue) unchanged", after == status)
                 } else if status == .pendingApply {
-                    check("2286 crash pendingApply -> idle", after == .idle)
+                    check("2286 crash pendingApply -> pendingRestore", after == .pendingRestore)
                 } else {
                     check(
                         "2286 crash applied/pendingRestore -> pendingRestore",
@@ -5865,9 +6476,10 @@ struct CoreTests {
             check("2286 failedRestore", tx5.record.status == .failedRestore)
             check("2286 capture disabled", tx5.captureDisabled)
             check("2286 failed NOT active", !tx5.record.isActiveOverride)
-            check(
-                "2286 no auto reapply (beginRestore fails)",
-                !tx5.beginRestore())
+            check("2286 failed recovery cannot reapply", !tx5.beginApply())
+            check("2286 explicit retry can restore", tx5.beginRestore())
+            tx5.finishRestore(verifiedExact: true)
+            check("2286 verified retry clears capture-disabled", !tx5.captureDisabled)
 
             // 6. Production default path never overrides.
             check(
@@ -5894,13 +6506,111 @@ struct CoreTests {
                 FnOverridePolicy.shouldRestoreImmediately(
                     configuredSpecialKeyIsFn: true, accessibilityTrusted: false))
 
-            // 7. Version monotonicity: newer version wins.
+            // 7. Schema version changes do not establish transaction ordering.
             let v1 = FnPreferenceRecord(version: 1, status: .applied, snapshot: snap)
             let v2 = FnPreferenceRecord(version: 2, status: .restored, snapshot: snap)
             check("2286 version ordering", v2.version > v1.version)
+            do {
+                for value: Any in [
+                    NSNumber(value: true), NSNumber(value: 2), NSNumber(value: 1.25),
+                    "synthetic-unexpected", Data([0, 1, 2]), ["nested": [NSNumber(value: false), "x"]],
+                ] {
+                    let snapshot = try FnPreferenceSnapshotCodec.capture(value)
+                    let decoded = try JSONDecoder().decode(
+                        FnPreferenceSnapshot.self, from: JSONEncoder().encode(snapshot))
+                    check(
+                        "2286 typed property-list snapshot round-trip",
+                        try FnPreferenceSnapshotCodec.matches(value, snapshot: decoded))
+                }
+                let bool = try FnPreferenceSnapshotCodec.capture(NSNumber(value: true))
+                check(
+                    "2286 bool is not integer one",
+                    try !FnPreferenceSnapshotCodec.matches(NSNumber(value: 1), snapshot: bool))
+                do {
+                    _ = try FnPreferenceSnapshotCodec.materialize(strSnap)
+                    check("2286 legacy missing exact value must reject", false)
+                } catch { check("2286 legacy missing exact value rejects", true) }
+            } catch { check("2286 typed snapshot encoding", false) }
+        }
+
+        do {
+            let signal = SpeechFinalizationSignal()
+            check(
+                "2253 buffered final wins once",
+                signal.complete(.finalResult(hasText: true)) && !signal.complete(.cancelled))
+            do {
+                let event = try await signal.wait(deadlineNanosAhead: 1_000_000_000)
+                check("2253 pre-wait final is retained", event == .finalResult(hasText: true))
+                let deadline = SpeechFinalizationSignal()
+                let timedOut = try await deadline.wait(deadlineNanosAhead: 1_000_000)
+                check(
+                    "2253 final wait deadline",
+                    timedOut == .deadlineExceeded && !deadline.complete(.finalResult(hasText: true)))
+            } catch { check("2253 final signal unexpected error", false) }
+            let cancelled = SpeechFinalizationSignal()
+            let wait = Task { try await cancelled.wait(deadlineNanosAhead: 60_000_000_000) }
+            wait.cancel()
+            do {
+                _ = try await wait.value
+                check("2253 task cancellation must throw", false)
+            } catch is CancellationError { check("2253 task cancellation releases waiter", true) } catch {
+                check("2253 task cancellation unexpected error", false)
+            }
+            check("2253 cancelled signal rejects late callback", !cancelled.complete(.finalResult(hasText: true)))
         }
 
         // ===== JOE-2287: serial deduplicated edge stream =====
+        do {
+            let mods = UInt64(HotkeyConfig.controlOptionSpace.modifiers)
+            let down = StandardHotkeyEvent.keyDown(keyCode: 49, flags: mods, isAutorepeat: false)
+            for remaining in [UInt64(0), 1 << 18, 1 << 19, mods | (1 << 20)] {
+                var stream = HotkeyEdgeStream(configIsFn: false, configKeyCode: 49)
+                check(
+                    "2287 stopped standard input ignored",
+                    stream.feedStandard(down, requiredModifiers: mods, timestampNanos: 1) == nil)
+                stream.setLifecycle(.healthy)
+                check(
+                    "2287 standard chord pressed",
+                    stream.feedStandard(down, requiredModifiers: mods, timestampNanos: 2) == true)
+                check(
+                    "2287 modifier-first release emitted",
+                    stream.feedStandard(.flagsChanged(flags: remaining), requiredModifiers: mods, timestampNanos: 3)
+                        == false)
+                check(
+                    "2287 modifier repress never arms",
+                    stream.feedStandard(.flagsChanged(flags: mods), requiredModifiers: mods, timestampNanos: 4) == nil)
+                check(
+                    "2287 held primary key cannot rearm",
+                    stream.feedStandard(down, requiredModifiers: mods, timestampNanos: 5) == nil)
+                check(
+                    "2287 primary up deduplicated",
+                    stream.feedStandard(.keyUp(keyCode: 49, flags: 0), requiredModifiers: mods, timestampNanos: 6)
+                        == nil)
+                check(
+                    "2287 rapid fresh press is not cross-source duplicate",
+                    stream.feedStandard(down, requiredModifiers: mods, timestampNanos: 7) == true)
+                check(
+                    "2287 primary up ignores modifier mismatch",
+                    stream.feedStandard(.keyUp(keyCode: 49, flags: 0), requiredModifiers: mods, timestampNanos: 8)
+                        == false)
+                check(
+                    "2287 one pair per physical chord", stream.presses == 2 && stream.releases == 2 && !stream.heldDown)
+            }
+            var held = HotkeyEdgeStream(configIsFn: false, configKeyCode: 49)
+            held.setLifecycle(.healthy)
+            _ = held.feedStandard(down, requiredModifiers: mods, timestampNanos: 2)
+            check(
+                "2287 real ten-minute hold not lost release",
+                !held.sweepLostRelease(nowNanos: 600_000_000_000, observedKeyDown: true))
+            check(
+                "2287 absent key-state evidence is not release",
+                !held.sweepLostRelease(nowNanos: 600_000_000_000, observedKeyDown: nil))
+            check(
+                "2287 backward sweep clock does not trap", !held.sweepLostRelease(nowNanos: 1, observedKeyDown: false))
+            check(
+                "2287 observed key-up recovers lost edge",
+                held.sweepLostRelease(nowNanos: 600_000_000_000, observedKeyDown: false))
+        }
         do {
             // 1. One physical action, three sources -> ONE logical pair.
             var es = HotkeyEdgeStream(configIsFn: true)
@@ -5952,7 +6662,8 @@ struct CoreTests {
             check("2287 held after down", es2.heldDown)
             check(
                 "2287 lost release recovered",
-                es2.sweepLostRelease(nowNanos: t0 + HotkeyEdgeStream.lostReleaseTimeoutNanos + 1))
+                es2.sweepLostRelease(
+                    nowNanos: t0 + HotkeyEdgeStream.lostReleaseTimeoutNanos + 1, observedKeyDown: false))
             check("2287 not held after sweep", !es2.heldDown)
             check("2287 recovered counted", es2.lostReleasesRecovered == 1)
 
