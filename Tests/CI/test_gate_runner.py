@@ -55,6 +55,10 @@ class GateRunnerTests(unittest.TestCase):
         clt = self.products / "ZephyrFlowCoreTests"
         clt.write_text(f"#!{sys.executable}\n{helper}")
         clt.chmod(0o755)
+        xctest = self.products / "xctest"
+        xctest.write_text(f"#!{sys.executable}\n{helper}")
+        xctest.chmod(0o755)
+        (self.products / "ZephyrFlowPackageTests.xctest").mkdir()
         self.env = {**os.environ, "PATH": f"{self.bin}:/usr/bin:/bin", "CI": "true",
                     "ZF_CI_REPORT_DIR": str(self.report), "ZF_TEST_ROOT": str(self.repo),
                     "ZF_TEST_PRODUCTS": str(self.products), "PYTHONDONTWRITEBYTECODE": "1"}
@@ -100,6 +104,13 @@ class GateRunnerTests(unittest.TestCase):
         result = self.run_gate()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing required tool: mkdocs", result.stdout)
+
+    def test_missing_prebuilt_bundle_fails_offline_lane(self):
+        (self.products / "ZephyrFlowPackageTests.xctest").rmdir()
+        result = self.run_gate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Missing prebuilt XCTest bundle", result.stdout)
+        self.assertIn("offline-tokenizer\t1", (self.report / "commands.tsv").read_text())
 
     def test_failures_cannot_be_hidden_by_success_shaped_output(self):
         modes = ["no-xctest", "no-pyyaml", "xctest", "discovery", "missing-suite", "zero-executed",

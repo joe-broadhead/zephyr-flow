@@ -105,6 +105,45 @@
             XCTAssertThrowsError(try contract.validate(logits: nil, encoder: nil))
         }
 
+        private func writeLocatorFiles(_ directory: URL) throws {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            for name in ["tokenizer.json", "tokenizer_config.json"] {
+                try Data("synthetic locator metadata".utf8).write(to: directory.appendingPathComponent(name))
+            }
+        }
+
+        func testAcquisitionLocatorCannotSubstituteAnotherModelsTokenizer() throws {
+            let root = try folder()
+            let base = root.appendingPathComponent("openai/whisper-base")
+            try writeLocatorFiles(base)
+            XCTAssertNil(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]))
+            XCTAssertEqual(WhisperTokenizerLocator.locate(model: .whisperBase, roots: [root])?.path, base.path)
+            let tiny = root.appendingPathComponent("openai/whisper-tiny")
+            try writeLocatorFiles(tiny)
+            XCTAssertEqual(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root])?.path, tiny.path)
+            try FileManager.default.removeItem(at: tiny.appendingPathComponent("tokenizer_config.json"))
+            XCTAssertNil(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]))
+        }
+
+        func testAcquisitionLocatorRequiresUnambiguousSnapshotOrExplicitRef() throws {
+            let root = try folder()
+            let repository = root.appendingPathComponent("models--openai--whisper-tiny")
+            let firstID = String(repeating: "a", count: 40)
+            let secondID = String(repeating: "b", count: 40)
+            let first = repository.appendingPathComponent("snapshots/\(firstID)")
+            let second = repository.appendingPathComponent("snapshots/\(secondID)")
+            try writeLocatorFiles(first)
+            XCTAssertEqual(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root])?.path, first.path)
+            try writeLocatorFiles(second)
+            XCTAssertNil(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]))
+            let refs = repository.appendingPathComponent("refs")
+            try FileManager.default.createDirectory(at: refs, withIntermediateDirectories: true)
+            try Data(secondID.utf8).write(to: refs.appendingPathComponent("main"))
+            XCTAssertEqual(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root])?.path, second.path)
+            try Data("invalid reference".utf8).write(to: refs.appendingPathComponent("main"))
+            XCTAssertNil(WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]))
+        }
+
         func testRuntimeRefusesIdentifierOnlyAndMissingLocalTokenizerBeforeNativeLoad() async throws {
             do {
                 _ = try await WhisperKitRuntime.load(

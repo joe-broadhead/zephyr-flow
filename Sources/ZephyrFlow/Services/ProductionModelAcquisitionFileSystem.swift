@@ -220,7 +220,10 @@ extension ProductionModelAcquisitionFileSystem {
             // + its configuration files) into a tokenizer/ subfolder so the
             // verified artifact is self-contained and the pinned loader's
             // Hub-download tokenizer fallback can be disabled.
-            if let tokenizerDir = WhisperTokenizerLocator.locate() {
+            guard let tokenizerDir = WhisperTokenizerLocator.locate(model: model) else {
+                throw ModelAcquisitionError.downloadFailed("selected model tokenizer not located after download")
+            }
+            do {
                 let tokenizerDest = stagingURL.appendingPathComponent("tokenizer")
                 try fm.createDirectory(
                     at: tokenizerDest, withIntermediateDirectories: true,

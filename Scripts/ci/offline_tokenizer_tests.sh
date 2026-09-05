@@ -6,6 +6,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 command -v sandbox-exec >/dev/null
+BIN="$(swift build --show-bin-path)"
+XCTEST="$(xcrun --find xctest)"
+BUNDLE="$BIN/ZephyrFlowPackageTests.xctest"
+if [[ ! -d "$BUNDLE" ]]; then
+  echo "Missing prebuilt XCTest bundle: $BUNDLE" >&2
+  exit 1
+fi
 POLICY='(version 1) (allow default) (deny network*)'
 
 # A UDP connect to loopback sends no payload and needs no listening service.
@@ -23,4 +30,7 @@ except OSError as error:
 else:
     raise SystemExit("Sandbox did not deny networking")
 '
-sandbox-exec -p "$POLICY" swift test --skip-build --filter ProductionOfflineTokenizerTests
+# Invoke the already-built bundle, not SwiftPM: nested manifest sandboxes
+# cannot be installed after sandbox_apply. Do not disable either sandbox or
+# retry this test without network denial if execution fails.
+sandbox-exec -p "$POLICY" "$XCTEST" -XCTest ZephyrFlowTests.ProductionOfflineTokenizerTests "$BUNDLE"

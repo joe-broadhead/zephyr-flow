@@ -5109,6 +5109,32 @@ struct CoreTests {
             }
         }
 
+        // Model-bound tokenizer cache lookup (synthetic filesystem only).
+        do {
+            let fm = FileManager.default
+            let root = fm.temporaryDirectory.appendingPathComponent("zf-tokenizer-locator-\(UUID())")
+            let base = root.appendingPathComponent("openai/whisper-base")
+            do {
+                try fm.createDirectory(at: base, withIntermediateDirectories: true)
+                for name in ["tokenizer.json", "tokenizer_config.json"] {
+                    try Data("synthetic locator fixture".utf8).write(to: base.appendingPathComponent(name))
+                }
+                check(
+                    "tokenizer locator rejects other model",
+                    WhisperTokenizerLocator.locate(model: .whisperTiny, roots: [root]) == nil)
+                check(
+                    "tokenizer locator selects requested namespace",
+                    WhisperTokenizerLocator.locate(model: .whisperBase, roots: [root])?.path == base.path)
+                try fm.removeItem(at: base.appendingPathComponent("tokenizer_config.json"))
+                check(
+                    "tokenizer locator requires configuration",
+                    WhisperTokenizerLocator.locate(model: .whisperBase, roots: [root]) == nil)
+                try fm.removeItem(at: root)
+            } catch {
+                check("tokenizer locator fixture must complete", false)
+            }
+        }
+
         // ===== B4 round-6: directory-aware verified model =====
         do {
             // Review B4 (round 6): a compiled .mlmodelc is a DIRECTORY bundle.

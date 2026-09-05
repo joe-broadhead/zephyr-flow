@@ -38,10 +38,6 @@ if tool == "swift":
             for suite in SUITES:
                 print(f"Test Suite '{suite}' passed at synthetic-time")
         fail_if("xctest")
-    elif args == ["test", "--skip-build", "--filter", "ProductionOfflineTokenizerTests"]:
-        if mode != "offline-zero-executed":
-            print("Test Suite 'ProductionOfflineTokenizerTests' passed at synthetic-time")
-        fail_if("offline-tokenizer")
     elif args == ["package", "clean"]:
         fail_if("clean")
     elif "--show-bin-path" in args:
@@ -68,7 +64,7 @@ if tool == "swift":
 elif tool == "xcrun":
     if args == ["--find", "xctest"]:
         fail_if("no-xctest")
-        print("synthetic-xctest-location")
+        print(products / "xctest")
     elif args[:2] == ["llvm-profdata", "merge"]:
         fail_if("coverage-merge")
         Path(args[args.index("-o") + 1]).write_text("synthetic merged profile")
@@ -115,6 +111,12 @@ elif tool == "actionlint":
     fail_if("actionlint")
 elif tool == "xcodebuild":
     print("Xcode test double (not Xcode)")
+elif tool == "xctest":
+    assert args == ["-XCTest", "ZephyrFlowTests.ProductionOfflineTokenizerTests",
+                    str(products / "ZephyrFlowPackageTests.xctest")], args
+    if mode != "offline-zero-executed":
+        print("Test Suite 'ProductionOfflineTokenizerTests' passed at synthetic-time")
+    fail_if("offline-tokenizer")
 elif tool == "sandbox-exec":
     if args[2] == "python3":
         print("synthetic sandbox policy check (NOT an actual sandbox)")
