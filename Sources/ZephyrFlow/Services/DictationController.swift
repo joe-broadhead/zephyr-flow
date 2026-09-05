@@ -355,22 +355,8 @@ final class DictationController: ObservableObject {
             return
         }
         let requestedSettings = settingsStore.settings
-        // No storage dependency in the disabled path. Re-enabling history
-        // performs real encrypted initialization, not a stale startup boolean.
-        if requestedSettings.saveHistory {
-            let ready = await environment.history.prepareForSession(saveHistory: true)
-            guard !Task.isCancelled, intent?.isCancelled != true, admissionOpen,
-                settingsStore.settings == requestedSettings
-            else {
-                pendingBeginTask = nil
-                return
-            }
-            guard ready else {
-                pendingBeginTask = nil
-                showError(AppStrings.key("history.preparation.failed"))
-                return
-            }
-        }
+        // History is prepared only after this session captures normal target
+        // sensitivity below, never merely because the global toggle is on.
         // Review B2: DO NOT clear pendingBeginTask here — the release handler
         // needs it set DURING model readiness/preload so it can preempt a
         // begin that is still waiting on the engine. It is cleared only when
@@ -415,16 +401,8 @@ final class DictationController: ObservableObject {
             pendingBeginTask = nil
             return
         }
-        preparedEngine = candidate
-        engineLabel = candidate.request.model.displayName
-
         // Remember where the user was typing BEFORE any of our UI steals focus.
         focus.captureNow()
-
-        activeFlowStyle = requestedSettings.defaultFlowStyle
-        panelState = .listening
-        interimText = ""
-        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
 
         // Build a FRESH provider + FRESH actor per session: no shared mutable
         // tasks, buffers, target identity or callbacks across sessions.
@@ -453,6 +431,26 @@ final class DictationController: ObservableObject {
             engineChoice: candidate.request.model.isWhisperKit ? .whisper : .appleSpeech,
             settings: settings,
             idFactory: sessionIDFactory)
+        let admission = await s.prepareAdmission()
+        // This task is still pendingBeginTask: release/cancel preempts history
+        // waits without admitting a microphone or presenting a listening UI.
+        guard !Task.isCancelled, intent?.isCancelled != true, admissionOpen, session == nil,
+            settingsStore.settings == requestedSettings, preparation.isCurrent(candidate)
+        else {
+            pendingBeginTask = nil
+            return
+        }
+        guard admission == .ready else {
+            pendingBeginTask = nil
+            if admission == .historyUnavailable { showError(AppStrings.key("history.preparation.failed")) }
+            return
+        }
+        preparedEngine = candidate
+        engineLabel = candidate.request.model.displayName
+        activeFlowStyle = requestedSettings.defaultFlowStyle
+        panelState = .listening
+        interimText = ""
+        FloatingPanelController.shared.show(near: NSEvent.mouseLocation)
         session = s
         pendingBeginTask = nil  // begin completed; no longer pending
         // Review REQ-4: set the session ID authoritatively BEFORE any review

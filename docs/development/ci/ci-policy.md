@@ -108,6 +108,16 @@ production release approval.
     which stays unknown. These tests issue no AX messages or field reads. The
     synchronous reader is not a bounded IPC/atomic-focus guarantee; live hung
     targets, same-app field races and the six-app matrix remain unqualified.
+    `ProductionAdmissionTests` runs the actual session actor's admission path
+    with production stages and injected target/history/engine dependencies.
+    Captured sensitivity precedes history initialization; secure/unknown/missing
+    target or disabled history skips that dependency. Preparation starts no
+    recording, reuses one snapshot, and rejects cancellation/key-storage failure.
+    The controller awaits this path before showing its panel, so stage startup
+    does not recapture the app's own UI. These are not whole-controller event,
+    actual AX focus, TCC, microphone, continuously changing sensitivity or
+    device qualification tests. Later validation still applies the restrictive
+    session history/insertion policy.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

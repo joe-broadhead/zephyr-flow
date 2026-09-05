@@ -262,6 +262,9 @@ public protocol DictationSessionStageProviding: Sendable {
     func prepare(sessionID: SessionID) async
     /// The AX target snapshot captured during prepare (nil = fail closed).
     func capturedTargetSnapshot() async -> TargetSnapshot?
+    /// May initialize/migrate history ONLY after normal target sensitivity is
+    /// established and saving history is enabled. Must not start recording.
+    func prepareHistoryForSession() async -> Bool
     /// Begin capture + engine streaming. Returns interim/level streams.
     func startCapture(
         sessionID: SessionID, localOnly: Bool,
@@ -285,6 +288,18 @@ public protocol DictationSessionStageProviding: Sendable {
     func insert(_ request: SessionInsertRequest) async -> InsertionOutcome
     /// Cancel engine + capture immediately (idempotent).
     func cancel() async
+}
+
+extension DictationSessionStageProviding {
+    /// In-memory providers have no at-rest initialization requirement.
+    public func prepareHistoryForSession() async -> Bool { !Task.isCancelled }
+}
+
+public enum SessionAdmissionPreparation: Sendable, Equatable {
+    case ready
+    case historyUnavailable
+    case cancelled
+    case inProgress
 }
 
 // MARK: - Shared session identity (JOE-2244)
@@ -314,6 +329,8 @@ public final class SessionIDFactory: @unchecked Sendable {
 /// stage sequencing, typed outputs and exactly-once terminal release.
 /// The MainActor coordinator only creates sessions and maps `SessionUIState`.
 public actor DictationSession {
+    private var admissionPreparation: SessionAdmissionPreparation?
+    private var preparingAdmission = false
     public enum Command: Sendable, Equatable {
         case end
         case cancel
@@ -475,10 +492,33 @@ public actor DictationSession {
 
     // MARK: - Orchestration
 
+    /// Controller calls this before presenting its panel or admitting capture.
+    /// run() reuses the exact captured target rather than capturing Zephyr UI.
+    /// Callers retain/cancel their preparation task; no unowned worker is made.
+    public func prepareAdmission() async -> SessionAdmissionPreparation {
+        guard !released, !Task.isCancelled, !cancelRequested else { return .cancelled }
+        if let admissionPreparation { return admissionPreparation }
+        guard !preparingAdmission else { return .inProgress }
+        preparingAdmission = true
+        defer { preparingAdmission = false }
+        await provider.prepare(sessionID: sessionID)
+        targetSnapshot = await provider.capturedTargetSnapshot()
+        guard !Task.isCancelled, !cancelRequested else { return .cancelled }
+        if settings.saveHistory, targetSnapshot?.sensitivity.sensitivity == .normal {
+            let ready = await provider.prepareHistoryForSession()
+            guard !Task.isCancelled, !cancelRequested else { return .cancelled }
+            guard ready else {
+                admissionPreparation = .historyUnavailable
+                return .historyUnavailable
+            }
+        }
+        admissionPreparation = .ready
+        return .ready
+    }
+
     public func run() async {
         guard !released else { return }
         startTime = nowNanos()
-        publish(phase: .listening, interim: "", level: 0.05)
 
         guard let commands = commandStream else { return }
         // commandStream was created at init (durable mailbox); the consumer
@@ -488,12 +528,19 @@ public actor DictationSession {
         // preparation and microphone activation, not just be observed later.
         if await checkCancellation() { return }
 
-        // Session-scoped preparation: AX target snapshot + engine binding.
-        await provider.prepare(sessionID: sessionID)
-        targetSnapshot = await provider.capturedTargetSnapshot()
+        // Target/sensitivity before history, and both before microphone start.
+        let admission = await prepareAdmission()
 
         // Review B2v2: cancel during preparation must prevent capture start.
         if await checkCancellation() { return }
+        if admission == .inProgress { return }  // another owner is preparing, never duplicate capture
+        guard admission == .ready else {
+            _ = control.stage(.captureFailed)
+            publish(phase: .error, interim: "", level: 0.05)
+            finishTerminal(category: .failed)
+            return
+        }
+        publish(phase: .listening, interim: "", level: 0.05)
 
         // Stage 1: capture + engine streaming starts immediately (begin edge).
         let handle: SessionCaptureHandle

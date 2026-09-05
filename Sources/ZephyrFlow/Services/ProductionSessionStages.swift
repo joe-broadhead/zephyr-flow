@@ -66,6 +66,13 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         targetSnapshot
     }
 
+    func prepareHistoryForSession() async -> Bool {
+        // Defense in depth: do not trust a caller's assertion of sensitivity.
+        // The actual session-owned snapshot must permit history initialization.
+        guard targetSnapshot?.sensitivity.sensitivity == .normal else { return !Task.isCancelled }
+        return await environment.history.prepareForSession(saveHistory: true)
+    }
+
     func startCapture(
         sessionID: SessionID, localOnly: Bool,
         language: SupportedLanguage

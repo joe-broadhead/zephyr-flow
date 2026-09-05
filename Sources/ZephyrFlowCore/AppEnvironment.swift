@@ -211,6 +211,7 @@ public struct AppEnvironment: Sendable {
         settings: AppSettings = .default,
         engine: (any WhisperEngineProtocol)? = nil,
         flow: any FlowProcessorProtocol = FlowProcessor.shared,
+        history: (any HistoryRepository)? = nil,
         insertion: (any InsertionServiceProtocol)? = nil,
         target: (any TargetValidationProviding)? = nil
     ) -> AppEnvironment {
@@ -220,7 +221,7 @@ public struct AppEnvironment: Sendable {
             idGenerator: FakeIDGenerator(),
             metrics: RecordingMetricsSink(),
             settings: StaticSettingsRepository(settings),
-            history: InMemoryHistoryRepository(),
+            history: history ?? InMemoryHistoryRepository(),
             permissions: FakePermissionProvider(),
             engines: EngineRegistry(
                 whisper: engine ?? FakeWhisperEngine(),
@@ -271,6 +272,7 @@ public actor FakeWhisperEngine: WhisperEngineProtocol {
     public func recordVerifiedDigest(_ digest: String?) { verifiedDigest = digest }
     public private(set) var modelName = "Fake"
     public private(set) var appended: [Float] = []
+    public private(set) var streamStarts = 0
     private var partial: (@Sendable (PartialTranscription) -> Void)?
     public var finalText = "fake transcript"
 
@@ -282,6 +284,7 @@ public actor FakeWhisperEngine: WhisperEngineProtocol {
         language: SupportedLanguage,
         onPartial: @escaping @Sendable (PartialTranscription) -> Void
     ) async throws {
+        streamStarts += 1
         partial = onPartial
     }
     public func appendAudio(_ samples: [Float]) async { appended.append(contentsOf: samples) }
