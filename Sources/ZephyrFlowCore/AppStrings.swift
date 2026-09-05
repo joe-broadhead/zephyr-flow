@@ -105,6 +105,47 @@ public enum AppStrings {
             "Model downloads are off — Whisper needs a cached model, or pick Apple Speech.", "Model downloads warning"
         ),
         "settings.refreshModelStatus": ("Refresh model status", "Model status refresh button"),
+        "engine.preparation.title": ("Engine preparation", "Selected speech engine preparation section"),
+        "engine.preparation.progress": ("Preparing selected engine…", "Indeterminate preparation indicator"),
+        "engine.preparation.cancel": (
+            "Cancel preparation", "Stop waiting for preparation; native work may still finish"
+        ),
+        "engine.preparation.retry": ("Retry preparation", "Explicitly retry failed or cancelled engine preparation"),
+        "engine.preparation.apple": ("Use Apple Speech", "Explicitly select Apple Speech; does not grant permissions"),
+        "engine.preparation.waiting": (
+            "Waiting for the previous model operation to finish…", "Retained native initializer has not completed"
+        ),
+        "engine.preparation.verifying": (
+            "Verifying model files…", "Integrity checks before loading a selected artifact"
+        ),
+        "engine.preparation.acquiring": ("Acquiring model files…", "Model acquisition with no fabricated percentage"),
+        "engine.preparation.loading": ("Loading speech engine…", "Artifact availability alone is not loaded readiness"),
+        "engine.preparation.ready": (
+            "Speech engine loaded", "Current engine candidate is loaded; not a device qualification claim"
+        ),
+        "engine.preparation.consent": (
+            "Model files are missing. Enable Model Downloads or choose Apple Speech.", "No download without consent"
+        ),
+        "engine.preparation.cancelled": (
+            "Preparation cancelled. Native work may still be finishing.",
+            "UI cancellation does not imply native completion"
+        ),
+        "engine.preparation.failed": (
+            "Could not prepare the speech engine. Retry or choose another engine.",
+            "Controlled error without framework payloads"
+        ),
+        "engine.preparation.deferred": (
+            "The selected model will load after this session finishes.", "Active session retains its original engine"
+        ),
+        "engine.preparation.notloaded": ("The selected speech engine is not loaded.", "Preparation admission refused"),
+        "engine.files.verified": ("Verified files", "Artifact integrity status, not engine readiness"),
+        "engine.files.verified.size": (
+            "Verified files · %@", "Verified artifact status; parameter is localized byte count"
+        ),
+        "engine.downloads.disclosure": (
+            "Model downloads are off until enabled. Downloads fetch model files from Hugging Face, never upload audio. Verified files are stored in ~/Library/Application Support/ZephyrFlow/VerifiedModels; the transport may also retain a Hugging Face cache.",
+            "Model network purpose and actual storage locations; separate from Local Only audio policy"
+        ),
         "settings.refreshStatus": ("Refresh status", "Permission status refresh button"),
         "settings.clearHistory": ("Clear local history", "History clear button"),
         "settings.debugNote": (

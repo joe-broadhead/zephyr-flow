@@ -24,14 +24,14 @@ enum EnginePreparationPhase: Equatable {
     var message: String? {
         switch self {
         case .idle: return nil
-        case .queued: return "Waiting for the previous model operation to finish…"
-        case .verifying: return "Verifying model files…"
-        case .acquiring: return "Acquiring model files…"
-        case .loading: return "Loading speech engine…"
-        case .ready: return "Speech engine loaded"
-        case .consentRequired: return "Model files are missing. Enable Model Downloads or choose Apple Speech."
-        case .cancelled: return "Preparation cancelled. Native work may still be finishing."
-        case .failed: return "Could not prepare the speech engine. Retry or choose another engine."
+        case .queued: return AppStrings.key("engine.preparation.waiting")
+        case .verifying: return AppStrings.key("engine.preparation.verifying")
+        case .acquiring: return AppStrings.key("engine.preparation.acquiring")
+        case .loading: return AppStrings.key("engine.preparation.loading")
+        case .ready: return AppStrings.key("engine.preparation.ready")
+        case .consentRequired: return AppStrings.key("engine.preparation.consent")
+        case .cancelled: return AppStrings.key("engine.preparation.cancelled")
+        case .failed: return AppStrings.key("engine.preparation.failed")
         }
     }
 }

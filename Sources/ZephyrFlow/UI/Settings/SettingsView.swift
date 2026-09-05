@@ -248,18 +248,18 @@ struct SettingsView: View {
                     modelReadiness.refreshAll()
                 }
             }
-            Section("Engine preparation") {
+            Section(AppStrings.key("engine.preparation.title")) {
                 if let message = controller.statusMessage {
                     Text(message).font(.callout)
                 }
                 if controller.isModelLoading {
-                    ProgressView("Preparing selected engine…")
-                    Button("Cancel preparation") { controller.cancelModelPreparation() }
+                    ProgressView(AppStrings.key("engine.preparation.progress"))
+                    Button(AppStrings.key("engine.preparation.cancel")) { controller.cancelModelPreparation() }
                 } else {
-                    Button("Retry preparation") { controller.reloadEngine() }
+                    Button(AppStrings.key("engine.preparation.retry")) { controller.reloadEngine() }
                 }
                 if settings.settings.preferredModel.isWhisperKit {
-                    Button("Use Apple Speech") { selectModel(.appleSpeech) }
+                    Button(AppStrings.key("engine.preparation.apple")) { selectModel(.appleSpeech) }
                 }
             }
         }
@@ -307,11 +307,9 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
 
                 Toggle(AppStrings.key("settings.toggle.allowDownloads"), isOn: binding(\.allowModelDownloads))
-                Text(
-                    "One-time model file download only (default on for Whisper Tiny). Never uploads your audio. Files stay in Application Support and run on-device."
-                )
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                Text(AppStrings.key("engine.downloads.disclosure"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Permissions") {
@@ -554,9 +552,10 @@ struct SettingsView: View {
             return "Downloading…"
         case .ready:
             if let b = r.bytesOnDisk, b > 0 {
-                return "Verified files · \(ByteCountFormatter.string(fromByteCount: b, countStyle: .file))"
+                return AppStrings.format(
+                    "engine.files.verified.size", ByteCountFormatter.string(fromByteCount: b, countStyle: .file))
             }
-            return "Verified files"
+            return AppStrings.key("engine.files.verified")
         case .queued: return "Queued…"
         case .verifying: return "Verifying…"
         case .cancelled: return "Cancelled"

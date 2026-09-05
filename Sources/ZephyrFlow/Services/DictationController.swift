@@ -453,7 +453,7 @@ final class DictationController: ObservableObject {
         guard let candidate, preparation.isCurrent(candidate) else {
             pendingBeginTask = nil
             guard !preparation.phase.isBusy, preparation.phase != .cancelled else { return }
-            showError(preparation.phase.message ?? "The selected speech engine is not loaded.")
+            showError(preparation.phase.message ?? AppStrings.key("engine.preparation.notloaded"))
             return
         }
         guard admissionOpen, session == nil else { return }
@@ -908,7 +908,7 @@ final class DictationController: ObservableObject {
     func reloadEngine() {
         guard session == nil else {
             reloadAfterSession = true
-            statusMessage = "The selected model will load after this session finishes."
+            statusMessage = AppStrings.key("engine.preparation.deferred")
             return
         }
         // Supersede synchronously at the selection edge, not inside a queued
