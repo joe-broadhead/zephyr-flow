@@ -222,6 +222,10 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
     private let lock = NSLock()
     private var nodes: [String: Node] = [:]
     private var perms: [String: Int] = [:]
+    private var _downloadCalls = 0
+    private var _downloadCancellations = 0
+    var downloadCalls: Int { lock.withLock { _downloadCalls } }
+    var downloadCancellations: Int { lock.withLock { _downloadCancellations } }
     var lockHeld: [String: Bool] = [:]
     // Fault injection knobs
     var failDownload = false
@@ -301,7 +305,9 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
         model: ModelIdentifier, to stagingURL: URL,
         onProgress: @escaping @Sendable (ModelDownloadProgress) -> Void
     ) async throws {
+        lock.withLock { _downloadCalls += 1 }
         if downloadDelayNanos > 0 { try? await Task.sleep(nanoseconds: downloadDelayNanos) }
+        if Task.isCancelled { lock.withLock { _downloadCancellations += 1 } }
         if failDownload { throw URLError(.cannotConnectToHost) }
         // Write artifact payloads into staging. Round-5 B5: the default
         // manifest enumerates EVERY WhisperKit-loaded component, so the fake
@@ -5034,6 +5040,35 @@ struct CoreTests {
             check(
                 "2255 cancelled never ready",
                 await acq10.verifiedReadiness(for: .whisperTiny).state != .ready)
+            check("2255 explicit cancel reaches download task", fs10.downloadCancellations == 1)
+            let retried10 = await acq10.acquire(model: .whisperTiny, consent: true)
+            check("2255 retry after cancel resets cancellation", retried10.state == .ready && fs10.downloadCalls == 2)
+
+            let fsCancelledOwner = FakeModelFS()
+            fsCancelledOwner.downloadDelayNanos = 5_000_000_000
+            let cancelledOwner = ModelAcquisitionController(fs: fsCancelledOwner)
+            let owner = Task { await cancelledOwner.acquire(model: .whisperTiny, consent: true) }
+            for _ in 0..<500 where fsCancelledOwner.downloadCalls == 0 {
+                try? await Task.sleep(nanoseconds: 1_000_000)
+            }
+            check("2255 owner-cancel fixture reached download", fsCancelledOwner.downloadCalls == 1)
+            owner.cancel()
+            let cancelledResult = await owner.value
+            check("2255 caller cancellation reaches retained native task", fsCancelledOwner.downloadCancellations == 1)
+            check(
+                "2255 cancelled caller cannot promote",
+                cancelledResult.state == .cancelled && cancelledResult.verifiedURL == nil)
+            check(
+                "2255 cancelled caller leaves no verified artifact",
+                await cancelledOwner.verifiedArtifact(for: .whisperTiny) == nil)
+
+            check(
+                "2255 unknown transport progress stays indeterminate",
+                ModelDownloadProgress(fraction: nil, bytesDownloaded: 0, bytesExpected: nil).fraction == nil)
+            check(
+                "2255 invalid measured progress rejected",
+                ModelDownloadProgress(fraction: .nan, bytesDownloaded: 0, bytesExpected: nil).fraction == nil
+                    && ModelDownloadProgress(fraction: 1.1, bytesDownloaded: 0, bytesExpected: nil).fraction == nil)
 
             // 11. Readiness reflects VERIFIED loadability: a manifest-less
             //     non-empty dir is NOT ready.

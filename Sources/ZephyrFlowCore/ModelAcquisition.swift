@@ -89,12 +89,13 @@ public enum ModelAcquisitionError: Error, Sendable, Equatable {
 // MARK: - File-system seam (deterministic fault injection)
 
 public struct ModelDownloadProgress: Sendable, Equatable {
-    public let fraction: Double
+    /// nil when the transport does not supply measured fractional progress.
+    public let fraction: Double?
     public let bytesDownloaded: UInt64
     public let bytesExpected: UInt64?
 
-    public init(fraction: Double, bytesDownloaded: UInt64, bytesExpected: UInt64?) {
-        self.fraction = fraction
+    public init(fraction: Double?, bytesDownloaded: UInt64, bytesExpected: UInt64?) {
+        self.fraction = fraction.flatMap { $0.isFinite && (0...1).contains($0) ? $0 : nil }
         self.bytesDownloaded = bytesDownloaded
         self.bytesExpected = bytesExpected
     }
@@ -145,8 +146,11 @@ public actor ModelAcquisitionController {
     public private(set) var states: [ModelIdentifier: ModelAcquisitionState] = [:]
     public private(set) var progress: [ModelIdentifier: ModelDownloadProgress] = [:]
     /// Singleflight: one in-flight task per model.
-    private var inflight: [ModelIdentifier: Task<ModelAcquisitionResult, Never>] = [:]
+    private var inflight: [ModelIdentifier: (id: UUID, task: Task<ModelAcquisitionResult, Never>)] = [:]
     private var cancelled: Set<ModelIdentifier> = []
+    /// Content-free counters for singleflight/stale-callback diagnostics.
+    private(set) var coalescedRequests: UInt64 = 0
+    private(set) var ignoredProgressUpdates: UInt64 = 0
     /// Reviewed metadata (engine identity, artifacts, size bounds, digests).
     /// The app layer supplies it where the upstream format permits; Core
     /// defaults to size bounds without digests.
@@ -293,11 +297,8 @@ public actor ModelAcquisitionController {
         model: ModelIdentifier,
         consent: Bool
     ) async -> ModelAcquisitionResult {
-        if let existing = inflight[model] {
-            return await existing.value
-        }
         guard consent else {
-            states[model] = .failed
+            if inflight[model] == nil { states[model] = .failed }
             return ModelAcquisitionResult(
                 model: model, state: .failed,
                 verifiedURL: nil, error: .consentDenied)
@@ -307,15 +308,35 @@ public actor ModelAcquisitionController {
                 model: model, state: .failed,
                 verifiedURL: nil, error: .modelNotWhisperKit)
         }
-        let task = Task { await self.runAcquisition(model: model) }
-        inflight[model] = task
-        let result = await task.value
-        inflight[model] = nil
+        guard !Task.isCancelled else {
+            return ModelAcquisitionResult(model: model, state: .cancelled, verifiedURL: nil, error: .cancelled)
+        }
+        if let existing = inflight[model] {
+            // Joining an existing flight does not acquire cancellation authority
+            // over its owner. Explicit cancel(model:) cancels the whole flight.
+            coalescedRequests &+= 1
+            return await existing.task.value
+        }
+        let id = UUID()
+        cancelled.remove(model)  // an explicit new acquisition is a retry
+        progress[model] = nil
+        let task = Task { await self.runAcquisition(model: model, id: id) }
+        inflight[model] = (id, task)
+        // Cancellation reaches native download work synchronously even while
+        // this actor is busy hashing. Retain singleflight ownership until the
+        // task actually returns; a flag alone never permits a second writer.
+        let result = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
+        if inflight[model]?.id == id { inflight[model] = nil }
         return result
     }
 
     public func cancel(model: ModelIdentifier) {
         cancelled.insert(model)
+        inflight[model]?.task.cancel()
         if let state = states[model],
             state == .downloading || state == .verifying || state == .queued
         {
@@ -324,12 +345,14 @@ public actor ModelAcquisitionController {
     }
 
     public func resetCancellation(for model: ModelIdentifier) {
+        guard inflight[model] == nil else { return }
         cancelled.remove(model)
     }
 
     // MARK: - Internals
 
-    private func runAcquisition(model: ModelIdentifier) async -> ModelAcquisitionResult {
+    private func runAcquisition(model: ModelIdentifier, id: UUID) async -> ModelAcquisitionResult {
+        if Task.isCancelled { return cancellationResult(model) }
         // Stale lock from an interrupted acquisition must be cleaned first.
         if !fs.acquireLock(for: model) {
             // Best effort: the lock marker is stale — clean and retry once.
@@ -344,6 +367,7 @@ public actor ModelAcquisitionController {
 
         // Fast path: already verified.
         if let url = verifiedURL(for: model) {
+            if Task.isCancelled { return cancellationResult(model) }
             states[model] = .ready
             return ModelAcquisitionResult(
                 model: model, state: .ready,
@@ -352,51 +376,46 @@ public actor ModelAcquisitionController {
 
         states[model] = .queued
         // Re-check cancellation before download.
-        if cancelled.contains(model) {
-            states[model] = .cancelled
-            return ModelAcquisitionResult(
-                model: model, state: .cancelled,
-                verifiedURL: nil, error: .cancelled)
-        }
+        if cancelled.contains(model) || Task.isCancelled { return cancellationResult(model) }
 
         states[model] = .downloading
         let staging = fs.stagingRoot().appendingPathComponent(model.rawValue)
         do {
             try fs.createDirectory(staging, permissions: 0o700)
             try await fs.download(model: model, to: staging) { [weak self] p in
-                Task { await self?.recordProgress(model: model, p) }
+                Task { await self?.recordProgress(model: model, id: id, p) }
             }
         } catch {
             // Interrupted or failed download: remove partial staging content;
             // never let it become ready.
             try? fs.remove(staging)
-            states[model] = cancelled.contains(model) ? .cancelled : .failed
+            if cancelled.contains(model) || Task.isCancelled || error is CancellationError {
+                return cancellationResult(model)
+            }
+            states[model] = .failed
             return ModelAcquisitionResult(
                 model: model, state: states[model] ?? .failed,
                 verifiedURL: nil,
-                error: cancelled.contains(model)
-                    ? .cancelled
-                    : .downloadFailed(error.localizedDescription))
+                error: .downloadFailed("model transfer failed"))
         }
 
-        if cancelled.contains(model) {
+        if cancelled.contains(model) || Task.isCancelled {
             try? fs.remove(staging)
-            states[model] = .cancelled
-            return ModelAcquisitionResult(
-                model: model, state: .cancelled,
-                verifiedURL: nil, error: .cancelled)
+            return cancellationResult(model)
         }
 
         // Verify completeness/integrity against the reviewed manifest.
         states[model] = .verifying
         let manifest = makeManifest(for: model)
         do {
+            try Task.checkCancellation()
             let total = fs.directorySize(staging)
             guard total >= manifest.minTotalBytes, total <= manifest.maxTotalBytes else {
                 throw ModelAcquisitionError.verificationFailed(
                     "total size \(total) outside bounds \(manifest.minTotalBytes)...\(manifest.maxTotalBytes)")
             }
             for artifact in manifest.artifacts {
+                try Task.checkCancellation()
                 let artifactURL = staging.appendingPathComponent(artifact.name)
                 if !fs.fileExists(artifactURL) {
                     // Round-6 B4: optional components may be absent.
@@ -418,6 +437,9 @@ public actor ModelAcquisitionController {
                     }
                 }
             }
+        } catch is CancellationError {
+            try? fs.remove(staging)
+            return cancellationResult(model)
         } catch let e as ModelAcquisitionError {
             // Corrupt/incomplete content: quarantine, never silently reuse.
             do {
@@ -446,11 +468,13 @@ public actor ModelAcquisitionController {
         // promotion make the model unverifiable (fail closed below).
         let final = fs.verifiedCacheRoot().appendingPathComponent(model.rawValue)
         do {
+            try Task.checkCancellation()
             try fs.createDirectory(fs.verifiedCacheRoot(), permissions: 0o700)
             try fs.remove(final)  // clear any stale verified dir
             try fs.promote(from: staging, to: final)
             var digestArtifacts: [ModelArtifactSpec] = []
             for artifact in manifest.artifacts {
+                try Task.checkCancellation()
                 let artifactURL = final.appendingPathComponent(artifact.name)
                 guard fs.fileExists(artifactURL) else {
                     // Round-6 B4: optional components may be absent.
@@ -476,7 +500,17 @@ public actor ModelAcquisitionController {
                 minTotalBytes: manifest.minTotalBytes,
                 maxTotalBytes: manifest.maxTotalBytes,
                 createdAtUptimeNanos: manifest.createdAtUptimeNanos)
+            try Task.checkCancellation()
+            // Committing the manifest is acquisition's completion point.
+            // Cancellation after this commit may discard engine preparation,
+            // but does not relabel a completed verified cache write as partial.
             try fs.writeManifest(digestManifest, for: model)
+        } catch is CancellationError {
+            // Cancellation after rename must remove the newly promoted bytes
+            // as well as any manifest, rather than leaving a ready cache entry.
+            try? fs.remove(final)
+            try? fs.remove(staging)
+            return cancellationResult(model)
         } catch {
             try? fs.quarantine(staging, reason: "promotion failed")
             states[model] = .failed
@@ -492,7 +526,19 @@ public actor ModelAcquisitionController {
             verifiedURL: final, error: nil)
     }
 
-    private func recordProgress(model: ModelIdentifier, _ p: ModelDownloadProgress) {
+    private func cancellationResult(_ model: ModelIdentifier) -> ModelAcquisitionResult {
+        states[model] = .cancelled
+        progress[model] = nil
+        return ModelAcquisitionResult(model: model, state: .cancelled, verifiedURL: nil, error: .cancelled)
+    }
+
+    private func recordProgress(model: ModelIdentifier, id: UUID, _ p: ModelDownloadProgress) {
+        guard inflight[model]?.id == id, states[model] == .downloading,
+            inflight[model]?.task.isCancelled == false, !cancelled.contains(model)
+        else {
+            ignoredProgressUpdates &+= 1
+            return
+        }
         progress[model] = p
     }
 

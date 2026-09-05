@@ -9,6 +9,8 @@ import ZephyrFlowCore
 
 final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @unchecked Sendable {
     private let fm = FileManager.default
+    /// Tests supply a private temporary base; production uses Application Support.
+    private let storageRoot: URL?
     private let lock = NSLock()
     /// Lock markers: model -> acquisition start uptime nanos.
     private var lockTimestamps: [String: UInt64] = [:]
@@ -17,23 +19,25 @@ final class ProductionModelAcquisitionFileSystem: ModelAcquisitionFileSystem, @u
         @Sendable (ModelIdentifier, URL, @escaping @Sendable (ModelDownloadProgress) -> Void) async throws -> Void
 
     init(
+        storageRoot: URL? = nil,
         downloader:
             @escaping @Sendable (ModelIdentifier, URL, @escaping @Sendable (ModelDownloadProgress) -> Void) async throws
             -> Void
     ) {
+        self.storageRoot = storageRoot
         self.downloader = downloader
     }
 
     func verifiedCacheRoot() -> URL {
         let base =
-            fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            storageRoot ?? fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base.appendingPathComponent("ZephyrFlow/VerifiedModels", isDirectory: true)
     }
 
     func stagingRoot() -> URL {
         let base =
-            fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            storageRoot ?? fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
         return base.appendingPathComponent("ZephyrFlow/ModelStaging", isDirectory: true)
     }
@@ -197,10 +201,13 @@ extension ProductionModelAcquisitionFileSystem {
             }
             // WhisperKit downloads into its own cache; we then copy the located
             // folder into OUR staging area so verification/promotion is app-owned.
-            onProgress(ModelDownloadProgress(fraction: 0.05, bytesDownloaded: 0, bytesExpected: nil))
+            try Task.checkCancellation()
+            // This legacy transport does not expose measured bytes. Report
+            // indeterminate state instead of synthetic 5/50/100 percent.
+            onProgress(ModelDownloadProgress(fraction: nil, bytesDownloaded: 0, bytesExpected: nil))
             let engine = WhisperKitEngine()
             try await engine.load(model: model, allowDownload: true)
-            onProgress(ModelDownloadProgress(fraction: 0.5, bytesDownloaded: 0, bytesExpected: nil))
+            try Task.checkCancellation()
             guard let located = WhisperModelLocator.locate(model) else {
                 throw ModelAcquisitionError.downloadFailed("model not located after download")
             }
@@ -213,6 +220,7 @@ extension ProductionModelAcquisitionFileSystem {
                 at: located,
                 includingPropertiesForKeys: nil)
             for item in items {
+                try Task.checkCancellation()
                 let dest = stagingURL.appendingPathComponent(item.lastPathComponent)
                 try fm.copyItem(at: item, to: dest)
             }
@@ -232,10 +240,11 @@ extension ProductionModelAcquisitionFileSystem {
                     at: tokenizerDir,
                     includingPropertiesForKeys: nil)
                 for tItem in tItems {
+                    try Task.checkCancellation()
                     let dest = tokenizerDest.appendingPathComponent(tItem.lastPathComponent)
                     try fm.copyItem(at: tItem, to: dest)
                 }
             }
-            onProgress(ModelDownloadProgress(fraction: 1.0, bytesDownloaded: 0, bytesExpected: nil))
+            try Task.checkCancellation()
         }
 }

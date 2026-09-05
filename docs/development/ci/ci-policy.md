@@ -37,6 +37,11 @@ production release approval.
     The controller now consumes that coordinator and the environment's engine
     factories; these tests do not instantiate the full UI controller or perform
     real acquisition, Speech authorization, capture, or inference.
+    `ProductionAcquisitionTests` uses the production filesystem with private
+    temporary roots, tiny synthetic components and held download closures. It
+    checks cancellation propagation, retained singleflight ownership, retry,
+    consent on joining requests, and generation-bound progress. It does not
+    exercise a real transport or qualify pinned model provenance.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

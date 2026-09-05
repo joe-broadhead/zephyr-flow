@@ -91,12 +91,21 @@ final class ModelReadinessStore: ObservableObject {
     /// (settings.allowModelDownloads), independent of Local Only audio policy.
     /// Concurrent requests share ONE acquisition (singleflight).
     func acquire(_ model: ModelIdentifier, consent: Bool) async -> ModelAcquisitionController.ModelAcquisitionResult {
+        guard consent, !Task.isCancelled else {
+            return .init(
+                model: model, state: Task.isCancelled ? .cancelled : .failed, verifiedURL: nil,
+                error: Task.isCancelled ? .cancelled : .consentDenied)
+        }
         if let existing = acquisitionTasks[model] {
             return await existing.value
         }
         let task = Task { await self.acquisition.acquire(model: model, consent: consent) }
         acquisitionTasks[model] = task
-        let result = await task.value
+        let result = await withTaskCancellationHandler {
+            await task.value
+        } onCancel: {
+            task.cancel()
+        }
         acquisitionTasks[model] = nil
         switch result.state {
         case .downloading, .queued:
