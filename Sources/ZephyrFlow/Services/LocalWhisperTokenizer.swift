@@ -109,8 +109,8 @@ final class LocalWhisperTokenizer: WhisperTokenizer {
     /// Keep every input token (including incomplete trailing bytes) in order.
     /// Ambiguous replacement characters conservatively keep the rest of the
     /// stream together rather than split a partially decoded byte sequence.
-    /// Zephyr currently disables word timestamps; this still preserves the
-    /// protocol's word-grouping behavior for space/no-space language families.
+    /// Final chunk decoding uses these groups for word timestamps. Missing or
+    /// conflicting alignment causes incomplete review, never guessed stitching.
     func splitToWordTokens(tokenIds: [Int]) -> (words: [String], wordTokens: [[Int]]) {
         let whole = decode(tokens: tokenIds)
         let language = NLLanguageRecognizer.dominantLanguage(for: whole)?.rawValue

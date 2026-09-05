@@ -155,8 +155,17 @@ production release approval.
     exact overlap word/timing matching and incomplete fallback when alignment
     is missing/conflicting/ambiguous. Synthetic PCM and timestamps are not
     real speech/inference or named-hardware memory/latency qualification. These
-    primitives do not, by themselves, integrate the production decoder or
-    implement recording-limit UI/control; that integration remains required.
+    primitives do not, by themselves, qualify the production decoder.
+    `ProductionChunkDecodeTests` injects a runtime into the actual Whisper
+    engine: ordered <=30s windows with 2s overlap, unique original-range
+    accounting, ten-minute prefix retention/excess counts, missing alignment,
+    middle failure, cancellation and the absolute finalization deadline. The
+    deadline cancels the waiter, retains a busy native worker and quarantines
+    its engine; it does not prove native interruption. Final decode requests
+    word timestamps and zero SDK tail clipping; partials remain rolling 15s.
+    Native timestamp snapshots reject invalid/nonfinite ranges before integer
+    conversion. Real model accuracy/alignment, silence seams, languages,
+    hardware memory/latency and recording-limit UI/control need qualification.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
