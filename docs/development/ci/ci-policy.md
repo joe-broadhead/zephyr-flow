@@ -142,6 +142,14 @@ production release approval.
     AX calls outside this service; live field/window races and all-app deadline
     qualification remain open. Missing frontmost-app metadata now fails unknown
     instead of performing an unbounded AX fallback on MainActor.
+    Flow outcome-admission tests reject mismatched status/termination,
+    cancellation/supersession and failed preservation evidence. Only an explicit
+    byte-identical verbatim deadline fallback can take the deadline auto-insert
+    path. Core session tests preserve the returned whitespace/Unicode rather
+    than trimming after Flow and check review-only cancellation/supersession.
+    These tests do not qualify Flow semantic quality or complete the missing
+    Raw release corpus. Session-stage cancellation checks also observe task
+    cancellation after finalization and Flow, not only the control flag.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

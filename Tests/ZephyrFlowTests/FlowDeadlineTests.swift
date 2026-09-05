@@ -41,6 +41,39 @@
     }
 
     final class FlowDeadlineTests: XCTestCase {
+        func testSessionInsertionGateRejectsMalformedCancelledAndSupersededOutcomes() {
+            let original = "  e\u{301} 👩🏽‍💻\n  "
+            func output(
+                _ status: FlowOutcomeStatus, _ termination: FlowOutcomeTermination,
+                preserved: Bool = true, text: String? = nil, verbatimWarning: Bool = true
+            ) -> FlowOutcome {
+                FlowOutcome(
+                    text: text ?? original, requestedStyle: .raw, resolvedLossClass: .verbatim,
+                    backend: .regex, capabilityID: "synthetic", capabilityVersion: 1, language: .enUS,
+                    changedRangeCount: 0, protectedSpanCount: 0, protectedSpansPreserved: preserved,
+                    status: status, warnings: verbatimWarning ? [.verbatimFallback] : [],
+                    fallbackReason: nil, durationNanos: 1, termination: termination)
+            }
+            for status in FlowOutcomeStatus.allCases {
+                for termination in [FlowOutcomeTermination.completed, .cancelled, .deadlineExceeded, .superseded] {
+                    let expected =
+                        (status == .accepted && termination == .completed)
+                        || (status == .deadlineExceeded && termination == .deadlineExceeded)
+                    XCTAssertEqual(
+                        output(status, termination).allowsAutomaticInsertion(originalText: original), expected)
+                    XCTAssertFalse(
+                        output(status, termination, preserved: false).allowsAutomaticInsertion(originalText: original))
+                }
+            }
+            XCTAssertFalse(
+                output(.deadlineExceeded, .deadlineExceeded, text: "  é 👩🏽‍💻\n  ")
+                    .allowsAutomaticInsertion(originalText: original), "canonically equivalent is not exact-input UTF-8"
+            )
+            XCTAssertFalse(
+                output(.deadlineExceeded, .deadlineExceeded, verbatimWarning: false)
+                    .allowsAutomaticInsertion(originalText: original))
+        }
+
         private enum FixtureError: Error { case timedOut }
         private func until(_ predicate: @Sendable () async -> Bool) async throws {
             let clock = ContinuousClock()

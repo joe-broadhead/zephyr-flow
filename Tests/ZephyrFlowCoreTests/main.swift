@@ -52,6 +52,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
     /// Review B5 test hook: when true, applyFlow returns a REJECTED outcome
     /// (protected spans not preserved, original text returned).
     var flowRejected = false
+    var flowOverride: FlowOutcome?
     /// Round-6 B1 test hook: block recordHistory this long so a cancel can
     /// land deterministically during history persistence.
     var historyDelayNanos: UInt64 = 0
@@ -134,6 +135,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func applyFlow(_ request: FlowRequest) async -> FlowOutcome {
+        if let flowOverride { return flowOverride }
         if flowRejected {
             // Review B5: rejected outcome — original text returned, no
             // automatic insertion allowed.
@@ -160,6 +162,10 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func setFlowRejected(_ v: Bool) { flowRejected = v }
+    func setFlowOverride(_ value: FlowOutcome, original: String) {
+        flowOverride = value
+        finalText = original
+    }
 
     func validateTarget() async -> SessionValidationResult {
         let next = validationOutcomes.isEmpty ? .validated : validationOutcomes.removeFirst()
@@ -1436,7 +1442,55 @@ struct CoreTests {
                 await provider.insertionCount == 0)
         }
 
-        // ===== REQ-1: production-wiring session test (exactly-one terminal) =====
+        // Typed Flow boundaries through the real session actor + fake stages.
+        do {
+            let original = "  👩🏽‍💻 e\u{301}\n\tkeep trailing space  "
+            for status in [FlowOutcomeStatus.accepted, .deadlineExceeded, .cancelled, .superseded] {
+                let deadline = status == .deadlineExceeded
+                let outcome = FlowOutcome(
+                    text: original, requestedStyle: .raw,
+                    resolvedLossClass: .verbatim, backend: .regex, capabilityID: "synthetic", capabilityVersion: 1,
+                    language: .enUS, changedRangeCount: 0, protectedSpanCount: 0, protectedSpansPreserved: true,
+                    status: status, warnings: deadline ? [.verbatimFallback] : [], fallbackReason: nil,
+                    durationNanos: 1,
+                    termination: deadline ? .deadlineExceeded : (status == .accepted ? .completed : .cancelled))
+                let provider = FakeSessionStages()
+                await provider.setFlowOverride(outcome, original: original)
+                let session = DictationSession(
+                    provider: provider, engineChoice: .whisper,
+                    settings: .init(
+                        localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                        insertionMode: "automatic", saveHistory: false, copyOnlyOverrideBundleIDs: []))
+                let states = await session.subscribe()
+                let run = Task { await session.run() }
+                let timeout = Task {
+                    do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                    await session.cancel()
+                }
+                var ended = false
+                var reviewed = false
+                for await state in states {
+                    if state.phase == .listening && !ended {
+                        ended = true
+                        await session.end()
+                    }
+                    if state.phase == .review {
+                        reviewed = true
+                        await session.discard()
+                    }
+                }
+                await run.value
+                timeout.cancel()
+                let request = await provider.lastInsertRequest
+                if status == .accepted || deadline {
+                    check("2279 session preserves exact accepted/fallback text", request?.text == original && !reviewed)
+                } else {
+                    check("2279 cancelled/superseded Flow never auto-inserts", request == nil && reviewed)
+                }
+            }
+        }
+
+        // ===== REQ-1: session actor with fake stages (exactly-one terminal) =====
         do {
             // Drive a full session through capture -> end -> review(retry) ->
             // success; assert EXACTLY ONE success phase and no re-entrant

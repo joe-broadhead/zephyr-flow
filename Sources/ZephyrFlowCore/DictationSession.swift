@@ -648,6 +648,8 @@ public actor DictationSession {
         do {
             final = try await provider.finalize()
         } catch {
+            if await checkCancellation() { return }
+            await provider.cancel()
             // Round-5 B3: finalize failure occurs in .transcribing — the legal
             // event is .transcriptionFailed (not .captureFailed, which is only
             // legal from .capturing).
@@ -656,6 +658,7 @@ public actor DictationSession {
             finishTerminal(category: .failed)
             return
         }
+        if await checkCancellation() { return }
         state.outputs.engineResult = final
         // Transcription actually finished (finalize returned): stage it now.
         if control.stage(.transcriptionFinished).isRejected {
@@ -693,9 +696,11 @@ public actor DictationSession {
                     sessionID: sessionID, text: final.text, style: .clean,
                     language: settings.language,
                     sensitivity: targetSnapshot?.sensitivity.sensitivity ?? .unknown))
+            if await checkCancellation() { return }
             _ = control.stage(.transformationFinished)
             state.outputs.flowOutcome = conservative
-            let reviewText = conservative.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reviewText =
+                conservative.allowsAutomaticInsertion(originalText: final.text) ? conservative.text : final.text
             retainedText = reviewText
             publish(phase: .review, interim: reviewText, level: state.audioLevel)
             await handleReviewCommands(secureOnly: true)
@@ -709,6 +714,7 @@ public actor DictationSession {
                 sessionID: sessionID, text: final.text, style: settings.defaultFlowStyle,
                 language: settings.language,
                 sensitivity: targetSnapshot?.sensitivity.sensitivity ?? .unknown))
+        if await checkCancellation() { return }
         // Review B3: stage transformationFinished AFTER applyFlow returns.
         if control.stage(.transformationFinished).isRejected {
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
@@ -722,23 +728,25 @@ public actor DictationSession {
         // must NEVER be automatically inserted. The outcome's text is the
         // original input (conservative fallback), but automatic insertion is
         // disabled — surface the review surface so the user decides.
-        if flowOutcome.status == .rejected {
-            publish(phase: .review, interim: flowOutcome.text, level: state.audioLevel)
-            retainedText = flowOutcome.text
+        if !flowOutcome.allowsAutomaticInsertion(originalText: final.text) {
+            // Do not publish a cancelled, superseded or failed-preservation
+            // payload. The original engine text remains available for review.
+            publish(phase: .review, interim: final.text, level: state.audioLevel)
+            retainedText = final.text
             await handleReviewCommands(secureOnly: false)
             return
         }
-        let trimmed = flowOutcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
+        let insertText = flowOutcome.text
+        guard !insertText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             publish(phase: .error, interim: state.interimText, level: state.audioLevel)
             finishTerminal(category: .failed)
             return
         }
-        retainedText = trimmed
+        retainedText = insertText
 
         guard let snapshot = targetSnapshot else {
             _ = control.stage(.targetUnknown)
-            publish(phase: .review, interim: trimmed, level: state.audioLevel)
+            publish(phase: .review, interim: insertText, level: state.audioLevel)
             await handleReviewCommands(secureOnly: false)
             return
         }
@@ -796,7 +804,7 @@ public actor DictationSession {
                 // Review B2: a cancel that landed DURING insertion must not be
                 // followed by history persistence or a success terminal. Check
                 // immediately before both.
-                if cancelRequested {
+                if cancelRequested || Task.isCancelled {
                     await provider.cancel()
                     publish(phase: .hidden, interim: "", level: 0.05)
                     finishTerminal(category: .cancelled)
@@ -878,7 +886,7 @@ public actor DictationSession {
     /// read by every side-effecting stage). Non-consuming — does not disturb
     /// the command stream for review phases.
     private func checkCancellation() async -> Bool {
-        guard cancelRequested else { return false }
+        guard cancelRequested || Task.isCancelled else { return false }
         await provider.cancel()
         publish(phase: .hidden, interim: "", level: 0.05)
         finishTerminal(category: .cancelled)
