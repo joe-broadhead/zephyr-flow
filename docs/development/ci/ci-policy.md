@@ -27,8 +27,9 @@ production release approval.
 4. **Formatting and strings** — strict recursive Swift formatting plus
    `Scripts/string_scan.py`. The string scan resolves known catalogue
    references; it is not complete localization or accessibility acceptance.
-5. **Lint and gate regressions** — recursive Bash/ShellCheck checks, workflow
-   YAML syntax, and `python3 -m unittest discover -s Tests/CI -p 'test_*.py'`.
+5. **Lint and gate regressions** — recursive Bash/ShellCheck checks,
+   `actionlint .github/workflows/ci.yml` (including Actions context rules),
+   workflow YAML syntax, and `python3 -m unittest discover -s Tests/CI -p 'test_*.py'`.
    The isolated tool-double tests exercise error handling without running an
    app or compiler. They are not XCTest, sanitizer or coverage measurements.
 6. **Docs and version** — required `mkdocs build --strict`, writing the site
@@ -59,7 +60,7 @@ python3 -m venv "$TMPDIR/zephyr-gate-venv"
 PATH="$TMPDIR/zephyr-gate-venv/bin:$PATH" bash Scripts/ci_checks.sh
 ```
 
-ShellCheck must also be installed. Without full Xcode, use the Core runner,
+ShellCheck and actionlint must also be installed. Without full Xcode, use the Core runner,
 gate regression tests, formatting and docs commands separately; the full gate
 fails its preflight rather than claiming skipped lanes passed.
 
@@ -73,7 +74,7 @@ may prevent artifact upload and must not be interpreted as completed evidence.
 ## Tool versions and reproducibility
 
 - CI records the actual macOS/Xcode/Swift versions. `macos-15`, the selected
-  Xcode, Python 3.12 patch and Homebrew ShellCheck are not immutable tool pins.
+  Xcode, Python 3.12 patch and Homebrew ShellCheck/actionlint are not immutable tool pins.
 - Python gate packages are installed in a temporary virtual environment, never
   into Homebrew/system Python. Setup errors are not suppressed. Direct versions
   in `Scripts/ci/requirements.txt` constrain the shared docs requirements;

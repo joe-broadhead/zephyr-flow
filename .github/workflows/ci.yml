@@ -64,8 +64,6 @@ jobs:
     name: Gates (XCTest, strict concurrency, lint, format, docs, version, drift, coverage)
     runs-on: macos-15
     timeout-minutes: 60
-    env:
-      ZF_CI_REPORT_DIR: ${{ runner.temp }}/zephyr-gates
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -75,6 +73,8 @@ jobs:
       - name: Prepare gate reports and verify Xcode
         run: |
           set -euo pipefail
+          export ZF_CI_REPORT_DIR="$RUNNER_TEMP/zephyr-gates"
+          echo "ZF_CI_REPORT_DIR=$ZF_CI_REPORT_DIR" >> "$GITHUB_ENV"
           mkdir -p "$ZF_CI_REPORT_DIR"
           {
             git rev-parse HEAD
@@ -92,10 +92,13 @@ jobs:
       - name: Install isolated gate dependencies
         run: |
           set -euo pipefail
-          if ! command -v shellcheck >/dev/null 2>&1; then
-            brew install shellcheck 2>&1 | tee "$ZF_CI_REPORT_DIR/shellcheck-install.log"
-          fi
+          for tool in shellcheck actionlint; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              brew install "$tool" 2>&1 | tee "$ZF_CI_REPORT_DIR/$tool-install.log"
+            fi
+          done
           shellcheck --version | tee "$ZF_CI_REPORT_DIR/shellcheck-version.log"
+          actionlint -version | tee "$ZF_CI_REPORT_DIR/actionlint-version.log"
           python -m venv "$RUNNER_TEMP/zephyr-gate-venv"
           gate_python="$RUNNER_TEMP/zephyr-gate-venv/bin/python"
           "$gate_python" -m pip install -r Scripts/ci/requirements.txt \
@@ -115,10 +118,10 @@ jobs:
         with:
           name: ci-gates-report
           path: |
-            ${{ env.ZF_CI_REPORT_DIR }}/*.log
-            ${{ env.ZF_CI_REPORT_DIR }}/*.txt
-            ${{ env.ZF_CI_REPORT_DIR }}/*.tsv
-            ${{ env.ZF_CI_REPORT_DIR }}/coverage.*/
+            ${{ runner.temp }}/zephyr-gates/*.log
+            ${{ runner.temp }}/zephyr-gates/*.txt
+            ${{ runner.temp }}/zephyr-gates/*.tsv
+            ${{ runner.temp }}/zephyr-gates/coverage.*/
           if-no-files-found: error
           retention-days: 30
 

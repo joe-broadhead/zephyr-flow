@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import re
+import subprocess
 import unittest
 
 import yaml
@@ -42,12 +43,37 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(upload["with"]["if-no-files-found"], "error")
         for suffix in ["*.log", "*.txt", "*.tsv", "coverage.*/"]:
             self.assertIn(suffix, upload["with"]["path"])
-        self.assertIn("runner.temp", self.gates["env"]["ZF_CI_REPORT_DIR"])
+        self.assertIn("runner.temp", upload["with"]["path"])
+        # runner context is valid in step inputs, but NOT job-level env.
+        self.assertNotIn("runner.", str(self.gates.get("env", {})))
+        prepare = next(s for s in self.gates["steps"] if s["name"] == "Prepare gate reports and verify Xcode")
+        self.assertIn('export ZF_CI_REPORT_DIR="$RUNNER_TEMP/zephyr-gates"', prepare["run"])
+        self.assertIn('echo "ZF_CI_REPORT_DIR=$ZF_CI_REPORT_DIR" >> "$GITHUB_ENV"', prepare["run"])
+        install = next(s for s in self.gates["steps"] if s["name"] == "Install isolated gate dependencies")
+        self.assertIn("for tool in shellcheck actionlint", install["run"])
 
     def test_gate_action_references_keep_commit_pins(self):
         for step in self.gates["steps"]:
             if "uses" in step:
                 self.assertRegex(step["uses"], r"@[0-9a-f]{40}$")
+
+    def test_actions_validator_rejects_original_context_error(self):
+        fixture = """name: Context regression
+on: push
+jobs:
+  gates:
+    runs-on: macos-15
+    env:
+      ZF_CI_REPORT_DIR: ${{ runner.temp }}/zephyr-gates
+    steps:
+      - run: echo synthetic
+"""
+        result = subprocess.run(
+            ["actionlint", "-shellcheck=", "-pyflakes=", "-"],
+            input=fixture, text=True, capture_output=True, timeout=30,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('context "runner" is not allowed here', result.stdout + result.stderr)
 
     def test_direct_python_dependencies_have_exact_versions(self):
         requirements = (ROOT / "Scripts/ci/requirements.txt").read_text().splitlines()

@@ -31,7 +31,7 @@ git rev-parse HEAD > "$REPORT_DIR/source-sha.txt"
 
 # Full gates require Xcode. CLT-only machines can run the Core runner and
 # gate regression tests separately; an unavailable XCTest lane is never PASS.
-for tool in swift xcrun xcodebuild python3 shellcheck mkdocs; do
+for tool in swift xcrun xcodebuild python3 shellcheck actionlint mkdocs; do
   if ! command -v "$tool" >/dev/null 2>&1; then fail "missing required tool: $tool"; fi
 done
 if [[ "$FAILURES" -gt 0 ]]; then exit 1; fi
@@ -99,8 +99,11 @@ if ! run_logged strings python3 Scripts/string_scan.py; then
   fail "string catalog scan"
 fi
 
-# 5. Shell + YAML lint.
-step "5/9 shell + YAML lint"
+# 5. Shell, CI workflow semantics and YAML syntax lint.
+step "5/9 shell + Actions + YAML lint"
+if ! run_logged actions actionlint .github/workflows/ci.yml; then
+  fail "CI workflow Actions validation"
+fi
 # Review R8.1: shellcheck covers ALL Scripts subdirectories (recursive),
 # not just Scripts/*.sh, and its absence is a FAILURE (not a silent skip).
 # Review NIT-5: recursive script discovery via find (globstar-independent;

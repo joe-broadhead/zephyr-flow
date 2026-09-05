@@ -106,6 +106,8 @@ elif tool == "mkdocs":
             subprocess.run(["git", "add", name], cwd=root, check=True)
 elif tool == "shellcheck":
     fail_if("shellcheck")
+elif tool == "actionlint":
+    fail_if("actionlint")
 elif tool == "xcodebuild":
     print("Xcode test double (not Xcode)")
 else:
