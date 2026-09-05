@@ -684,7 +684,7 @@ public actor DictationSession {
         }
         let final: EngineResult
         do {
-            final = try await provider.finalize()
+            final = try await provider.finalize().requiringCompletionEvidence()
         } catch {
             if await checkCancellation() { return }
             await provider.cancel()

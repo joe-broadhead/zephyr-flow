@@ -38,6 +38,20 @@
     }
 
     final class ProductionBoundaryTests: XCTestCase {
+        func testEmptyAppleFinalCannotPromoteAnEarlierPartialToComplete() {
+            for text: String? in [nil, "", " \n\t"] {
+                XCTAssertFalse(AppleSpeechCallback(text: text, isFinal: true, error: nil).hasUsableFinalText)
+            }
+            XCTAssertFalse(
+                AppleSpeechCallback(text: "synthetic partial", isFinal: false, error: nil).hasUsableFinalText)
+            XCTAssertFalse(
+                AppleSpeechCallback(
+                    text: "synthetic final", isFinal: true,
+                    error: NSError(domain: "synthetic", code: 1)
+                ).hasUsableFinalText)
+            XCTAssertTrue(AppleSpeechCallback(text: "synthetic final", isFinal: true, error: nil).hasUsableFinalText)
+        }
+
         func testConventionalHotkeyAdapterReleasesWhenModifiersGoFirstWithoutPostingEvents() throws {
             let flags = CGEventFlags([.maskControl, .maskAlternate]).rawValue
             XCTAssertEqual(flags, UInt64(HotkeyConfig.controlOptionSpace.modifiers))

@@ -75,11 +75,22 @@ public struct EngineFrameAccounting: Sendable, Equatable {
         converterRatio: Double,
         roundingToleranceSamples: UInt64
     ) -> Bool {
-        guard capturedSourceSamples > 0 || deliveredEngineSamples > 0 else { return false }
+        guard capturedSourceSamples > 0, deliveredEngineSamples > 0,
+            droppedSourceSamples <= capturedSourceSamples,
+            converterRatio.isFinite, converterRatio > 0
+        else { return false }
         guard deliveredEngineSamples == decodedEngineSamples else { return false }
-        let expected = Double(capturedSourceSamples &- droppedSourceSamples) * converterRatio
-        let diff = UInt64(abs(expected - Double(deliveredEngineSamples)))
-        return diff <= roundingToleranceSamples
+        // Counts beyond exact Double integer precision cannot support a
+        // rounding-tolerance proof. They are far above admitted session limits.
+        let exactIntegerLimit: UInt64 = (1 << 53) - 1
+        guard capturedSourceSamples <= exactIntegerLimit, deliveredEngineSamples <= exactIntegerLimit,
+            roundingToleranceSamples <= exactIntegerLimit
+        else { return false }
+        let expected = Double(capturedSourceSamples - droppedSourceSamples) * converterRatio
+        guard expected.isFinite, expected >= 0, expected <= Double(exactIntegerLimit) else { return false }
+        // Compare without truncating fractional differences or converting
+        // NaN/infinity/out-of-range Double into UInt64 (which would trap).
+        return abs(expected - Double(deliveredEngineSamples)) <= Double(roundingToleranceSamples)
     }
 }
 
@@ -138,9 +149,25 @@ public struct EngineResult: Sendable, Equatable {
 
     /// Complete results require reconciled frame evidence (conservative).
     public var isComplete: Bool {
-        guard completeness == .complete else { return false }
-        guard let accounting = frameAccounting else { return false }
+        guard completeness == .complete, termination == .completed,
+            !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            let accounting = frameAccounting, accounting.droppedSourceSamples == 0
+        else { return false }
         return accounting.reconciled(converterRatio: 1.0, roundingToleranceSamples: 64)
+    }
+
+    /// Session admission cannot trust a success-shaped enum alone. Preserve
+    /// text and raw evidence for review, never invent counts or a final event.
+    public func requiringCompletionEvidence() -> EngineResult {
+        guard completeness == .complete, !isComplete else { return self }
+        return EngineResult(
+            text: text, completeness: .partial, frameAccounting: frameAccounting,
+            engine: engine, languageRequested: languageRequested, languageDetected: languageDetected,
+            confidence: confidence, confidenceSource: confidenceSource,
+            startedAtUptimeNanos: startedAtUptimeNanos, endedAtUptimeNanos: endedAtUptimeNanos,
+            inferenceDurationNanos: inferenceDurationNanos,
+            warnings: warnings.contains(.captureDegraded) ? warnings : warnings + [.captureDegraded],
+            fallbackReason: "completion evidence missing or inconsistent; review required", termination: termination)
     }
 
     /// Diagnostics serialization EXCLUDES transcript content by default.

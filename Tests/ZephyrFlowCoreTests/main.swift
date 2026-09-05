@@ -53,6 +53,9 @@ actor FakeSessionStages: DictationSessionStageProviding {
     /// (protected spans not preserved, original text returned).
     var flowRejected = false
     var flowOverride: FlowOutcome?
+    var engineResultOverride: EngineResult?
+    var flowCount = 0
+    func setEngineResult(_ result: EngineResult) { engineResultOverride = result }
     var immediateRecordingLimit = false
     func setImmediateRecordingLimit() { immediateRecordingLimit = true }
     /// Round-6 B1 test hook: block recordHistory this long so a cancel can
@@ -126,9 +129,12 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func finalize() async throws -> EngineResult {
-        EngineResult(
+        if let engineResultOverride { return engineResultOverride }
+        return EngineResult(
             text: finalText, completeness: completeness,
-            frameAccounting: nil,
+            frameAccounting: EngineFrameAccounting(
+                capturedSourceSamples: 16_000,
+                deliveredEngineSamples: 16_000, decodedEngineSamples: 16_000, droppedSourceSamples: 0),
             engine: EngineIdentity(
                 kind: .whisper, modelName: "Fake",
                 modelVersion: "1.0", modelDigest: "x"),
@@ -141,6 +147,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func applyFlow(_ request: FlowRequest) async -> FlowOutcome {
+        flowCount += 1
         if let flowOverride { return flowOverride }
         if flowRejected {
             // Review B5: rejected outcome — original text returned, no
@@ -1484,6 +1491,73 @@ struct CoreTests {
             check(
                 "2246 cancelled capture mailbox releases provider",
                 cancelledRun && hidden && cancelledProvider == 1 && inserted == 0 && released)
+        }
+
+        // A .complete enum is not frame/final-event evidence. The real session
+        // must confine malformed success-shaped results to explicit review.
+        for (counts, termination): (EngineFrameAccounting?, EngineResultTermination) in [
+            (nil, .completed),
+            (
+                .init(
+                    capturedSourceSamples: 0, deliveredEngineSamples: 0, decodedEngineSamples: 0,
+                    droppedSourceSamples: 0), .completed
+            ),
+            (
+                .init(
+                    capturedSourceSamples: 16_000, deliveredEngineSamples: 16_000, decodedEngineSamples: 16_000,
+                    droppedSourceSamples: 0), .failed
+            ),
+        ] {
+            let provider = FakeSessionStages()
+            let result = EngineResult(
+                text: "synthetic retained hypotheses", completeness: .complete, frameAccounting: counts,
+                engine: .init(kind: .whisper, modelName: "synthetic", modelVersion: nil, modelDigest: nil),
+                languageRequested: nil, languageDetected: nil, confidence: nil, confidenceSource: nil,
+                startedAtUptimeNanos: nil, endedAtUptimeNanos: nil, inferenceDurationNanos: nil,
+                warnings: [], fallbackReason: nil, termination: termination)
+            check("2252 malformed completion label rejected", !result.isComplete)
+            await provider.setEngineResult(result)
+            let session = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: .init(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                    insertionMode: "automatic", saveHistory: true, copyOnlyOverrideBundleIDs: []))
+            let states = await session.subscribe()
+            let run = Task { await session.run() }
+            await session.end()
+            var reviewed = false
+            for await state in states {
+                reviewed =
+                    reviewed
+                    || (state.phase == .warning && state.interimText == result.text
+                        && state.outputs.engineResult?.completeness == .partial)
+            }
+            await run.value
+            let flow = await provider.flowCount
+            let insertion = await provider.insertionCount
+            let history = await provider.historyCount
+            check(
+                "2252 malformed completion reviews without automatic side effects",
+                reviewed && flow == 0 && insertion == 0 && history == 0)
+        }
+        do {
+            let counts = EngineFrameAccounting(
+                capturedSourceSamples: 100, deliveredEngineSamples: 101,
+                decodedEngineSamples: 101, droppedSourceSamples: 0)
+            check(
+                "2252 fractional drift not truncated into tolerance",
+                !counts.reconciled(converterRatio: 0.995, roundingToleranceSamples: 1))
+            for ratio in [Double.nan, .infinity, -.infinity, -1, 0, .greatestFiniteMagnitude] {
+                check(
+                    "2252 malformed ratio fails without trap",
+                    !counts.reconciled(converterRatio: ratio, roundingToleranceSamples: 1))
+            }
+            let underflow = EngineFrameAccounting(
+                capturedSourceSamples: 1, deliveredEngineSamples: 1,
+                decodedEngineSamples: 1, droppedSourceSamples: 2)
+            check(
+                "2252 rejected dropped count underflow",
+                !underflow.reconciled(converterRatio: 1, roundingToleranceSamples: 1))
         }
 
         // Product-limit timer and sample-limit signal share the normal stop

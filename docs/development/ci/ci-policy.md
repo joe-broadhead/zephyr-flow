@@ -190,6 +190,20 @@ production release approval.
     a two-second elapsed hold alone is no longer a lost-release receipt. Actual
     keyboard, native thread/restart/late callback, OS shortcut conflicts and
     ten-minute physical hold behavior remain unqualified.
+    `EngineResultContractTests` rejects missing/zero/mismatched/dropped frame
+    evidence and non-completed terminations despite a success-shaped enum.
+    Reconciliation rejects nonfinite ratios and counts beyond exact integer
+    precision without unsigned underflow or floating-to-integer conversion
+    traps; fractional errors are not rounded down into the tolerance. Core
+    actual-session fixtures verify no Flow/insertion/history on invalid claimed
+    completion. These fixtures now provide explicit synthetic frame counts for
+    their normal path; their old nil accounting did not prove valid admission.
+    Apple Speech currently lacks nonzero frame accounting, so its results stay
+    partial/review-only rather than auto-inserting from placeholder evidence.
+    Empty final callbacks do not qualify earlier partial text. Apple timestamps
+    are monotonic; inference-only duration and detected language are unknown,
+    not fabricated from capture elapsed time or the requested locale. Native
+    Speech accounting, cancellation/cleanup and device qualification remain open.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

@@ -12,6 +12,9 @@ struct AppleSpeechCallback: Sendable {
     let isFinal: Bool
     let errorCode: Int32?
     let errorMessage: String?
+    var hasUsableFinalText: Bool {
+        isFinal && errorCode == nil && !(text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    }
 
     init(text: String?, isFinal: Bool, error: NSError?) {
         self.text = text
@@ -47,7 +50,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
     private var audioEngine: AVAudioEngine?
     private var onPartial: (@Sendable (PartialTranscription) -> Void)?
     private var accumulated = ""
-    private var startTime: Date?
+    private var startedAtNanos: UInt64?
     private var isStreaming = false
     private var latestLevels: [Float] = Array(repeating: 0.05, count: 24)
     private var finalWaiters: [CheckedContinuation<Void, Never>] = []
@@ -114,7 +117,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
 
         self.onPartial = onPartial
         self.accumulated = ""
-        self.startTime = Date()
+        self.startedAtNanos = DispatchTime.now().uptimeNanoseconds
         self.isStreaming = true
         self.sawFinal = false
         self.lastError = nil
@@ -207,12 +210,13 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         finishRecognition()
 
         let finalText = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
-        let duration = Date().timeIntervalSince(startTime ?? Date())
+        let started = startedAtNanos
+        let ended = DispatchTime.now().uptimeNanoseconds
         let err = lastError
         cleanupStream()
 
         ZFLog.info(
-            "Final text len=\(finalText.count) duration=\(String(format: "%.2f", duration)) hasError=\(err != nil)")
+            "Final text len=\(finalText.count) hasError=\(err != nil)")
 
         if finalText.isEmpty, let err {
             throw WhisperEngineError.transcriptionFailed(err)
@@ -239,14 +243,15 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
                 kind: .appleSpeech, modelName: modelName,
                 modelVersion: nil, modelDigest: nil),
             languageRequested: currentLanguage.bcp47,
-            languageDetected: currentLanguage.bcp47,
+            languageDetected: nil,  // Requested locale is not language detection evidence.
             confidence: nil, confidenceSource: nil,
-            startedAtUptimeNanos: nil,
-            endedAtUptimeNanos: DispatchTime.now().uptimeNanoseconds,
-            inferenceDurationNanos: UInt64(duration * 1_000_000_000),
+            startedAtUptimeNanos: started,
+            endedAtUptimeNanos: ended,
+            inferenceDurationNanos: nil,  // Streaming framework does not expose inference-only timing.
             warnings: warnings,
             fallbackReason: (sawFinal && err == nil) ? nil : "rolling partial / degraded",
-            termination: err == nil ? .completed : .failed)
+            termination: err == nil ? .completed : .failed
+        ).requiringCompletionEvidence()
     }
 
     func cancel() async {
@@ -321,8 +326,8 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
             // Never log transcript content — lengths only (PII).
             ZFLog.info("partial isFinal=\(callback.isFinal) len=\(text.count) kept=\(accumulated.count)")
             if callback.isFinal {
-                sawFinal = true
-                let outcome = recognitionTracker.noteFinal(token: token, hasText: !text.isEmpty)
+                sawFinal = callback.hasUsableFinalText
+                let outcome = recognitionTracker.noteFinal(token: token, hasText: callback.hasUsableFinalText)
                 ZFLog.info("final event outcome=\(outcome.rawValue) len=\(text.count)")
                 finishRecognition()
             }
@@ -383,6 +388,7 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
         onPartial = nil
         audioEngine = nil
         isStreaming = false
+        startedAtNanos = nil
         latestLevels = Array(repeating: 0.05, count: 24)
     }
 
