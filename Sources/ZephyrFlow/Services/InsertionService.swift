@@ -40,7 +40,7 @@ actor InsertionService: InsertionServiceProtocol {
         let bundle = targetBundleID ?? frontBundle
         let validatedLease = lease
         ZFLog.info(
-            "Insert request len=\(text.count) ax=\(AXIsProcessTrusted()) mode=\(mode.rawValue) bundle=\(bundle ?? "nil") role=\(role ?? "nil")"
+            "Insert request len=\(text.count) ax=\(AXIsProcessTrusted()) mode=\(mode.rawValue) bundle=\(bundle ?? "nil")"
         )
 
         // Review B4v2: when AX is revoked we cannot establish sensitivity or
@@ -49,14 +49,7 @@ actor InsertionService: InsertionServiceProtocol {
             ZFLog.info("insert blocked — Accessibility revoked (sensitivity unknown)")
             return .targetUnknown
         }
-        let secureFocused = await isSecureFieldFocused()
-        if InsertionStrategyResolver.isSecureRole(role) || secureFocused {
-            // Review R9: never write the clipboard automatically for a secure
-            // field. The user may copy explicitly from the review panel, and
-            // only THAT action may produce .explicitlyCopiedByUser.
-            ZFLog.info("insert secure target — automatic clipboard blocked bundle=\(bundle ?? "nil")")
-            return .secureTarget
-        }
+        if let rejected = await focusedSensitivityRejection() { return rejected }
 
         // Review R2.1: target validation and mutation must be one transaction
         // against the same resolved element identity. We re-check the focused
@@ -104,6 +97,8 @@ actor InsertionService: InsertionServiceProtocol {
                 // Review R9: copy-only MODE is an automatic write, not an
                 // explicit per-action copy. Distinct outcome: non-success, no
                 // history retention, review shown so the user confirms.
+                guard !Task.isCancelled else { return .targetUnknown }
+                if let rejected = await focusedSensitivityRejection() { return rejected }
                 await copyToClipboard(text)
                 ZFLog.info("insert strategy=copyOnly bundle=\(bundle ?? "nil") result=automaticCopy")
                 return .automaticCopy
@@ -112,12 +107,7 @@ actor InsertionService: InsertionServiceProtocol {
                 // Review R2.1: re-validate the target immediately before the
                 // paste mutation. If focus moved to a secure/unknown target,
                 // fail closed — never paste into it.
-                let reRole = await focusedRole()
-                let reSecure = AXIsProcessTrusted() ? await isSecureFieldFocused() : false
-                if InsertionStrategyResolver.isSecureRole(reRole) || reSecure {
-                    ZFLog.info("insert paste re-check: secure target — blocked")
-                    return .secureTarget
-                }
+                if let rejected = await focusedSensitivityRejection() { return rejected }
                 let settle = adapter.settleNanos
                 try? await Task.sleep(nanoseconds: settle)
                 let paste = await pasteViaClipboard(
@@ -314,15 +304,17 @@ actor InsertionService: InsertionServiceProtocol {
         }
 
         // Capability flags (fresh, content-free).
-        let role = axString(element, kAXRoleAttribute)
-        let subrole = axString(element, kAXSubroleAttribute)
-        let isSecure = role == "AXSecureTextField" || InsertionStrategyResolver.isSecureRole(role)
+        let evidence = AXSensitivityReader.read(element)
+        guard evidence.sensitivity == .normal else { return .failed }
+        let role = evidence.role.value
+        let subrole = evidence.subrole.value
+        let isSecure = evidence.sensitivity == .secure
         var settableFlag = DarwinBoolean(false)
         let settable =
             AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &settableFlag) == .success
             && settableFlag.boolValue
-        let editable = role.map { InsertionService.textLikeRoles.contains($0) } ?? false
-        let enabled = axBool(element, kAXEnabledAttribute)
+        let editable = evidence.editable
+        let enabled = evidence.enabled == true
         let capability = AxElementCapability(
             settable: settable, editable: editable,
             enabled: enabled, isSecure: isSecure,
@@ -519,23 +511,20 @@ actor InsertionService: InsertionServiceProtocol {
         let currentBundle = await frontmostBundleID()
         // Exactly the same integer representation used during capture.
         let processStart = ProcessStartIdentity.read(pid: pid)
-        let role = await focusedRole()
-        let subrole = focusedSubrole(element)
+        let evidence = AXSensitivityReader.read(element)
+        let role = evidence.role.value
+        let subrole = evidence.subrole.value
         let token = axString(element, kAXIdentifierAttribute as String)
         // Capabilities: settable via AXUIElementIsAttributeSettable on the
         // VALUE attribute (round-6 B3 — the old synthetic "AXSettable" read
         // was not equivalent); editable = text-like role; enabled via AX.
         let settable = axIsSettable(element)
-        let editable =
-            Self.textLikeRoles.contains(role ?? "")
-        let enabled = axBool(element, kAXEnabledAttribute as String)
+        let editable = evidence.editable
+        let enabled = evidence.enabled == true
         // Sensitivity: secure role -> secure; editable -> normal; else unknown
         // (fail-closed). A mismatch with the lease's sensitivity fails the
         // lease (the pure matcher compares them).
-        let sensitivity: SessionSensitivity =
-            role == "AXSecureTextField"
-            ? .secure
-            : (editable ? .normal : .unknown)
+        let sensitivity = evidence.sensitivity
         return TargetSnapshot(
             sessionID: sessionID,
             capturedAtUptimeNanos: nowNanos,
@@ -743,9 +732,8 @@ actor InsertionService: InsertionServiceProtocol {
             ZFLog.info("paste pre-check: Accessibility revoked — blocked")
             return .failed
         }
-        let reSecure = await isSecureFieldFocused()
-        if InsertionStrategyResolver.isSecureRole(await focusedRole()) || reSecure {
-            ZFLog.info("paste pre-check: secure field — blocked before mutation")
+        if await focusedSensitivityRejection() != nil {
+            ZFLog.info("paste pre-check: sensitive/unknown field — blocked before mutation")
             return .failed
         }
 
@@ -787,9 +775,8 @@ actor InsertionService: InsertionServiceProtocol {
             ZFLog.info("paste event-time: Accessibility revoked — restore + blocked")
             return finishClipboardTransaction(&tx, on: pasteboard, posted: false)
         }
-        let reSecure2 = await isSecureFieldFocused()
-        if InsertionStrategyResolver.isSecureRole(await focusedRole()) || reSecure2 {
-            ZFLog.info("paste event-time: secure field — restore + blocked")
+        if await focusedSensitivityRejection() != nil {
+            ZFLog.info("paste event-time: sensitive/unknown field — restore + blocked")
             return finishClipboardTransaction(&tx, on: pasteboard, posted: false)
         }
         guard !Task.isCancelled, PasteboardTransactionAdapter.stillOwns(tx, on: pasteboard), postCommandV() else {
@@ -865,8 +852,21 @@ actor InsertionService: InsertionServiceProtocol {
         return roleRef as? String
     }
 
-    private func isSecureFieldFocused() async -> Bool {
-        InsertionStrategyResolver.isSecureRole(await focusedRole())
+    private func focusedSensitivityRejection() async -> InsertionOutcome? {
+        guard AXIsProcessTrusted() else { return .targetUnknown }
+        let systemWide = AXUIElementCreateSystemWide()
+        var focusedRef: CFTypeRef?
+        guard
+            AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef)
+                == .success,
+            let focused = focusedRef, CFGetTypeID(focused) == AXUIElementGetTypeID()
+        else { return .targetUnknown }
+        let element = unsafeBitCast(focused, to: AXUIElement.self)
+        switch AXSensitivityReader.read(element).sensitivity {
+        case .normal: return nil
+        case .secure: return .secureTarget
+        case .unknown: return .targetUnknown
+        }
     }
 
     // MARK: - Clipboard helpers

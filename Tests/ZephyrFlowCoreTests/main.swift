@@ -4105,6 +4105,28 @@ struct CoreTests {
 
     static func runPart5() async {
         do {
+            check(
+                "2258 secure subrole confines ordinary text role",
+                AccessibilitySensitivity.classify(
+                    role: .value("AXTextField"), subrole: .value("AXSecureTextField"), enabled: true) == .secure)
+            check(
+                "2258 role failure cannot erase secure subrole evidence",
+                AccessibilitySensitivity.classify(
+                    role: .unavailable, subrole: .value("AXSecureTextField"), enabled: nil) == .secure)
+            check(
+                "2258 subrole read failure is unknown",
+                AccessibilitySensitivity.classify(role: .value("AXTextField"), subrole: .unavailable, enabled: true)
+                    == .unknown)
+            check(
+                "2258 unsupported optional subrole allows known enabled text role",
+                AccessibilitySensitivity.classify(role: .value("AXTextArea"), subrole: .notPresent, enabled: true)
+                    == .normal)
+            check(
+                "2258 enabled evidence failure is unknown",
+                AccessibilitySensitivity.classify(role: .value("AXTextArea"), subrole: .notPresent, enabled: nil)
+                    == .unknown)
+        }
+        do {
             let backend = CoreHeldFlowBackend()
             let router = FlowRouter(regex: backend)
             let request = FlowRequest(

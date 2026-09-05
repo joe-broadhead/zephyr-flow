@@ -21,10 +21,6 @@ final class TargetValidationService: TargetValidationProviding {
     static let shared = TargetValidationService()
 
     private let ownBundleID = Bundle.main.bundleIdentifier ?? "dev.zephyrflow.app"
-    private let textLikeRoles: Set<String> = [
-        "AXTextField", "AXTextArea", "AXComboBox", "AXSecureTextField",
-        "AXTextView", "AXSearchField",
-    ]
 
     private init() {}
 
@@ -47,32 +43,17 @@ final class TargetValidationService: TargetValidationProviding {
             return nil
         }
         let element = focusedElement(of: app)
-        let role = element.flatMap { attr($0, kAXRoleAttribute) }
-        let subrole = element.flatMap { attr($0, kAXSubroleAttribute) }
+        let evidence = element.map { AXSensitivityReader.read($0) }
+        let role = evidence?.role.value
+        let subrole = evidence?.subrole.value
         let identifier = element.flatMap { attr($0, kAXIdentifierAttribute) }
         let settable = element.map { self.axSettable($0) } ?? false
-        let editable = element.map { textLikeRoles.contains(attr($0, kAXRoleAttribute) ?? "") } ?? false
-        let enabled = element.map { axBool($0, kAXEnabledAttribute) } ?? false
-
-        let isSecure = role == "AXSecureTextField"
-        let sensitivity: SensitivityAssessment
-        if isSecure {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .secure,
-                source: .accessibilityRole,
-                capturedAtNanos: nowNanos)
-        } else if editable {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .normal,
-                source: .accessibilityRole,
-                capturedAtNanos: nowNanos)
-        } else {
-            // No evidence: fail closed to unknown (JOE-2258/2259).
-            sensitivity = SensitivityAssessment(
-                sensitivity: .unknown,
-                source: .noEvidence,
-                capturedAtNanos: nowNanos)
-        }
+        let editable = evidence?.editable ?? false
+        let enabled = evidence?.enabled ?? false
+        let classification = evidence?.sensitivity ?? .unknown
+        let sensitivity = SensitivityAssessment(
+            sensitivity: classification,
+            source: classification == .unknown ? .noEvidence : .accessibilityRole, capturedAtNanos: nowNanos)
 
         let snapshot = TargetSnapshot(
             sessionID: sessionID,
@@ -92,7 +73,7 @@ final class TargetValidationService: TargetValidationProviding {
             enabled: enabled,
             selectionRange: nil,
             sensitivity: sensitivity)
-        ZFLog.info("revalidate: snapshot pid=\(pid) role=\(role ?? "nil") sens=\(sensitivity.sensitivity.rawValue)")
+        ZFLog.info("revalidate: snapshot pid=\(pid) sens=\(sensitivity.sensitivity.rawValue)")
         return snapshot
     }
 
@@ -104,28 +85,15 @@ final class TargetValidationService: TargetValidationProviding {
         let pid = app.processIdentifier
         guard let bundle = app.bundleIdentifier, !isIgnorable(bundleID: bundle) else { return nil }
         let element = focusedElement(of: app)
-        let role = element.flatMap { attr($0, kAXRoleAttribute) }
-        let subrole = element.flatMap { attr($0, kAXSubroleAttribute) }
+        let evidence = element.map { AXSensitivityReader.read($0) }
+        let role = evidence?.role.value
+        let subrole = evidence?.subrole.value
         let identifier = element.flatMap { attr($0, kAXIdentifierAttribute) }
-        let isSecure = role == "AXSecureTextField"
-        let editable = element.map { textLikeRoles.contains(attr($0, kAXRoleAttribute) ?? "") } ?? false
-        let sensitivity: SensitivityAssessment
-        if isSecure {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .secure,
-                source: .accessibilityRole,
-                capturedAtNanos: nowNanos)
-        } else if editable {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .normal,
-                source: .accessibilityRole,
-                capturedAtNanos: nowNanos)
-        } else {
-            sensitivity = SensitivityAssessment(
-                sensitivity: .unknown,
-                source: .noEvidence,
-                capturedAtNanos: nowNanos)
-        }
+        let editable = evidence?.editable ?? false
+        let classification = evidence?.sensitivity ?? .unknown
+        let sensitivity = SensitivityAssessment(
+            sensitivity: classification,
+            source: classification == .unknown ? .noEvidence : .accessibilityRole, capturedAtNanos: nowNanos)
         return TargetValidationContext(
             pid: pid,
             bundleID: bundle,
@@ -137,7 +105,7 @@ final class TargetValidationService: TargetValidationProviding {
                 resolutionToken: identifier),
             settable: element.map { axSettable($0) } ?? false,
             editable: editable,
-            enabled: element.map { axBool($0, kAXEnabledAttribute) } ?? false,
+            enabled: evidence?.enabled ?? false,
             sensitivity: sensitivity,
             nowNanos: nowNanos)
     }

@@ -38,6 +38,48 @@
     }
 
     final class ProductionBoundaryTests: XCTestCase {
+        func testNativeSensitivityReadsSameHandleRoleSubroleAndBooleanEnabledOnly() {
+            var queried: [String] = []
+            let evidence = AXSensitivityReader.readAttributes { name in
+                queried.append(name)
+                switch name {
+                case kAXRoleAttribute: return (.success, "AXTextField" as CFString)
+                case kAXSubroleAttribute: return (.success, "AXSecureTextField" as CFString)
+                case kAXEnabledAttribute: return (.success, kCFBooleanTrue)
+                default:
+                    XCTFail("unexpected attribute query")
+                    return (.attributeUnsupported, nil)
+                }
+            }
+            XCTAssertEqual(queried, [kAXRoleAttribute, kAXSubroleAttribute, kAXEnabledAttribute])
+            XCTAssertEqual(evidence.sensitivity, .secure)
+        }
+
+        func testMissingOptionalSubroleDiffersFromIPCFailureOrWrongType() {
+            for error in [AXError.attributeUnsupported, .noValue, .cannotComplete, .apiDisabled, .failure] {
+                let evidence = AXSensitivityReader.readAttributes { name in
+                    switch name {
+                    case kAXRoleAttribute: return (.success, "AXTextArea" as CFString)
+                    case kAXSubroleAttribute: return (error, nil)
+                    default: return (.success, kCFBooleanTrue)
+                    }
+                }
+                XCTAssertEqual(
+                    evidence.sensitivity, [.attributeUnsupported, .noValue].contains(error) ? .normal : .unknown)
+            }
+            for malformedAttribute in [kAXRoleAttribute, kAXSubroleAttribute, kAXEnabledAttribute] {
+                let evidence = AXSensitivityReader.readAttributes { name in
+                    if name == malformedAttribute { return (.success, Data([1]) as CFData) }
+                    switch name {
+                    case kAXRoleAttribute: return (.success, "AXTextField" as CFString)
+                    case kAXSubroleAttribute: return (.attributeUnsupported, nil)
+                    default: return (.success, kCFBooleanTrue)
+                    }
+                }
+                XCTAssertEqual(evidence.sensitivity, .unknown)
+            }
+        }
+
         func testProcessStartIdentityPreservesIntegerMicrosecondsAndRejectsOverflow() {
             XCTAssertEqual(
                 ProcessStartIdentity.nanoseconds(seconds: 1_725_566_789, microseconds: 123_456),

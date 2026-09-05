@@ -101,6 +101,13 @@ production release approval.
     guarantee; real crash/power-loss and supported-macOS qualification remain
     required. Native tap startup is checked separately from thread creation;
     this is not full hotkey native-lifecycle or hung-thread qualification.
+    Native sensitivity-reader mapping tests inject role/subrole/enabled replies
+    into the same helper used by target capture/revalidation, AX-write preflight
+    and paste/copy checks. Secure subrole evidence confines an ordinary role;
+    optional-attribute absence is distinguished from IPC/type/read failure,
+    which stays unknown. These tests issue no AX messages or field reads. The
+    synchronous reader is not a bounded IPC/atomic-focus guarantee; live hung
+    targets, same-app field races and the six-app matrix remain unqualified.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
