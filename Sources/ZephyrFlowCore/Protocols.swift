@@ -132,9 +132,8 @@ extension FlowProcessorProtocol {
     /// FlowOutcome using the same guardrail semantics as the deterministic
     /// backend so the protocol is satisfied in Swift 6 language mode.
     public func process(_ request: FlowRequest) async -> FlowOutcome {
-        let started = Date()
+        let started = DispatchTime.now().uptimeNanoseconds
         let output = await process(request.text, style: request.style, language: request.language)
-        let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
         let loss = FlowOutcome.lossClass(for: request.style)
         let inTokens = FlowGuardrails.tokens(in: request.text)
         let outTokens = FlowGuardrails.tokens(in: output)
@@ -159,7 +158,7 @@ extension FlowProcessorProtocol {
             status: status,
             warnings: warnings,
             fallbackReason: fallbackReason,
-            durationNanos: duration,
+            durationNanos: DispatchTime.now().uptimeNanoseconds &- started,
             termination: .completed)
     }
 

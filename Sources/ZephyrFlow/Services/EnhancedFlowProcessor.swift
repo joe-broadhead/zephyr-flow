@@ -37,11 +37,10 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
     /// which already guarded, then guarded the guarded output a second time
     /// and could report a fallback as an accepted enhanced result.)
     func process(_ request: FlowRequest) async -> FlowOutcome {
-        let started = Date()
+        let started = DispatchTime.now().uptimeNanoseconds
         let output = await enhancedRaw(
             request.text, style: request.style,
             language: request.language)
-        let duration = UInt64(Date().timeIntervalSince(started) * 1_000_000_000)
         // Round-6 NIT 1: .clean/.raw delegate to the regex backend in
         // enhancedRaw — an approved result must report the ACTUAL backend,
         // never a hardcoded .enhanced.
@@ -81,7 +80,7 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
                 status: .accepted,
                 warnings: [],
                 fallbackReason: nil,
-                durationNanos: duration,
+                durationNanos: DispatchTime.now().uptimeNanoseconds &- started,
                 termination: .completed)
         case .rejected(let reason, let conservative):
             // Round-5 REQ-6: the outcome preserves the ORIGINAL rejection,
@@ -101,7 +100,7 @@ actor EnhancedFlowProcessor: FlowProcessorProtocol {
                 status: .rejected,
                 warnings: [.guardrailRejected],
                 fallbackReason: "guardrail rejection: \(reason.rawValue)",
-                durationNanos: duration,
+                durationNanos: DispatchTime.now().uptimeNanoseconds &- started,
                 termination: .completed)
         }
     }
