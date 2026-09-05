@@ -5,7 +5,11 @@
 
     final class ProductionOfflineTokenizerTests: XCTestCase {
         private func folder() throws -> URL {
-            let root = FileManager.default.temporaryDirectory.appendingPathComponent("zf-tokenizer-\(UUID())")
+            // Directory enumeration on macOS can return the /private/var
+            // spelling even when the caller supplied /var. Compare canonical
+            // fixture paths, not two aliases of the same selected directory.
+            let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+                .appendingPathComponent("zf-tokenizer-\(UUID())")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             addTeardownBlock { try FileManager.default.removeItem(at: root) }
             return root
