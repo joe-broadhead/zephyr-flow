@@ -1,11 +1,12 @@
 # Sanitizer lanes and honest exclusions (JOE-2293)
 
-## Supported lanes (run in CI, fail closed)
+## Configured lanes (require a successful candidate run)
 
 - **Address Sanitizer** (`swift test --sanitize=address`): XCTest target.
-  Detects use-after-free, heap overflow and leaks in the exercised paths.
-  The Core session leak test (JOE-2244) is the focused leak check; the
-  sanitizer runs the same suite under ASan.
+  Checks memory safety in the exercised paths. An ASan pass is not a general
+  leak-free claim, and it does not run every test in the separate Core runner.
+  Current XCTest suites cover Core contracts, not real microphone/native
+  adapter ownership. Retain actual candidate results before claiming a pass.
 - **Rapid-control stress** (seeded, in the Core suite): randomized
   press/release/cancel sequences assert exactly-one terminal, idempotent
   duplicate edges and cancel-termination (JOE-2246 invariants).
@@ -14,34 +15,36 @@
   partial write simulation; recovery must yield OLD or NEW consistent state,
   never MIXED. Real kill/relaunch of the app is a scheduled extended lane on
   the exact candidate (human-gated).
-- **Strict-concurrency runtime checks**: gate 3 compiles with
-  `-strict-concurrency=complete` and fails on NEW warnings — the alternate
-  targeted lane for actor-isolation defects.
+- **Strict-concurrency compile-time checks**: gate 3 builds app and test
+  targets with `-strict-concurrency=complete` and fails on new/increased
+  warnings against the reviewed baseline. These are not runtime race checks.
 
 ## Documented exclusions (honest)
 
-- **Thread Sanitizer**: TSan is not reliable for Swift concurrency on the
-  GitHub macos-15 runner (known false positives + framework incompatibility).
-  Rather than silently skipping the trust boundary, the alternate targeted
-  lane is the strict-concurrency build + the seeded rapid-control stress,
-  both fail-closed. Revisit when the toolchain supports Swift-actor-aware
-  TSan.
+- **Thread Sanitizer**: not configured in this runner. No candidate-specific
+  TSan support assessment or runtime race result is established here. Strict
+  concurrency and seeded stress provide different, partial evidence; they
+  are not equivalent substitutes. Qualification needs an explicit supported
+  toolchain assessment and any justified exclusions.
 - **Real microphone/transcript paths**: sanitizer lanes use deterministic
   fakes only; no private transcripts or credentials are required.
 
 ## Pinning + artifacts
 
-- Toolchain: `macos-15` runner image; `swift --version` recorded in the
-  gate log. Failure artifacts (ASan report, seeds) are uploaded by the CI
-  workflow; every failure carries the exact commit + retained seed.
+- Toolchain: `macos-15` runner image; actual Xcode/Swift versions and source
+  SHA are recorded. The image/toolchain is not an immutable version pin.
+  Full ASan/stress logs and command exit codes are uploaded on successful and
+  failed runs when the runner reaches the upload step. See [CI policy](ci-policy.md).
 - CI time caps never convert a timeout into success: lanes exit non-zero on
   timeout.
 
-## Deliberate-defect proof (per lane)
+## Validation scope
 
-- ASan: a deliberate out-of-bounds/leak fixture in the XCTest target fails
-  the lane (verified by inspection of the sanitizer contract; see
-  docs/development/evidence/JOE-2293/REPORT.md).
+- Gate regression tests inject synthetic command failures, missing profiles
+  and missing control/recovery markers into tool doubles. These validate
+  shell orchestration and error propagation, not the sanitizer itself.
+- ASan failure-detection evidence must come from an actual supported Xcode
+  run; inspection or simulated exit codes cannot establish that result.
 - Crash recovery: the Core tests inject partial-write + non-atomic-commit
   fixtures and assert recovery rolls back to OLD (never mixed).
 - Rapid control: duplicate release edges and cancel-after-terminal are
@@ -52,7 +55,7 @@
 
 The package is `swift-tools-version: 5.10` and the strict-concurrency gate runs
 `-strict-concurrency=complete` in Swift 5 mode. The warning baseline contains
-~80 diagnostics the compiler describes as errors in Swift 6 language mode
+diagnostics the compiler describes as errors in Swift 6 language mode
 (non-Sendable AX/AVFoundation captures, lock use from async contexts, etc.).
 Closing the Swift 6 language-mode gap is a follow-up that requires resolving
 those baseline warnings (or explicitly quarantining them) and is NOT claimed

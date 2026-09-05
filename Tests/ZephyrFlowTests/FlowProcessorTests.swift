@@ -81,4 +81,6 @@
             XCTAssertNotEqual(a.id, b.id)
         }
     }
+#else
+    #error("XCTest requires full Xcode; use swift run ZephyrFlowCoreTests on CommandLineTools-only machines.")
 #endif

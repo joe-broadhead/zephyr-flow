@@ -130,7 +130,8 @@ extension FlowProcessorProtocol {
         let preserved = covered.ok
         let status: FlowOutcomeStatus = preserved ? .accepted : .rejected
         let warnings: [FlowWarning] = preserved ? [] : [.guardrailRejected]
-        let fallbackReason: String? = preserved ? nil : "protected spans not preserved; original text returned (conservative)"
+        let fallbackReason: String? =
+            preserved ? nil : "protected spans not preserved; original text returned (conservative)"
         let changed = (preserved && request.text != output) ? 1 : 0
         return FlowOutcome(
             text: preserved ? output : request.text,

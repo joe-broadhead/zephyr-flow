@@ -64,48 +64,62 @@ jobs:
     name: Gates (XCTest, strict concurrency, lint, format, docs, version, drift, coverage)
     runs-on: macos-15
     timeout-minutes: 60
+    env:
+      ZF_CI_REPORT_DIR: ${{ runner.temp }}/zephyr-gates
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - name: Show toolchain
+      - name: Prepare gate reports and verify Xcode
         run: |
           set -euo pipefail
-          swift --version
-          xcodebuild -version || true
+          mkdir -p "$ZF_CI_REPORT_DIR"
+          {
+            git rev-parse HEAD
+            sw_vers
+            swift --version
+            xcodebuild -version
+            xcrun --find xctest
+          } 2>&1 | tee "$ZF_CI_REPORT_DIR/toolchain.log"
 
-      - name: Install gate dependencies (ShellCheck, PyYAML)
+      - name: Setup gate Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Install isolated gate dependencies
         run: |
           set -euo pipefail
-          brew install shellcheck || true
-          python3 -m pip install --upgrade pip
-          python3 -m pip install pyyaml || true
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            brew install shellcheck 2>&1 | tee "$ZF_CI_REPORT_DIR/shellcheck-install.log"
+          fi
+          shellcheck --version | tee "$ZF_CI_REPORT_DIR/shellcheck-version.log"
+          python -m venv "$RUNNER_TEMP/zephyr-gate-venv"
+          gate_python="$RUNNER_TEMP/zephyr-gate-venv/bin/python"
+          "$gate_python" -m pip install -r Scripts/ci/requirements.txt \
+            2>&1 | tee "$ZF_CI_REPORT_DIR/dependency-install.log"
+          "$gate_python" -m pip check | tee "$ZF_CI_REPORT_DIR/dependency-check.log"
+          "$gate_python" -m pip freeze > "$ZF_CI_REPORT_DIR/python-packages.txt"
+          echo "$RUNNER_TEMP/zephyr-gate-venv/bin" >> "$GITHUB_PATH"
 
       - name: Run all gates (fail closed)
         run: |
           set -euo pipefail
-          chmod +x Scripts/ci_checks.sh
-          ./Scripts/ci_checks.sh
+          bash Scripts/ci_checks.sh 2>&1 | tee "$ZF_CI_REPORT_DIR/gates.log"
 
-      - name: Upload gate report (success)
-        if: success()
+      - name: Upload gate reports (success or failure)
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ci-gates-report
-          path: /tmp/zephyr-flow-coverage-baseline-report.txt
-          if-no-files-found: ignore
-          retention-days: 30
-
-      - name: Upload gate report (failure)
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ci-gates-failure-log
           path: |
-            /tmp/zephyr-flow-coverage-baseline-report.txt
-          if-no-files-found: ignore
+            ${{ env.ZF_CI_REPORT_DIR }}/*.log
+            ${{ env.ZF_CI_REPORT_DIR }}/*.txt
+            ${{ env.ZF_CI_REPORT_DIR }}/*.tsv
+            ${{ env.ZF_CI_REPORT_DIR }}/coverage.*/
+          if-no-files-found: error
           retention-days: 30
 
 

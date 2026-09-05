@@ -32,9 +32,9 @@ let package = Package(
         ),
         .testTarget(
             name: "ZephyrFlowTests",
-            // Review REQ-2 (round 5): the authoritative XCTest target must
-            // cover the production paths (session stages, controller, engine,
-            // insertion). It depends on the app target for those types.
+            // Keep the app dependency available for production-adapter tests.
+            // Existing suites cover Core contracts; this dependency alone
+            // does not establish production-path coverage (JOE-2243/2291).
             dependencies: ["ZephyrFlowCore", "ZephyrFlow"],
             path: "Tests/ZephyrFlowTests"
         ),
