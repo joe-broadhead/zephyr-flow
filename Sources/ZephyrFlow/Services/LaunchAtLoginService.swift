@@ -33,7 +33,7 @@ final class LaunchAtLoginService {
 
         do {
             if enabled {
-                try await SMAppService.mainApp.register()
+                try SMAppService.mainApp.register()
             } else {
                 try await SMAppService.mainApp.unregister()
             }

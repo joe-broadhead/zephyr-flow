@@ -353,13 +353,18 @@ actor InsertionService: InsertionServiceProtocol {
         }
 
         // Bounded write: a hung target must not block the session.
+        // From this point, retain and access the native handle exclusively
+        // through its serialized owner, including a late timed-out worker.
+        let ownedElement = AXElementAccess(element)
         let startNanos = DispatchTime.now().uptimeNanoseconds
         let writeResult = await AxBoundedRunner.run(
             deadlineNanosAhead: 1_500_000_000,
             startedAtNanos: startNanos,
             nowNanos: { DispatchTime.now().uptimeNanoseconds },
-            operation: { [element] in
-                self.performAXWrite(element: element, text: text, plan: plan)
+            operation: {
+                ownedElement.withElement { element in
+                    self.performAXWrite(element: element, text: text, plan: plan)
+                }
             })
         guard let outcome = writeResult.value else {
             return .deadlineExceeded
@@ -376,8 +381,10 @@ actor InsertionService: InsertionServiceProtocol {
             deadlineNanosAhead: 1_500_000_000,
             startedAtNanos: verifyStart,
             nowNanos: { DispatchTime.now().uptimeNanoseconds },
-            operation: { [element] in
-                self.axString(element, kAXSelectedTextAttribute)
+            operation: {
+                ownedElement.withElement { element in
+                    self.axString(element, kAXSelectedTextAttribute)
+                }
             })
         guard let verifiedText = verifyResult.value else {
             return .unverified
@@ -388,8 +395,10 @@ actor InsertionService: InsertionServiceProtocol {
                 deadlineNanosAhead: 1_500_000_000,
                 startedAtNanos: DispatchTime.now().uptimeNanoseconds,
                 nowNanos: { DispatchTime.now().uptimeNanoseconds },
-                operation: { [element] in
-                    self.placeCaret(element: element, afterInserting: text, plan: plan)
+                operation: {
+                    ownedElement.withElement { element in
+                        self.placeCaret(element: element, afterInserting: text, plan: plan)
+                    }
                 })
             return .verified
         }
@@ -713,7 +722,7 @@ actor InsertionService: InsertionServiceProtocol {
         // Ordered snapshot of all items + all types.
         let items: [PasteboardItemSnapshot] =
             pasteboard.pasteboardItems?.map { pbItem in
-                let types = (pbItem.types ?? []).compactMap { type -> PasteboardTypeRecord? in
+                let types = pbItem.types.compactMap { type -> PasteboardTypeRecord? in
                     guard let data = pbItem.data(forType: type) else { return nil }
                     return PasteboardTypeRecord(type: type.rawValue, data: data)
                 }

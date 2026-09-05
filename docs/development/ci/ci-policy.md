@@ -14,9 +14,11 @@ production release approval.
    logs must confirm those suites passed. Missing XCTest cannot compile to an
    empty test target. Most suites test Core contracts. `ProductionAudioTests`
    exercises in-memory native PCM snapshot/conversion adapters, while
-   `ProductionBoundaryTests` exercises the app's settings/permission read
-   adapters with injected sources and detached callers. Neither suite opens a
-   microphone or personal store. These bounded checks do **not** establish
+   `ProductionBoundaryTests` exercises settings/permission reads with injected
+   sources and detached callers, speech callback value/error snapshots, and
+   serialized AX-handle ownership without AX messages. Neither suite opens a
+   microphone or personal store, requests permissions, or writes to another app.
+   These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
    Core evidence on CI and on CommandLineTools-only machines. It is neither

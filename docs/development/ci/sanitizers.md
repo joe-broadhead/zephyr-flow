@@ -5,8 +5,10 @@
 - **Address Sanitizer** (`swift test --sanitize=address`): XCTest target.
   Checks memory safety in the exercised paths. An ASan pass is not a general
   leak-free claim, and it does not run every test in the separate Core runner.
-  XCTest covers Core contracts plus bounded in-memory PCM and injected
-  settings/permission adapter checks. It does not qualify real microphone or
+  XCTest covers Core contracts plus bounded in-memory PCM, speech callback,
+  AX-handle serialization and injected settings/permission adapter checks.
+  No AX attribute reads/writes or permission prompts run in these fixtures.
+  It does not qualify real microphone or
   full native-session ownership. Retain candidate results before claiming a pass.
 - **Rapid-control stress** (seeded, in the Core suite): randomized
   press/release/cancel sequences assert exactly-one terminal, idempotent

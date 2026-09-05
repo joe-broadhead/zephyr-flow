@@ -310,11 +310,21 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
         var modelData = Data(repeating: 0xCD, count: Int(downloadBytes))
         if truncateArtifact { modelData = Data(repeating: 0xCD, count: 500) }
         try createDirectory(stagingURL, permissions: 0o700)
+        writeDownloadedFixtures(to: stagingURL, config: config)
+        onProgress(
+            ModelDownloadProgress(
+                fraction: 1.0, bytesDownloaded: UInt64(modelData.count),
+                bytesExpected: UInt64(modelData.count)))
+    }
+
+    /// No suspension or callback can occur while holding the fixture lock.
+    private func writeDownloadedFixtures(to stagingURL: URL, config: Data) {
         // Round-6 B4: .mlmodelc entries are DIRECTORY BUNDLES (a file inside),
         // matching real compiled Core ML models; the tokenizer is a directory
         // with tokenizer.json + configs. This makes the fake exercise the
         // same directory-aware hashing as production.
         lock.lock()
+        defer { lock.unlock() }
         // config.json is a single file.
         nodes[key(stagingURL.appendingPathComponent("config.json"))] = Node(
             isDir: false, data: config, size: UInt64(config.count))
@@ -350,11 +360,6 @@ final class FakeModelFS: ModelAcquisitionFileSystem, @unchecked Sendable {
         nodes[key(tokDir.appendingPathComponent("config.json"))] = Node(
             isDir: false, data: Data(repeating: 0x45, count: 5_000),
             size: 5_000)
-        lock.unlock()
-        onProgress(
-            ModelDownloadProgress(
-                fraction: 1.0, bytesDownloaded: UInt64(modelData.count),
-                bytesExpected: UInt64(modelData.count)))
     }
     func promote(from: URL, to: URL) throws {
         if failPromote { throw CocoaError(.fileWriteUnknown) }
@@ -495,16 +500,18 @@ private final class CoreTestCounter: @unchecked Sendable {
         defer { lock.unlock() }
         return _value
     }
-    func bump() {
-        lock.lock()
-        _value += 1
-        lock.unlock()
+    @discardableResult
+    func bump() -> Int {
+        lock.withLock {
+            _value += 1
+            return _value
+        }
     }
 }
 
 /// Round-6: Sendable boxes so test Tasks do not mutate captured locals
 /// (Swift-6 diagnostics).
-private final class MutableArrayBox<T>: @unchecked Sendable {
+private final class MutableArrayBox<T: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var _values: [T] = []
     var values: [T] {
@@ -517,6 +524,13 @@ private final class MutableArrayBox<T>: @unchecked Sendable {
         _values.append(v)
         lock.unlock()
     }
+}
+
+/// Keeps the weak observation in a stored property (compatible with both
+/// supported compilers), without retaining the actor under test.
+private final class WeakSessionReference {
+    private(set) weak var value: DictationSession?
+    init(_ value: DictationSession?) { self.value = value }
 }
 
 private final class MutableSequencerBox: @unchecked Sendable {
@@ -834,6 +848,7 @@ struct CoreTests {
             check("every working state can progress", progressOK)
             // happy path
             var happy: [SessionState] = [.idle]
+            var happyTransitionsMatch = true
             for (e, expect) in [
                 (SessionEvent.begin, SessionState.preparing),
                 (.readyToCapture, .capturing),
@@ -844,8 +859,14 @@ struct CoreTests {
                 (.targetValidationSucceeded, .inserting),
                 (.insertionSucceeded, .completed),
             ] {
-                if case .to(let ns) = tr(happy.last!, e) { happy.append(ns) }
+                if case .to(let ns) = tr(happy.last!, e) {
+                    happyTransitionsMatch = happyTransitionsMatch && ns == expect
+                    happy.append(ns)
+                } else {
+                    happyTransitionsMatch = false
+                }
             }
+            check("happy path follows every expected transition", happyTransitionsMatch)
             check("happy path reaches completed", happy.last == .completed && happy.count == 9)
         }
         // JOE-2267: TargetSnapshot contract
@@ -1788,7 +1809,7 @@ struct CoreTests {
             _ = ch.enqueue(
                 AudioChunk(sessionID: b, sequence: 0, startSample: 0, sampleRate: 16000, channelCount: 1, samples: [0]))
             check("cross-session chunk rejected and counted", ch.stats().wrongSessionRejected == 1 && ch.isDegraded)
-            _ = ch.close()
+            ch.close()
             _ = ch.enqueue(
                 AudioChunk(sessionID: a, sequence: 0, startSample: 0, sampleRate: 16000, channelCount: 1, samples: [0]))
             check("closed channel counted", ch.stats().closedDropped == 1)
@@ -2801,7 +2822,6 @@ struct CoreTests {
                 let ratio = [0.5, 1.0, 2.0, 0.75][Int(rnd(4))]
                 var captured: UInt64 = 0
                 var converted: UInt64 = 0
-                var dropped: UInt64 = 0
                 let chunkCount = Int(rnd(40)) + 1
                 for _ in 0..<chunkCount {
                     let samples = UInt64(rnd(4000)) + 16
@@ -2813,7 +2833,12 @@ struct CoreTests {
                     acct.noteDelivered(engineSamples: out)
                 }
                 let tol: UInt64 = 32
-                if !acct.reconciles(converterRatio: ratio, roundingToleranceSamples: tol) {
+                if !acct.reconciles(converterRatio: ratio, roundingToleranceSamples: tol)
+                    || acct.capturedSourceSamples != captured
+                    || acct.convertedEngineSamples != converted
+                    || acct.deliveredEngineSamples != converted
+                    || acct.droppedSourceSamples != 0
+                {
                     propertyOK = false
                 }
             }
@@ -3128,7 +3153,7 @@ struct CoreTests {
             let bindA = SessionEngineBinding(sessionID: sidA, engineToken: tok1, engineKind: .whisper)
             let bindB = SessionEngineBinding(sessionID: sidB, engineToken: tok1, engineKind: .whisper)
 
-            var gate = CallbackGate()
+            let gate = CallbackGate()
             check(
                 "2249 open gate accepts current binding",
                 gate.accepts(binding: bindA, currentSessionID: sidA, currentEngineToken: tok1))
@@ -3935,6 +3960,10 @@ struct CoreTests {
                 pres(.complete, .accepted, verified).semantic == .verifiedSuccess
                     && pres(.complete, .accepted, verified).colorToken == "green")
             check(
+                "2284 explicit copy is labelled copy, not inserted",
+                pres(.complete, .accepted, copied).title == "Copied to clipboard"
+                    && pres(.complete, .accepted, copied).title != pres(.complete, .accepted, verified).title)
+            check(
                 "2284 complete+unverified NOT green, distinct language",
                 pres(.complete, .accepted, unverified).semantic == .unverifiedPosted
                     && pres(.complete, .accepted, unverified).title == "Paste sent — verify destination"
@@ -4117,7 +4146,7 @@ struct CoreTests {
             check("2264 canary detects key shape", PrivacyCanary.scan("key=sk-1234") == "sk-")
             // Bounded nonblocking sink: overflow drops counted, no stall.
             let sink = BoundedEventSink(capacity: 4)
-            var delivered: [TelemetryEvent] = []
+            let delivered = MutableArrayBox<TelemetryEvent>()
             sink.setHost { delivered.append($0) }
             for i in 0..<20 {
                 sink.record(TelemetryEvent(sessionID: tid, kind: .stageEntered, atNanos: UInt64(i)))
@@ -4125,13 +4154,12 @@ struct CoreTests {
             check("2264 sink overflow drops counted", sink.droppedCount >= 16)
             check("2264 sink never blocks", sink.pendingCount == 4)
             _ = sink.drain()
-            check("2264 sink drains to host", delivered.count == 4 && sink.pendingCount == 0)
+            check("2264 sink drains to host", delivered.values.count == 4 && sink.pendingCount == 0)
             // Reentrant host callback (records inside callback) cannot deadlock.
             let reentrant = BoundedEventSink(capacity: 8)
-            var nested = 0
+            let nested = CoreTestCounter()
             reentrant.setHost { ev in
-                nested += 1
-                if nested < 3 {
+                if nested.bump() < 3 {
                     reentrant.record(ev)  // reentrant call — must not deadlock
                 }
             }
@@ -4142,7 +4170,7 @@ struct CoreTests {
                 _ = reentrant.drain()
                 drains += 1
             }
-            check("2264 reentrant sink no deadlock", nested == 3 && drains == 3)
+            check("2264 reentrant sink no deadlock", nested.value == 3 && drains == 3)
         }
 
         // ===== JOE-2261: opt-in bounded actor history =====
@@ -4173,7 +4201,7 @@ struct CoreTests {
                     timestamp: now.addingTimeInterval(-age), text: text,
                     duration: 1, modelUsed: "Tiny", sensitivityClass: "normal")
             }
-            var list = [
+            let list = [
                 e(1, text: "aaaa"), e(2, text: "bbbb"), e(3, text: "cccc"),
                 e(4, text: "dddd"), e(5, age: 7200, text: "eeee"),
             ]
@@ -4791,7 +4819,7 @@ struct CoreTests {
                 provider: provider7,
                 engineChoice: .whisper,
                 settings: settings(false))
-            weak var weak7 = s7
+            let weak7 = WeakSessionReference(s7)
             // Round-6: the Task closure must capture an IMMUTABLE actor
             // reference (Sendable) — capturing a mutable `var` would be a
             // non-Sendable capture under Swift-6 diagnostics.
@@ -4806,7 +4834,7 @@ struct CoreTests {
             var released = false
             for _ in 0..<5 {
                 try? await Task.sleep(nanoseconds: 40_000_000)
-                if weak7 == nil {
+                if weak7.value == nil {
                     released = true
                     break
                 }
@@ -4817,7 +4845,7 @@ struct CoreTests {
         // ===== JOE-2255: verified model acquisition lifecycle =====
         do {
             // Round-6 B4: directory-aware hash mirroring FakeModelFS.
-            nonisolated func dirHash(_ entries: [(String, Data)]) -> String {
+            @Sendable nonisolated func dirHash(_ entries: [(String, Data)]) -> String {
                 let sorted = entries.sorted { $0.0 < $1.0 }
                 var hasher = SHA256()
                 for (rel, data) in sorted {
@@ -4828,7 +4856,7 @@ struct CoreTests {
                 return hasher.finalize().map { String(format: "%02x", $0) }.joined()
             }
 
-            nonisolated func manifest(
+            @Sendable nonisolated func manifest(
                 _ model: ModelIdentifier,
                 digests: [String: String] = [:]
             ) -> ModelManifest {
@@ -5128,7 +5156,7 @@ struct CoreTests {
 
         // ===== JOE-2262: at-rest history encryption =====
         do {
-            nonisolated func key(_ id: String = "k1") -> HistoryCryptoKey {
+            @Sendable nonisolated func key(_ id: String = "k1") -> HistoryCryptoKey {
                 HistoryCryptoKey(keyID: id, material: Data(repeating: 0x42, count: 32))
             }
             func entry(_ text: String) -> HistoryStorageEntry {

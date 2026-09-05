@@ -1,4 +1,5 @@
 #if canImport(XCTest)
+    import ApplicationServices
     import XCTest
     @testable import ZephyrFlow
     @testable import ZephyrFlowCore
@@ -11,7 +12,51 @@
         var permissions = PermissionStatus(microphone: true, accessibility: false, speechRecognition: true)
     }
 
+    private final class NativeAccessProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var active = 0
+        private var peak = 0
+        private var completed = 0
+
+        func enter() {
+            lock.withLock {
+                active += 1
+                peak = max(peak, active)
+            }
+        }
+
+        func leave() {
+            lock.withLock {
+                active -= 1
+                completed += 1
+            }
+        }
+
+        var counts: (active: Int, peak: Int, completed: Int) {
+            lock.withLock { (active, peak, completed) }
+        }
+    }
+
     final class ProductionBoundaryTests: XCTestCase {
+        func testAXHandleOwnerSerializesWithoutSendingAXMessages() {
+            // Creating/hashing a handle does not query attributes, request
+            // Accessibility trust, or send a write to any application.
+            let owner = AXElementAccess(AXUIElementCreateApplication(getpid()))
+            let probe = NativeAccessProbe()
+            DispatchQueue.concurrentPerform(iterations: 32) { _ in
+                _ = owner.withElement { element in
+                    probe.enter()
+                    defer { probe.leave() }
+                    Thread.sleep(forTimeInterval: 0.001)
+                    return CFHash(element)
+                }
+            }
+            let counts = probe.counts
+            XCTAssertEqual(counts.active, 0)
+            XCTAssertEqual(counts.peak, 1)
+            XCTAssertEqual(counts.completed, 32)
+        }
+
         func testSpeechCallbackCopiesOnlySendableValuesAndControlledError() async {
             let callback = AppleSpeechCallback(
                 text: "synthetic partial", isFinal: false,
