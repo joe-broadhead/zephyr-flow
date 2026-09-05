@@ -700,7 +700,11 @@ struct CoreTests {
             check("downloads off by default", !s.allowModelDownloads)
             check("mayDownload follows allow flag", !s.mayDownloadModels)
             check("default model whisper tiny", s.preferredModel == .whisperTiny)
-            check("default hotkey fn", s.hotkey.specialKey == .fn)
+            check(
+                "default hotkey Control Option Space",
+                s.hotkey == .controlOptionSpace && s.hotkey.specialKey == nil
+                    && s.hotkey.keyCode == 49 && s.hotkey.modifiers == ((1 << 18) | (1 << 19))
+                    && !s.hotkey.experimentalFnOverride)
             check("debug logging off", !s.debugLogging)
             check("save history default off", !s.saveHistory)
         }

@@ -139,6 +139,8 @@ struct SettingsView: View {
             .onAppear { login.refresh(persistedEnabled: settings.settings.launchAtLogin) }
 
             Section("Engine") {
+                Text(AppStrings.key("settings.qualificationTarget"))
+                    .font(.caption).foregroundStyle(.secondary)
                 LabeledContent("Active engine", value: controller.engineLabel)
                 // JOE-2254: validated language selection (auto + supported
                 // BCP-47 matrix); affects the NEXT session, never the active one.
@@ -193,11 +195,16 @@ struct SettingsView: View {
         Form {
             Section("Global Hotkey") {
                 Picker(AppStrings.key("settings.picker.hotkey"), selection: hotkeySelection) {
+                    Text(AppStrings.key("settings.hotkey.controlOptionSpace")).tag(HotkeyChoice.controlOptionSpace)
                     Text(AppStrings.key("settings.hotkey.fn")).tag(HotkeyChoice.fn)
                     Text(AppStrings.key("settings.hotkey.rightOption")).tag(HotkeyChoice.rightOption)
                     Text(AppStrings.key("settings.hotkey.rightCommand")).tag(HotkeyChoice.rightCommand)
+                    Text(AppStrings.key("settings.hotkey.rightControl")).tag(HotkeyChoice.rightControl)
                     Text(AppStrings.key("settings.hotkey.controlSpace")).tag(HotkeyChoice.controlSpace)
                     Text(AppStrings.key("settings.hotkey.optionSpace")).tag(HotkeyChoice.optionSpace)
+                    if hotkeySelection.wrappedValue == .custom {
+                        Text(AppStrings.key("settings.hotkey.custom")).tag(HotkeyChoice.custom)
+                    }
                 }
                 .onChange(of: settings.settings.hotkey) { _, _ in
                     controller.reloadHotkey()
@@ -211,11 +218,11 @@ struct SettingsView: View {
             }
 
             Section("Tips") {
-                Text(
-                    "Fn works like Wispr Flow: hold to talk, release to insert. ZephyrFlow sets the Globe key action to “Do Nothing” while running so the emoji picker doesn’t steal the key. If Fn still misbehaves, use **Right Option** instead."
-                )
-                .font(.callout)
-                .foregroundStyle(.secondary)
+                Text(AppStrings.key("settings.hotkey.experimentalNote"))
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Text(AppStrings.key("settings.hotkey.conflictNote"))
+                    .font(.callout).foregroundStyle(.secondary)
                 Text(AppStrings.key("settings.axNote"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -663,7 +670,7 @@ struct SettingsView: View {
 
     // Hotkey picker bridge
     private enum HotkeyChoice: Hashable {
-        case fn, rightOption, rightCommand, controlSpace, optionSpace
+        case fn, rightOption, rightCommand, rightControl, controlOptionSpace, controlSpace, optionSpace, custom
     }
 
     private var hotkeySelection: Binding<HotkeyChoice> {
@@ -674,8 +681,13 @@ struct SettingsView: View {
                 case .rightOption: return .rightOption
                 case .rightCommand: return .rightCommand
                 case .rightControl:
-                    return .fn
+                    return .rightControl
                 case .none:
+                    if settings.settings.hotkey.keyCode == 49,
+                        settings.settings.hotkey.modifiers == HotkeyConfig.controlOptionSpace.modifiers
+                    {
+                        return .controlOptionSpace
+                    }
                     if settings.settings.hotkey.keyCode == 49,
                         settings.settings.hotkey.modifiers == CGEventFlags.maskControl.rawValue
                     {
@@ -686,20 +698,28 @@ struct SettingsView: View {
                     {
                         return .optionSpace
                     }
-                    return .fn
+                    return .custom
                 }
             },
             set: { choice in
                 let config: HotkeyConfig
                 switch choice {
                 case .fn:
-                    config = .default
+                    config = .fnKey
+                case .controlOptionSpace:
+                    config = .controlOptionSpace
                 case .rightOption:
                     config = .rightOption
                 case .rightCommand:
                     config = HotkeyConfig(
                         keyCode: nil, modifiers: 0, displayName: AppStrings.key("settings.hotkey.rightCommand"),
                         specialKey: .rightCommand)
+                case .rightControl:
+                    config = HotkeyConfig(
+                        keyCode: nil, modifiers: 0,
+                        displayName: AppStrings.key("settings.hotkey.rightControl"), specialKey: .rightControl)
+                case .custom:
+                    return  // Display a saved custom choice without changing it.
                 case .controlSpace:
                     config = HotkeyConfig(
                         keyCode: 49,

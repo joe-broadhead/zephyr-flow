@@ -17,6 +17,8 @@ acceptance of the current candidate.
 
 ### Added
 
+- **Initial qualification target** — the human selected macOS 15.x / Apple Silicon / US English / Whisper Tiny or on-device Apple Speech / Notes, TextEdit, Terminal, Safari, VS Code and Slack. This is not device qualification or production GO; source deployment minimum remains macOS 14 and other combinations remain experimental.
+- **Shortcut policy** — new installations use Control-Option-Space. Saved shortcuts, including legacy Fn configurations, are preserved without enabling the optional global-preference override. Fn is explicitly experimental; shortcut conflict and real-device qualification remain open.
 - **Session and audio controls** — per-session actors, bounded audio delivery, frame accounting, converter-tail retention, terminal outcomes and cancellation-aware engine preparation. Automated tests do not qualify every native callback, rapid-control or cleanup path.
 - **Target and clipboard checks** — process-start identity, target revalidation, lossless bounded clipboard snapshots and marker-plus-generation restoration ownership. Secure subroles and failed sensitivity reads are confined. AX IPC deadlines, live focus races, crash recovery and the six-app insertion matrix remain qualification work.
 - **Engine preparation** — separate verified files, acquisition consent, loaded engines and capability preflight; Retry/Cancel and explicit Apple continuation. Local Only remains on, model downloads remain off until consent, and history remains off by default. Local tokenizer loading is checked without a remote fallback; digest integrity is not pinned artifact authenticity or real-model inference qualification.

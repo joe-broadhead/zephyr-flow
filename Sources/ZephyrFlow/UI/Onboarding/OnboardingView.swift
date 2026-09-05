@@ -113,7 +113,7 @@ struct OnboardingView: View {
                 id: "welcome", capability: .localOnlyImplications,
                 title: AppStrings.key("onboarding.welcome.title"),
                 explanation:
-                    "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default. Steps below ask only for what the selected product path needs.",
+                    "Hold your configured shortcut, speak, then release to process the text. New installations use Control + Option + Space; saved shortcuts are preserved. Local Only is on by default.",
                 requiresSystemPrompt: false)
         ]
         all.append(contentsOf: CapabilityGraph.steps(for: productPath))

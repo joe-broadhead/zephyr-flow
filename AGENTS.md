@@ -1,6 +1,6 @@
 # AGENTS.md
 
-macOS menu-bar dictation app: hold Fn → on-device speech → insert at caret.  
+macOS menu-bar dictation app: hold Control-Option-Space → on-device speech → validated insertion or review.
 Stack: **Swift 5.10+ / SwiftUI / AppKit**, SPM (`Package.swift`), macOS 14+.  
 Version source of truth: `VERSION` (first public release target: **v0.0.0**).
 
@@ -85,7 +85,9 @@ URLSession.shared.data(from: modelURL) // no ad-hoc networking
 
 ## Security & Privacy
 
-- Default: `localOnlyMode=true`, `allowModelDownloads=true`, model=Whisper Tiny
+- Defaults: `localOnlyMode=true`, `allowModelDownloads=false`, `saveHistory=false`, model=Whisper Tiny
+- New-install shortcut: Control-Option-Space (human decision JOE-2285); preserve saved shortcuts. Fn remains experimental, with separate override opt-in.
+- Initial qualification target (not a device pass): macOS 15.x / Apple Silicon / US English / Whisper Tiny or on-device Apple Speech / Notes, TextEdit, Terminal, Safari, VS Code, Slack. Source deployment minimum remains macOS 14; other combinations are experimental/unqualified.
 - `mayDownloadModels == allowModelDownloads` (model files only; never uploads audio)
 - History may store plaintext transcripts only if `saveHistory` (user toggle)
 - Logs: never transcript content

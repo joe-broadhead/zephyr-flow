@@ -55,6 +55,30 @@
     }
 
     final class ProductionSettingsTests: XCTestCase {
+        func testNewDefaultPreservesSavedFnCustomAndLegacyShortcutsWithoutWriting() async throws {
+            try await MainActor.run {
+                let fresh = SettingsLoginFixture()
+                XCTAssertEqual(fresh.settings().settings.hotkey, .controlOptionSpace)
+                XCTAssertTrue(fresh.events.isEmpty)
+                let custom = HotkeyConfig(
+                    keyCode: 12, modifiers: 1 << 20, displayName: "Synthetic custom", specialKey: nil)
+                var optedInFn = HotkeyConfig.fnKey
+                optedInFn.experimentalFnOverride = true
+                for shortcut in [HotkeyConfig.fnKey, .rightOption, .controlSpace, optedInFn, custom] {
+                    let fixture = SettingsLoginFixture()
+                    var settings = AppSettings.default
+                    settings.hotkey = shortcut
+                    fixture.data = try SettingsStorageCoordinator.encode(settings: settings, provenance: [])
+                    XCTAssertEqual(fixture.settings().settings.hotkey, shortcut)
+                    XCTAssertTrue(fixture.events.isEmpty, "reading settings must not rewrite the user's binding")
+                }
+                let legacy = Data(#"{"modifiers":0,"displayName":"Fn","specialKey":"fn"}"#.utf8)
+                let shortcut = try JSONDecoder().decode(HotkeyConfig.self, from: legacy)
+                XCTAssertEqual(shortcut, .fnKey)
+                XCTAssertFalse(shortcut.experimentalFnOverride)
+            }
+        }
+
         func testReadOnlyReconciliationExposesExternalRevocationWithoutReapplyingOrPersisting() async {
             await MainActor.run {
                 let fixture = SettingsLoginFixture()

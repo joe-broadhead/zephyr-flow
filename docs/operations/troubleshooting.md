@@ -42,14 +42,14 @@ Your locale lacks an on-device Apple Speech model. Either:
 
 ## Globe / emoji key feels wrong after a crash
 
-1. Launch ZephyrFlow once — it restores the previous preference automatically.  
-2. Or Settings → Privacy → **Reset system Fn / Globe key preference**.  
-3. Or:
-```bash
-defaults delete com.apple.HIToolbox AppleFnUsageType 2>/dev/null || true
-```
-
-While Fn is the hotkey, ZephyrFlow sets Globe to “Do Nothing” so the emoji picker does not steal the key. Quitting normally restores your previous setting.
+Fn is experimental; the new-install default is Control-Option-Space. Selecting
+Fn does not itself authorize changing the system Globe preference. If an opted-in
+override has an unresolved recovery journal, Fn is disabled until recovery is
+verified. Use the explicit recovery/reset control in Settings and inspect its
+result. Legacy/incomplete records fail closed; do not blindly delete the global
+preference or guess its original value. An unrelated later preference is
+preserved. Quit/relaunch is not evidence of successful recovery, and real
+crash/power-loss behavior still requires device qualification.
 
 ## Build fails (WhisperKit / packages)
 

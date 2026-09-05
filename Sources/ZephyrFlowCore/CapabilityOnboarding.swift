@@ -138,7 +138,8 @@ public enum CapabilityGraph: Sendable {
                 OnboardingStep(
                     id: "ready", capability: .localOnlyImplications,
                     title: "You're set",
-                    explanation: "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default.",
+                    explanation:
+                        "Hold your configured shortcut, speak, then release for validated insertion or review. Local Only is on by default.",
                     requiresSystemPrompt: false),
             ]
         case .whisperKitClipboardOnly:
@@ -166,7 +167,7 @@ public enum CapabilityGraph: Sendable {
                     id: "ready", capability: .localOnlyImplications,
                     title: "You're set",
                     explanation:
-                        "Hold Fn, speak, release — text is copied for you to paste. Local Only is on by default.",
+                        "Hold your configured shortcut, speak, then release to review before copying. Local Only is on by default.",
                     requiresSystemPrompt: false),
             ]
         case .appleSpeechAutomatic:
@@ -198,7 +199,8 @@ public enum CapabilityGraph: Sendable {
                 OnboardingStep(
                     id: "ready", capability: .localOnlyImplications,
                     title: "You're set",
-                    explanation: "Hold Fn, speak, release — text appears at your cursor.",
+                    explanation:
+                        "Hold your configured shortcut, speak, then release for validated insertion or review.",
                     requiresSystemPrompt: false),
             ]
         case .appleSpeechClipboardOnly:
@@ -228,7 +230,7 @@ public enum CapabilityGraph: Sendable {
                 OnboardingStep(
                     id: "ready", capability: .localOnlyImplications,
                     title: "You're set",
-                    explanation: "Hold Fn, speak, release — text is copied for you to paste.",
+                    explanation: "Hold your configured shortcut, speak, then release to review before copying.",
                     requiresSystemPrompt: false),
             ]
         }

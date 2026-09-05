@@ -32,7 +32,7 @@ public enum AppStrings {
         // Onboarding (graph steps)
         "onboarding.welcome.title": ("Private dictation,\non your machine", "Onboarding welcome heading"),
         "onboarding.welcome.explanation": (
-            "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default. Steps below ask only for what the selected product path needs.",
+            "Hold your configured shortcut, speak, then release to process the text. New installations use Control + Option + Space; saved shortcuts are preserved. Local Only is on by default.",
             "Onboarding welcome explanation"
         ),
         "onboarding.mic.title": ("Microphone", "Onboarding microphone step heading"),
@@ -67,18 +67,19 @@ public enum AppStrings {
         ),
         "onboarding.ready.title": ("You're set", "Onboarding completion heading"),
         "onboarding.ready.explanation": (
-            "Hold Fn, speak, release — text appears at your cursor. Local Only is on by default.",
+            "Hold your configured shortcut, speak, then release for validated insertion or review. Local Only is on by default.",
             "Onboarding completion explanation"
         ),
         "onboarding.ready.copy.explanation": (
-            "Hold Fn, speak, release — text is copied for you to paste. Local Only is on by default.",
+            "Hold your configured shortcut, speak, then release to review before copying. Local Only is on by default.",
             "Onboarding completion explanation (clipboard mode)"
         ),
         "onboarding.ready.apple.explanation": (
-            "Hold Fn, speak, release — text appears at your cursor.", "Onboarding completion explanation (Apple Speech)"
+            "Hold your configured shortcut, speak, then release for validated insertion or review.",
+            "Onboarding completion explanation (Apple Speech)"
         ),
         "onboarding.ready.apple.copy.explanation": (
-            "Hold Fn, speak, release — text is copied for you to paste.",
+            "Hold your configured shortcut, speak, then release to review before copying.",
             "Onboarding completion explanation (Apple Speech clipboard)"
         ),
         "onboarding.back": ("Back", "Onboarding back button"),
@@ -119,10 +120,25 @@ public enum AppStrings {
             "Update check privacy explanation"
         ),
         "settings.openSettings": ("Open Settings", "Menu bar settings action"),
-        "settings.hotkey.fn": ("Fn", "Hotkey choice label"),
+        "settings.hotkey.fn": ("Fn / Globe (experimental)", "Hotkey choice label; not the new-install default"),
         "settings.hotkey.rightOption": ("Right Option (⌥)", "Hotkey choice label"),
         "settings.hotkey.rightCommand": ("Right Command (⌘)", "Hotkey choice label"),
         "settings.hotkey.controlSpace": ("Control + Space", "Hotkey choice label"),
+        "settings.hotkey.controlOptionSpace": ("Control + Option + Space", "New-install default shortcut label"),
+        "settings.hotkey.rightControl": ("Right Control", "Existing modifier-only shortcut choice"),
+        "settings.hotkey.custom": ("Saved custom shortcut", "Preserve a previously saved non-preset shortcut"),
+        "settings.qualificationTarget": (
+            "Initial qualification target: macOS 15.x on Apple Silicon, US English, Whisper Tiny or on-device Apple Speech; Notes, TextEdit, Terminal, Safari, VS Code and Slack. Device qualification is still pending. Other combinations, including auto-detection, are experimental.",
+            "Target is human approved; not a production-qualified claim"
+        ),
+        "settings.hotkey.experimentalNote": (
+            "Fn / Globe is experimental. Choosing it alone does not change the system Globe action. A separate experimental override opt-in and verified tap preparation are required; failed recovery blocks Fn until explicitly resolved.",
+            "Fn risk and recovery disclosure"
+        ),
+        "settings.hotkey.conflictNote": (
+            "New installations use Control + Option + Space. Existing saved shortcuts are preserved. Check System Settings → Keyboard → Keyboard Shortcuts and other apps for conflicts; ZephyrFlow cannot guarantee a shortcut is available. Global shortcuts need Accessibility; menu controls remain available.",
+            "Default, conflict and permission guidance"
+        ),
         "settings.hotkey.optionSpace": ("Option + Space", "Hotkey choice label"),
         "settings.axNote": (
             "Requires Accessibility permission. After enabling it, quit and reopen ZephyrFlow.",

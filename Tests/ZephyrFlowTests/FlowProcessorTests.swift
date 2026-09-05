@@ -130,7 +130,9 @@
             let s = AppSettings.default
             XCTAssertTrue(s.localOnlyMode)
             XCTAssertEqual(s.preferredModel, .whisperTiny)
-            XCTAssertEqual(s.hotkey.specialKey, .fn)
+            XCTAssertEqual(s.hotkey, .controlOptionSpace)
+            XCTAssertNil(s.hotkey.specialKey)
+            XCTAssertFalse(s.hotkey.experimentalFnOverride)
         }
 
         func testSettingsRoundTrip() throws {

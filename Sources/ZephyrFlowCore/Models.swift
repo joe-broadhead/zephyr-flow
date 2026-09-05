@@ -367,6 +367,21 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
         case rightControl
     }
 
+    private enum CodingKeys: String, CodingKey {
+        case keyCode, modifiers, displayName, specialKey, experimentalFnOverride
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        keyCode = try values.decodeIfPresent(UInt16.self, forKey: .keyCode)
+        modifiers = try values.decode(UInt.self, forKey: .modifiers)
+        displayName = try values.decode(String.self, forKey: .displayName)
+        specialKey = try values.decodeIfPresent(SpecialHotkey.self, forKey: .specialKey)
+        // Older saved shortcuts predate the override toggle. Preserve their
+        // binding, never infer consent or replace them with the new default.
+        experimentalFnOverride = try values.decodeIfPresent(Bool.self, forKey: .experimentalFnOverride) ?? false
+    }
+
     public init(
         keyCode: UInt16?, modifiers: UInt, displayName: String, specialKey: SpecialHotkey?,
         experimentalFnOverride: Bool = false
@@ -378,14 +393,15 @@ public struct HotkeyConfig: Codable, Equatable, Sendable {
         self.experimentalFnOverride = experimentalFnOverride
     }
 
-    /// Fn / Globe hold-to-talk (Wispr Flow style). Requires Accessibility.
-    /// Right Option and Control+Space are available in Settings as alternatives.
-    public static let `default` = HotkeyConfig(
-        keyCode: nil,
-        modifiers: 0,
-        displayName: "Fn",
-        specialKey: .fn
-    )
+    /// Human-selected new-install default (JOE-2285). Saved configurations are
+    /// decoded unchanged; selecting this combo never enables the Fn override.
+    public static let `default` = controlOptionSpace
+
+    public static let controlOptionSpace = HotkeyConfig(
+        keyCode: 49,
+        modifiers: (1 << 18) | (1 << 19),
+        displayName: "Control + Option + Space",
+        specialKey: nil)
 
     public static let controlSpace = HotkeyConfig(
         keyCode: 49,  // space
