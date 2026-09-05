@@ -3931,10 +3931,15 @@ struct CoreTests {
                 corpusVersion: FlowFidelityCorpus.version,
                 stats: perStyle,
                 policy: FlowReleasePolicy.current)
-            check("2281 release gate passes", gateResult == .pass)
-            if case .fail(let reason) = gateResult { print("GATE-FAIL:", reason) }
-            // The candidate cannot modify its own thresholds: policy + corpus
-            // versions are fixed constants.
+            // The inherited corpus has NO Raw cases, although the policy has
+            // a Raw budget. Do not invent evidence or silently skip that style.
+            // This is an evaluator regression test, not a passing release gate.
+            check(
+                "2281 inherited incomplete corpus cannot qualify",
+                gateResult == .fail(reason: "raw: missing statistics"))
+            if case .fail(let reason) = gateResult { print("FLOW QUALIFICATION INCOMPLETE:", reason) }
+            // A named version/baseline is metadata, not independently verified
+            // provenance or protection against candidate source edits.
             check(
                 "2281 policy versioned + baseline named",
                 FlowReleasePolicy.current.version >= 1

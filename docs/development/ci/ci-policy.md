@@ -65,6 +65,13 @@ production release approval.
     read/key failures and retry. No personal history or Keychain item is read or
     changed; these tests do not qualify reboot/login Keychain availability or
     secure-session behavior across the full controller.
+    Flow release-gate tests reject missing/zero/malformed style statistics.
+    **The inherited Flow corpus has no Raw cases despite the policy's Raw
+    budget. Its qualification result is INCOMPLETE, not PASS.** The Core runner
+    asserts that rejection as an evaluator regression; passing Core/XCTest is
+    not a passing Flow release gate. The corpus and numeric budgets are not
+    changed by this fix. Reviewed corpus completion and independently verified
+    policy/candidate provenance remain separate acceptance work.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic
