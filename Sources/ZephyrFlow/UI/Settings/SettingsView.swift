@@ -82,6 +82,7 @@ struct SettingsView: View {
         .zephyrDarkChrome()
         .onAppear {
             privacy.refresh()
+            login.refresh(persistedEnabled: settings.settings.launchAtLogin)
             NSApp.appearance = NSAppearance(named: .darkAqua)
             copyOnlyOverridesText = settings.settings.copyOnlyOverrideBundleIDs.joined(separator: ", ")
             // Opening unrelated settings must not initialize history. Only
@@ -114,7 +115,7 @@ struct SettingsView: View {
                 Toggle(
                     AppStrings.key("settings.toggle.launchAtLogin"),
                     isOn: Binding(
-                        get: { settings.settings.launchAtLogin }, set: { setLaunchAtLogin($0) })
+                        get: { login.observedEnabled }, set: { setLaunchAtLogin($0) })
                 )
                 .disabled(launchLoginPending || login.transaction.isPending)
                 if launchLoginPending || login.transaction.isPending {
@@ -131,9 +132,11 @@ struct SettingsView: View {
                     Text(AppStrings.key("login.reconciliation.required")).font(.caption)
                 }
                 Button(AppStrings.key("login.open")) { openLoginItemsSettings() }
-                Button(AppStrings.key("login.refresh")) { login.authoritativeStatus() }
+                Button(AppStrings.key("login.refresh")) {
+                    login.refresh(persistedEnabled: settings.settings.launchAtLogin)
+                }
             }
-            .onAppear { login.authoritativeStatus() }
+            .onAppear { login.refresh(persistedEnabled: settings.settings.launchAtLogin) }
 
             Section("Engine") {
                 LabeledContent("Active engine", value: controller.engineLabel)

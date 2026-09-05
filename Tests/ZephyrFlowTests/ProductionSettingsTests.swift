@@ -55,6 +55,30 @@
     }
 
     final class ProductionSettingsTests: XCTestCase {
+        func testReadOnlyReconciliationExposesExternalRevocationWithoutReapplyingOrPersisting() async {
+            await MainActor.run {
+                let fixture = SettingsLoginFixture()
+                let service = fixture.service()
+                for status in LaunchAtLoginState.allCases {
+                    fixture.status = status
+                    service.refresh(persistedEnabled: true)
+                    XCTAssertEqual(service.systemStatus, status)
+                    XCTAssertEqual(service.observedEnabled, status == .registered)
+                    XCTAssertEqual(service.needsReconciliation, status != .registered)
+                    XCTAssertTrue(fixture.events.isEmpty, "refresh cannot change registration or persistence")
+                }
+                fixture.status = .registered
+                service.refresh(persistedEnabled: false)
+                XCTAssertTrue(service.observedEnabled)
+                XCTAssertTrue(service.needsReconciliation)
+                fixture.status = .notRegistered
+                service.refresh(persistedEnabled: false)
+                XCTAssertFalse(service.observedEnabled)
+                XCTAssertFalse(service.needsReconciliation)
+                XCTAssertTrue(fixture.events.isEmpty)
+            }
+        }
+
         private enum FixtureError: Error { case timedOut }
         private func until(_ predicate: @Sendable () async -> Bool) async throws {
             let clock = ContinuousClock()

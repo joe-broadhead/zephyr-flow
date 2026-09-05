@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         FloatingPanelController.shared.prepare()
 
         ZFLog.debugEnabled = SettingsStore.shared.settings.debugLogging
+        LaunchAtLoginService.shared.refresh(persistedEnabled: SettingsStore.shared.settings.launchAtLogin)
         DictationController.shared.start()
 
         // Screenshot / marketing capture tour (driven by Scripts/capture_screenshots.sh)
@@ -58,6 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 PrivacyService.shared.refresh()
             }
         }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        LaunchAtLoginService.shared.refresh(persistedEnabled: SettingsStore.shared.settings.launchAtLogin)
     }
 
     /// Opens product surfaces in sequence for `Scripts/capture_screenshots.sh`.

@@ -90,6 +90,10 @@ production release approval.
     preferences or login registration. UserDefaults synchronization/read-back
     is not fsync or a cross-process transaction; power-loss/relaunch durability,
     real ServiceManagement approval and login behavior remain device work.
+    Startup, app activation and Settings opening explicitly refresh observed
+    login status without mutating registration or persistence. A saved desired
+    value is not presented as proof registration is enabled; all native status
+    variants and external-revocation reconciliation are tested with fake reads.
     `ProductionFnPreferenceTests` uses only an injected in-memory journal and
     synthetic preference values. It checks typed property-list round trips,
     journal-before-mutation, pending-apply crash-state simulation, read-back

@@ -45,6 +45,23 @@ final class LaunchAtLoginService: ObservableObject {
         return status
     }
 
+    /// Read-only reconciliation: never register, unregister or rewrite settings
+    /// on launch/activation. An external revocation is not permission to reapply.
+    func refresh(persistedEnabled: Bool) {
+        let status = authoritativeStatus()
+        guard !transaction.isPending else { return }
+        needsReconciliation = !LaunchAtLoginTransaction.statusConverges(
+            status: status, desiredEnabled: persistedEnabled)
+        if needsReconciliation {
+            lastError = availabilityMessage() ?? AppStrings.key("login.reconciliation.required")
+        } else if lastError == AppStrings.key("login.reconciliation.required") {
+            lastError = nil
+        }
+    }
+
+    /// A saved desire is not evidence of enabled system registration.
+    var observedEnabled: Bool { systemStatus == .registered }
+
     /// Transactional toggle: pending -> register/unregister -> verify ->
     /// commit or rollback. Settings JSON is committed ONLY after verification.
     func apply(enabled: Bool, commitSetting: @MainActor (Bool) -> Bool) async -> LaunchAtLoginTransactionState {
