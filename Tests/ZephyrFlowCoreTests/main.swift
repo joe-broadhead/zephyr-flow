@@ -55,6 +55,14 @@ actor FakeSessionStages: DictationSessionStageProviding {
     var flowOverride: FlowOutcome?
     var engineResultOverride: EngineResult?
     var flowCount = 0
+    var captureEndsEarly = false
+    var stopCount = 0
+    var finalizeCount = 0
+    func setEarlyCaptureEnd(_ text: String) {
+        captureEndsEarly = true
+        partials = [text]
+        finalText = text
+    }
     func setEngineResult(_ result: EngineResult) { engineResultOverride = result }
     var immediateRecordingLimit = false
     func setImmediateRecordingLimit() { immediateRecordingLimit = true }
@@ -104,6 +112,11 @@ actor FakeSessionStages: DictationSessionStageProviding {
     ) async throws -> SessionCaptureHandle {
         let (interim, cont) = AsyncStream.makeStream(of: SessionPartial.self)
         for p in partials { cont.yield(SessionPartial(text: p)) }
+        if captureEndsEarly {
+            cont.yield(SessionPartial(text: finalText, captureEnded: true))
+            cont.yield(SessionPartial(text: finalText, captureEnded: true))  // duplicate terminal cannot finalize twice
+            cont.yield(SessionPartial(text: "synthetic stale partial"))
+        }
         cont.finish()
         let (levels, lcont) = AsyncStream.makeStream(of: Float.self)
         lcont.yield(0.4)
@@ -116,6 +129,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func stopCapture() async -> SessionAudioSummary {
+        stopCount += 1
         if stopDelayNanos > 0 {
             try? await Task.sleep(nanoseconds: stopDelayNanos)
         }
@@ -129,6 +143,7 @@ actor FakeSessionStages: DictationSessionStageProviding {
     }
 
     func finalize() async throws -> EngineResult {
+        finalizeCount += 1
         if let engineResultOverride { return engineResultOverride }
         return EngineResult(
             text: finalText, completeness: completeness,
@@ -1563,6 +1578,49 @@ struct CoreTests {
             check(
                 "2252 rejected dropped count underflow",
                 !underflow.reconciled(converterRatio: 1, roundingToleranceSamples: 1))
+        }
+
+        // Early terminal capture (including empty/error callbacks) exits
+        // Listening through the ordinary stop/finalize path, never waits for
+        // the ten-minute budget or promotes a hypothetical .complete response.
+        for text in ["synthetic retained hypothesis", ""] {
+            let provider = FakeSessionStages()
+            await provider.setEarlyCaptureEnd(text)
+            let session = DictationSession(
+                provider: provider, engineChoice: .appleSpeech,
+                settings: .init(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                    insertionMode: "automatic", saveHistory: true, copyOnlyOverrideBundleIDs: []))
+            let states = await session.subscribe()
+            let run = Task { await session.run() }
+            let timeout = Task {
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                await session.cancel()
+            }
+            var noticed = false
+            var reviewed = false
+            var noListeningAfterEnd = true
+            var noLimitClaim = true
+            for await state in states {
+                noticed = noticed || state.captureEndedEarly
+                if noticed { noListeningAfterEnd = noListeningAfterEnd && state.phase != .listening }
+                noLimitClaim = noLimitClaim && !state.recordingLimitReached
+                reviewed =
+                    reviewed
+                    || (state.phase == .warning && state.interimText == text
+                        && state.outputs.engineResult?.completeness == .partial)
+            }
+            await run.value
+            timeout.cancel()
+            let stops = await provider.stopCount
+            let finalized = await provider.finalizeCount
+            let flow = await provider.flowCount
+            let inserted = await provider.insertionCount
+            let history = await provider.historyCount
+            check(
+                "2253 early engine terminal ends Listening and reviews once",
+                noticed && reviewed && noListeningAfterEnd && noLimitClaim && stops == 1 && finalized == 1
+                    && flow == 0 && inserted == 0 && history == 0)
         }
 
         // Product-limit timer and sample-limit signal share the normal stop

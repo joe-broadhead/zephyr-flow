@@ -213,6 +213,17 @@ production release approval.
     the wait. These are Core signal tests, not native Speech lifecycle tests:
     outstanding callback/append shutdown ordering, early terminal capture signals,
     frame evidence and real native cancellation/resource cleanup remain open.
+    Early Apple final/error capture events are explicitly forwarded to the
+    session, so a stopped producer does not leave the UI listening until the
+    human releases or the ten-minute timer fires. The ordinary stop/finalize
+    path assesses retained text as review-only even if an engine later labels
+    its result complete. Core actual-session fixtures cover duplicate/empty
+    terminal updates and stale later partials with exactly one stop/finalize
+    and no Flow/insertion/history. Two production value-mapping XCTest cases
+    check callback forwarding; they do not start Speech, AVAudioEngine or UI.
+    The panel distinguishes early engine stop from the ten-minute limit. This
+    is a producer-reported event, not native thread/resource quiescence proof;
+    real Apple frame accounting and native lifecycle qualification remain open.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

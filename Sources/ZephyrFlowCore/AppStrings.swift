@@ -12,6 +12,10 @@ public enum AppStrings {
     /// Semantic keys with translator context. Values are the English (source)
     /// strings; a future Localizable pipeline maps key+locale -> translation.
     public static let catalog: [String: (value: String, context: String)] = [
+        "panel.captureEndedEarly": (
+            "Speech engine stopped before release — review required",
+            "Early terminal capture event; not a ten-minute limit or complete-audio claim"
+        ),
         "panel.recordingTimeRemaining": (
             "%d:%02d remaining · 10-minute maximum", "Recording countdown; minutes and seconds"
         ),

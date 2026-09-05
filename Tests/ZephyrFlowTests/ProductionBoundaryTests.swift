@@ -38,6 +38,39 @@
     }
 
     final class ProductionBoundaryTests: XCTestCase {
+        func testAppleTerminalCaptureSignalRetainsHypothesisWithoutClaimingCompleteness() throws {
+            let failure = NSError(domain: "synthetic", code: 1)
+            for callback in [
+                AppleSpeechCallback(text: "synthetic final", isFinal: true, error: nil),
+                AppleSpeechCallback(text: "", isFinal: true, error: nil),
+                AppleSpeechCallback(text: nil, isFinal: true, error: nil),
+                AppleSpeechCallback(text: nil, isFinal: false, error: failure),
+                AppleSpeechCallback(text: "synthetic partial", isFinal: false, error: failure),
+            ] {
+                let update = try XCTUnwrap(
+                    callback.captureEndUpdate(retaining: "retained hypothesis", finalizing: false))
+                XCTAssertTrue(update.captureEnded)
+                XCTAssertEqual(update.text, "retained hypothesis")
+                XCTAssertEqual(update.isFinal, callback.hasUsableFinalText)
+                XCTAssertNil(
+                    callback.captureEndUpdate(retaining: "retained hypothesis", finalizing: true),
+                    "an ordinary finalization response is not an early capture-end notice")
+                XCTAssertEqual(
+                    ProductionSessionStages.sessionPartial(update),
+                    SessionPartial(text: "retained hypothesis", captureEnded: true))
+            }
+            XCTAssertNil(
+                AppleSpeechCallback(text: "partial", isFinal: false, error: nil)
+                    .captureEndUpdate(retaining: "partial", finalizing: false))
+        }
+
+        func testProductionPartialMappingRequiresExplicitCaptureEndSignal() {
+            // isFinal alone is not a stop-capture command for other backends.
+            let update = PartialTranscription(text: "synthetic", isFinal: true)
+            XCTAssertFalse(update.captureEnded)
+            XCTAssertEqual(ProductionSessionStages.sessionPartial(update), SessionPartial(text: "synthetic"))
+        }
+
         func testEmptyAppleFinalCannotPromoteAnEarlierPartialToComplete() {
             for text: String? in [nil, "", " \n\t"] {
                 XCTAssertFalse(AppleSpeechCallback(text: text, isFinal: true, error: nil).hasUsableFinalText)

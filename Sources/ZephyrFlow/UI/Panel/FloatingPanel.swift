@@ -203,7 +203,8 @@ struct FloatingPanelRoot: View {
                     reviewWarnsCopy: controller.reviewWarnsCopy,
                     reviewAllowsSettings: controller.reviewAllowsSettings,
                     recordingSecondsRemaining: controller.recordingSecondsRemaining,
-                    recordingLimitReached: controller.recordingLimitReached
+                    recordingLimitReached: controller.recordingLimitReached,
+                    captureEndedEarly: controller.captureEndedEarly
                 )
                 .transition(.scale(scale: 0.88).combined(with: .opacity))
             }
@@ -307,6 +308,7 @@ struct FloatingPanelView: View {
     let reviewAllowsSettings: Bool
     let recordingSecondsRemaining: Int?
     let recordingLimitReached: Bool
+    let captureEndedEarly: Bool
 
     init(
         state: PanelState, text: String, levels: [Float], activeStyle: FlowStyle,
@@ -316,7 +318,8 @@ struct FloatingPanelView: View {
         onReviewSettings: @escaping () -> Void,
         reviewTitle: String?, reviewDetail: String?,
         reviewAllowsRetry: Bool, reviewWarnsCopy: Bool, reviewAllowsSettings: Bool,
-        recordingSecondsRemaining: Int? = nil, recordingLimitReached: Bool = false
+        recordingSecondsRemaining: Int? = nil, recordingLimitReached: Bool = false,
+        captureEndedEarly: Bool = false
     ) {
         self.state = state
         self.text = text
@@ -336,6 +339,7 @@ struct FloatingPanelView: View {
         self.reviewAllowsSettings = reviewAllowsSettings
         self.recordingSecondsRemaining = recordingSecondsRemaining
         self.recordingLimitReached = recordingLimitReached
+        self.captureEndedEarly = captureEndedEarly
     }
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -351,7 +355,11 @@ struct FloatingPanelView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            if recordingLimitReached {
+            if captureEndedEarly {
+                Text(AppStrings.key("panel.captureEndedEarly"))
+                    .font(.caption).foregroundStyle(ZephyrTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if recordingLimitReached {
                 Text(AppStrings.key("panel.recordingLimitReached"))
                     .font(.caption).foregroundStyle(ZephyrTheme.warning)
                     .fixedSize(horizontal: false, vertical: true)

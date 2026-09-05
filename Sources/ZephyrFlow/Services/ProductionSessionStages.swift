@@ -96,7 +96,7 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                     currentSessionID: sessionID,
                     currentEngineToken: self.engineToken)
             else { return }
-            self.interimContinuation?.yield(SessionPartial(text: partial.text))
+            self.interimContinuation?.yield(Self.sessionPartial(partial))
         }
 
         if engineKind == .whisper {
@@ -356,6 +356,10 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
 
     func finalize() async throws -> EngineResult {
         try await engine.stopAndFinalize()
+    }
+
+    static func sessionPartial(_ partial: PartialTranscription) -> SessionPartial {
+        SessionPartial(text: partial.text, captureEnded: partial.captureEnded)
     }
 
     func applyFlow(_ request: FlowRequest) async -> FlowOutcome {

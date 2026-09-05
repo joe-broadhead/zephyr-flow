@@ -6,11 +6,15 @@ public struct PartialTranscription: Sendable, Equatable {
     public let text: String
     public let isFinal: Bool
     public let timestamp: Date
+    /// Producer-reported terminal capture event, not proof of complete audio
+    /// or native resource quiescence. The session must stop and assess/review.
+    public let captureEnded: Bool
 
-    public init(text: String, isFinal: Bool = false, timestamp: Date = Date()) {
+    public init(text: String, isFinal: Bool = false, timestamp: Date = Date(), captureEnded: Bool = false) {
         self.text = text
         self.isFinal = isFinal
         self.timestamp = timestamp
+        self.captureEnded = captureEnded
     }
 }
 
@@ -167,8 +171,8 @@ public struct EngineResult: Sendable, Equatable {
 
     /// Session admission cannot trust a success-shaped enum alone. Preserve
     /// text and raw evidence for review, never invent counts or a final event.
-    public func requiringCompletionEvidence() -> EngineResult {
-        guard completeness == .complete, !isComplete else { return self }
+    public func requiringCompletionEvidence(captureEndedEarly: Bool = false) -> EngineResult {
+        guard completeness == .complete, captureEndedEarly || !isComplete else { return self }
         return EngineResult(
             text: text, completeness: .partial, frameAccounting: frameAccounting,
             engine: engine, languageRequested: languageRequested, languageDetected: languageDetected,
@@ -176,7 +180,9 @@ public struct EngineResult: Sendable, Equatable {
             startedAtUptimeNanos: startedAtUptimeNanos, endedAtUptimeNanos: endedAtUptimeNanos,
             inferenceDurationNanos: inferenceDurationNanos,
             warnings: warnings.contains(.captureDegraded) ? warnings : warnings + [.captureDegraded],
-            fallbackReason: "completion evidence missing or inconsistent; review required", termination: termination)
+            fallbackReason: captureEndedEarly
+                ? "engine capture ended before release; review required"
+                : "completion evidence missing or inconsistent; review required", termination: termination)
     }
 
     /// Diagnostics serialization EXCLUDES transcript content by default.

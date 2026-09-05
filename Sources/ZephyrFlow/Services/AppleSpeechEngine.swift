@@ -16,6 +16,13 @@ struct AppleSpeechCallback: Sendable {
         isFinal && errorCode == nil && !(text?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 
+    /// Final/error before the user releases must end the Listening projection.
+    /// Retains the latest hypothesis; a terminal event is not completeness proof.
+    func captureEndUpdate(retaining text: String, finalizing: Bool) -> PartialTranscription? {
+        guard !finalizing, isFinal || errorCode != nil else { return nil }
+        return PartialTranscription(text: text, isFinal: hasUsableFinalText, captureEnded: true)
+    }
+
     init(text: String?, isFinal: Bool, error: NSError?) {
         self.text = text
         self.isFinal = isFinal
@@ -290,12 +297,12 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
             }
             // Never log transcript content — lengths only (PII).
             ZFLog.info("partial isFinal=\(callback.isFinal) len=\(text.count) kept=\(accumulated.count)")
-            if callback.isFinal, callback.errorCode == nil {
-                sawFinal = callback.hasUsableFinalText
-                let outcome = recognitionTracker.noteFinal(token: token, hasText: callback.hasUsableFinalText)
-                ZFLog.info("final event outcome=\(outcome.rawValue) len=\(text.count)")
-                finishRecognition()
-            }
+        }
+        if callback.isFinal, callback.errorCode == nil {
+            sawFinal = callback.hasUsableFinalText
+            let outcome = recognitionTracker.noteFinal(token: token, hasText: callback.hasUsableFinalText)
+            ZFLog.info("final event outcome=\(outcome.rawValue)")
+            finishRecognition()
         }
         if let code = callback.errorCode {
             let friendly = callback.errorMessage ?? "Speech recognition failed."
@@ -313,6 +320,9 @@ actor AppleSpeechEngine: WhisperEngineProtocol {
                 sawFinal = false  // no final event arrived; only partial text
             }
             finishRecognition()
+        }
+        if let update = callback.captureEndUpdate(retaining: accumulated, finalizing: finalizingToken != nil) {
+            onPartial?(update)
         }
     }
 

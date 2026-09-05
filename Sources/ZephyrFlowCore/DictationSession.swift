@@ -78,6 +78,7 @@ public struct SessionUIState: Sendable, Equatable {
     public var outputs: SessionStageOutputs
     public var recordingSecondsRemaining: Int?
     public var recordingLimitReached: Bool
+    public var captureEndedEarly: Bool
 
     public init(
         phase: SessionPhase = .idle,
@@ -86,7 +87,8 @@ public struct SessionUIState: Sendable, Equatable {
         audioLevel: Float = 0.05,
         outputs: SessionStageOutputs = SessionStageOutputs(),
         recordingSecondsRemaining: Int? = nil,
-        recordingLimitReached: Bool = false
+        recordingLimitReached: Bool = false,
+        captureEndedEarly: Bool = false
     ) {
         self.phase = phase
         self.interimText = interimText
@@ -95,6 +97,7 @@ public struct SessionUIState: Sendable, Equatable {
         self.outputs = outputs
         self.recordingSecondsRemaining = recordingSecondsRemaining
         self.recordingLimitReached = recordingLimitReached
+        self.captureEndedEarly = captureEndedEarly
     }
 }
 
@@ -245,7 +248,11 @@ public struct SessionValidationResult: Sendable, Equatable {
 /// is NEVER logged; the actor publishes only its length).
 public struct SessionPartial: Sendable, Equatable {
     public let text: String
-    public init(text: String) { self.text = text }
+    public let captureEnded: Bool
+    public init(text: String, captureEnded: Bool = false) {
+        self.text = text
+        self.captureEnded = captureEnded
+    }
 }
 
 public struct SessionCaptureHandle: Sendable {
@@ -595,7 +602,7 @@ public actor DictationSession {
         captureTask = Task { [weak self] in
             guard let self else { return }
             for await partial in handle.interim {
-                await self.publishCapturePartial(partial.text)
+                await self.publishCapturePartial(partial)
             }
         }
         levelsTask = Task { [weak self] in
@@ -684,7 +691,8 @@ public actor DictationSession {
         }
         let final: EngineResult
         do {
-            final = try await provider.finalize().requiringCompletionEvidence()
+            final = try await provider.finalize().requiringCompletionEvidence(
+                captureEndedEarly: state.captureEndedEarly)
         } catch {
             if await checkCancellation() { return }
             await provider.cancel()
@@ -984,20 +992,23 @@ public actor DictationSession {
         broadcaster.publish(state)
     }
 
-    /// Exactly-once terminal release: owned tasks cancelled, stream finished.
-    /// Round-5 B3: terminal release is ONLY performed when the authoritative
-    /// control state accepted the transition AND the reached terminal matches
-    /// the requested category. If the machine stayed nonterminal (or reached
-    /// a different terminal), the session must NOT claim the requested
-    /// terminal: no telemetry, no broadcaster finish, no release — the
-    /// mismatch is surfaced (observably) so the caller can reconcile.
-    private func publishCapturePartial(_ text: String) {
-        guard captureActive, !released, !cancelRequested else { return }
-        publish(phase: .listening, interim: text, level: state.audioLevel)
+    /// A producer terminal event exits Listening; later partials cannot undo it.
+    private func publishCapturePartial(_ partial: SessionPartial) {
+        guard captureActive, !released, !cancelRequested, !state.captureEndedEarly else { return }
+        if partial.captureEnded {
+            state.captureEndedEarly = true
+            state.recordingSecondsRemaining = nil
+            publish(phase: .processing, interim: partial.text, level: 0.05)
+            commandContinuation?.yield(.end)
+        } else {
+            publish(phase: .listening, interim: partial.text, level: state.audioLevel)
+        }
     }
 
     private func reachRecordingLimit() {
-        guard captureActive, !released, !cancelRequested, !state.recordingLimitReached else { return }
+        guard captureActive, !released, !cancelRequested, !state.recordingLimitReached, !state.captureEndedEarly else {
+            return
+        }
         state.recordingLimitReached = true
         state.recordingSecondsRemaining = 0
         broadcaster.publish(state)
@@ -1007,7 +1018,7 @@ public actor DictationSession {
     private func monitorRecordingLimit(started: ContinuousClock.Instant) async {
         let clock = ContinuousClock()
         let deadline = started.advanced(by: .nanoseconds(Int64(recordingLimitNanos)))
-        while captureActive, !Task.isCancelled, !released {
+        while captureActive, !state.captureEndedEarly, !Task.isCancelled, !released {
             let now = clock.now
             guard now < deadline else {
                 reachRecordingLimit()
@@ -1020,6 +1031,8 @@ public actor DictationSession {
         }
     }
 
+    /// Exactly-once release. Report the reached outcome (or controlled failure)
+    /// and a mismatch marker when the requested terminal was not accepted.
     private func finishTerminal(category: TerminalCategory) {
         guard !released else { return }
         // Review R1.5: drive the control state machine to the matching

@@ -85,6 +85,20 @@
             }
         }
 
+        func testEarlyCaptureEndIsReviewOnlyEvenWhenFinalCountsAppearComplete() {
+            let counts = EngineFrameAccounting(
+                capturedSourceSamples: 16_000, deliveredEngineSamples: 16_000,
+                decodedEngineSamples: 16_000, droppedSourceSamples: 0)
+            let result = Self.result(accounting: counts)
+            XCTAssertTrue(result.isComplete)
+            let checked = result.requiringCompletionEvidence(captureEndedEarly: true)
+            XCTAssertEqual(checked.completeness, .partial)
+            XCTAssertFalse(checked.isComplete)
+            XCTAssertEqual(checked.text, result.text)
+            XCTAssertTrue(checked.warnings.contains(.captureDegraded))
+            XCTAssertEqual(checked.frameAccounting, counts)
+        }
+
         func testFractionalToleranceIsComparedWithoutRoundingDownDiscrepancy() {
             let counts = EngineFrameAccounting(
                 capturedSourceSamples: 100, deliveredEngineSamples: 101,

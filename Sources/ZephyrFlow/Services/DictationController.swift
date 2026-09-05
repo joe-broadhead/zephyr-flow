@@ -29,6 +29,7 @@ final class DictationController: ObservableObject {
     @Published var engineLabel: String = "—"
     @Published private(set) var recordingSecondsRemaining: Int?
     @Published private(set) var recordingLimitReached = false
+    @Published private(set) var captureEndedEarly = false
 
     // JOE-2243: dependency-injected environment.
     private let environment: AppEnvironment
@@ -684,6 +685,7 @@ final class DictationController: ObservableObject {
     private func apply(_ state: SessionUIState) {
         recordingSecondsRemaining = state.recordingSecondsRemaining
         recordingLimitReached = state.recordingLimitReached
+        captureEndedEarly = state.captureEndedEarly
         switch state.phase {
         case .listening:
             panelState = .listening
