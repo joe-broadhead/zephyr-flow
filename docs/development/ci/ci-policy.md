@@ -166,6 +166,14 @@ production release approval.
     Native timestamp snapshots reject invalid/nonfinite ranges before integer
     conversion. Real model accuracy/alignment, silence seams, languages,
     hardware memory/latency and recording-limit UI/control need qualification.
+    Core session tests exercise automatic stop via a short injected monotonic
+    budget and the sample-limit stream; both use normal stop/drain/finalize.
+    The panel projects remaining minutes/seconds and the ten-minute notice.
+    The sample cap rejects/counts excess rather than discarding the prefix;
+    OS scheduling/capture shutdown is not hard real time. Incomplete hypotheses
+    reach explicit review with no automatic insertion/history or retry, rather
+    than being replaced by a misleading discarded-text status. Real device,
+    UI accessibility and ten-minute microphone runs remain unqualified.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

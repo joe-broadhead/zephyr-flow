@@ -76,19 +76,25 @@ public struct SessionUIState: Sendable, Equatable {
     public var interimLength: Int
     public var audioLevel: Float
     public var outputs: SessionStageOutputs
+    public var recordingSecondsRemaining: Int?
+    public var recordingLimitReached: Bool
 
     public init(
         phase: SessionPhase = .idle,
         interimText: String = "",
         interimLength: Int = 0,
         audioLevel: Float = 0.05,
-        outputs: SessionStageOutputs = SessionStageOutputs()
+        outputs: SessionStageOutputs = SessionStageOutputs(),
+        recordingSecondsRemaining: Int? = nil,
+        recordingLimitReached: Bool = false
     ) {
         self.phase = phase
         self.interimText = interimText
         self.interimLength = interimLength
         self.audioLevel = audioLevel
         self.outputs = outputs
+        self.recordingSecondsRemaining = recordingSecondsRemaining
+        self.recordingLimitReached = recordingLimitReached
     }
 }
 
@@ -245,13 +251,16 @@ public struct SessionPartial: Sendable, Equatable {
 public struct SessionCaptureHandle: Sendable {
     public let interim: AsyncStream<SessionPartial>
     public let levels: AsyncStream<Float>
+    public let recordingLimit: AsyncStream<Void>
 
     public init(
         interim: AsyncStream<SessionPartial>,
-        levels: AsyncStream<Float>
+        levels: AsyncStream<Float>,
+        recordingLimit: AsyncStream<Void> = AsyncStream { $0.finish() }
     ) {
         self.interim = interim
         self.levels = levels
+        self.recordingLimit = recordingLimit
     }
 }
 
@@ -360,6 +369,10 @@ public actor DictationSession {
     private var commandStream: AsyncStream<Command>?
     private var captureTask: Task<Void, Never>?
     private var levelsTask: Task<Void, Never>?
+    private var limitTimerTask: Task<Void, Never>?
+    private var limitEventTask: Task<Void, Never>?
+    private var captureActive = false
+    private let recordingLimitNanos: UInt64
     private var state = SessionUIState()
     private var startTime: UInt64?
     private var retainedText = ""
@@ -387,13 +400,16 @@ public actor DictationSession {
         idFactory: SessionIDFactory = SessionIDFactory(),
         nowNanos: @escaping @Sendable () -> UInt64 = {
             DispatchTime.now().uptimeNanoseconds
-        }
+        },
+        recordingLimitNanos: UInt64 = UInt64(LongDictationPolicy.maximumSeconds) * 1_000_000_000
     ) {
         self.provider = provider
         self.engineChoice = engineChoice
         self.settings = settings
         self.idFactory = idFactory
         self.nowNanos = nowNanos
+        self.recordingLimitNanos = min(
+            max(1, recordingLimitNanos), UInt64(LongDictationPolicy.maximumSeconds) * 1_000_000_000)
         var control = SessionControlModel()
         let sid = idFactory.next(createdAtNanos: nowNanos())
         guard control.begin(sessionID: sid) != nil else {
@@ -544,6 +560,7 @@ public actor DictationSession {
 
         // Stage 1: capture + engine streaming starts immediately (begin edge).
         let handle: SessionCaptureHandle
+        let captureBudgetStarted = ContinuousClock().now
         do {
             handle = try await provider.startCapture(
                 sessionID: sessionID,
@@ -567,10 +584,18 @@ public actor DictationSession {
             finishTerminal(category: .failed)
             return
         }
+        captureActive = true
+        limitTimerTask = Task { await monitorRecordingLimit(started: captureBudgetStarted) }
+        limitEventTask = Task {
+            for await _ in handle.recordingLimit {
+                reachRecordingLimit()
+                break
+            }
+        }
         captureTask = Task { [weak self] in
             guard let self else { return }
             for await partial in handle.interim {
-                await self.publish(phase: .listening, interim: partial.text, level: self.state.audioLevel)
+                await self.publishCapturePartial(partial.text)
             }
         }
         levelsTask = Task { [weak self] in
@@ -580,13 +605,17 @@ public actor DictationSession {
             }
         }
 
-        // Wait for the release edge (end/cancel) — the ONLY way out of
-        // capture. The first command is consumed HERE, after capture starts.
+        // Release/cancel or the explicit product limit ends capture. A limit
+        // uses the same stop/drain/finalize path, never discards buffered audio.
         var command: Command?
         for await c in commands {
             command = c
             break
         }
+        captureActive = false
+        limitTimerTask?.cancel()
+        limitEventTask?.cancel()
+        state.recordingSecondsRemaining = nil
         guard let command else { return }
 
         if command == .cancel {
@@ -680,7 +709,9 @@ public actor DictationSession {
             default:
                 _ = control.stage(.engineTruncated)
             }
-            publish(phase: .warning, interim: state.interimText, level: state.audioLevel)
+            // Preserve all decoded hypotheses for explicit review. No automatic
+            // insertion/history or retry of an incomplete result is admitted.
+            publish(phase: .warning, interim: final.text, level: state.audioLevel)
             finishTerminal(category: final.completeness == .partial ? .partial : .truncated)
             return
         }
@@ -951,6 +982,35 @@ public actor DictationSession {
     /// a different terminal), the session must NOT claim the requested
     /// terminal: no telemetry, no broadcaster finish, no release — the
     /// mismatch is surfaced (observably) so the caller can reconcile.
+    private func publishCapturePartial(_ text: String) {
+        guard captureActive, !released, !cancelRequested else { return }
+        publish(phase: .listening, interim: text, level: state.audioLevel)
+    }
+
+    private func reachRecordingLimit() {
+        guard captureActive, !released, !cancelRequested, !state.recordingLimitReached else { return }
+        state.recordingLimitReached = true
+        state.recordingSecondsRemaining = 0
+        broadcaster.publish(state)
+        commandContinuation?.yield(.end)
+    }
+
+    private func monitorRecordingLimit(started: ContinuousClock.Instant) async {
+        let clock = ContinuousClock()
+        let deadline = started.advanced(by: .nanoseconds(Int64(recordingLimitNanos)))
+        while captureActive, !Task.isCancelled, !released {
+            let now = clock.now
+            guard now < deadline else {
+                reachRecordingLimit()
+                return
+            }
+            let remaining = now.duration(to: deadline).components
+            state.recordingSecondsRemaining = Int(remaining.seconds) + (remaining.attoseconds > 0 ? 1 : 0)
+            broadcaster.publish(state)
+            do { try await clock.sleep(until: min(deadline, now.advanced(by: .seconds(1)))) } catch { return }
+        }
+    }
+
     private func finishTerminal(category: TerminalCategory) {
         guard !released else { return }
         // Review R1.5: drive the control state machine to the matching
@@ -1022,6 +1082,11 @@ public actor DictationSession {
         levelsTask?.cancel()
         captureTask = nil
         levelsTask = nil
+        captureActive = false
+        limitTimerTask?.cancel()
+        limitEventTask?.cancel()
+        limitTimerTask = nil
+        limitEventTask = nil
         commandContinuation = nil
         commandStream = nil
         broadcaster.finish()

@@ -28,6 +28,7 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
     private var binding: SessionEngineBinding?
     private var interimContinuation: AsyncStream<SessionPartial>.Continuation?
     private var levelsContinuation: AsyncStream<Float>.Continuation?
+    private var recordingLimitContinuation: AsyncStream<Void>.Continuation?
     private var levelsPollTask: Task<Void, Never>?
     private var targetSnapshot: TargetSnapshot?
     private var effectiveSensitivity: SessionSensitivity = .unknown
@@ -79,6 +80,9 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
     ) async throws -> SessionCaptureHandle {
         let interim = AsyncStream<SessionPartial> { self.interimContinuation = $0 }
         let levels = AsyncStream<Float> { self.levelsContinuation = $0 }
+        let (recordingLimit, limitContinuation) = AsyncStream.makeStream(
+            of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        self.recordingLimitContinuation = limitContinuation
 
         try await engine.startStreaming(
             sessionID: sessionID,
@@ -133,6 +137,7 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
                         continue
                     }
                     await engine.appendAudio(mono)
+                    if await engine.recordingLimitReached { limitContinuation.yield(()) }
                     self.lock.withLock {
                         self.accounting.noteConverted(engineSamples: UInt64(mono.count))
                         self.accounting.noteDelivered(engineSamples: UInt64(mono.count))
@@ -182,10 +187,12 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
             }
         }
 
-        return SessionCaptureHandle(interim: interim, levels: levels)
+        return SessionCaptureHandle(interim: interim, levels: levels, recordingLimit: recordingLimit)
     }
 
     func stopCapture() async -> SessionAudioSummary {
+        recordingLimitContinuation?.finish()
+        levelsPollTask?.cancel()
         guard engineKind == .whisper else {
             // Apple path: no bounded channel; no frame accounting.
             return SessionAudioSummary(
@@ -416,6 +423,8 @@ final class ProductionSessionStages: DictationSessionStageProviding, @unchecked 
         levelsPollTask = nil
         interimContinuation?.finish()
         levelsContinuation?.finish()
+        recordingLimitContinuation?.finish()
+        recordingLimitContinuation = nil
         interimContinuation = nil
         levelsContinuation = nil
         await audio.stop()

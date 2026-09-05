@@ -12,6 +12,23 @@ public enum AppStrings {
     /// Semantic keys with translator context. Values are the English (source)
     /// strings; a future Localizable pipeline maps key+locale -> translation.
     public static let catalog: [String: (value: String, context: String)] = [
+        "panel.recordingTimeRemaining": (
+            "%d:%02d remaining · 10-minute maximum", "Recording countdown; minutes and seconds"
+        ),
+        "panel.recordingLimitReached": (
+            "10-minute limit reached — finishing admitted audio",
+            "Automatic stop notice; not a complete-transcript claim"
+        ),
+        "panel.incompleteReview": (
+            "Incomplete transcript — review only", "No insertion retry for incomplete audio/alignment"
+        ),
+        "panel.incompleteReviewDetail": (
+            "Audio or chunk alignment is incomplete. Retained text may repeat overlap or omit undecoded audio. Nothing was inserted or saved. Review before explicitly copying.",
+            "Incomplete-result warning; copy still requires confirmation"
+        ),
+        "panel.incompleteNoText": (
+            "Transcript incomplete — no decoded text available", "Incomplete engine result without recoverable text"
+        ),
         // Onboarding (graph steps)
         "onboarding.welcome.title": ("Private dictation,\non your machine", "Onboarding welcome heading"),
         "onboarding.welcome.explanation": (

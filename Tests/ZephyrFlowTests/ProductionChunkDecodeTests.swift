@@ -92,6 +92,8 @@
         func testTenMinuteMaximumKeepsPrefixAndAccountsExcess() async throws {
             let runtime = ChunkRuntimeFixture()
             let engine = try await Self.start(runtime, seconds: 600)
+            let atLimit = await engine.recordingLimitReached
+            XCTAssertTrue(atLimit)
             await engine.appendAudio([600])
             let result = try await engine.stopAndFinalize()
             let calls = await runtime.calls

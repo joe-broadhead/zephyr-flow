@@ -51,6 +51,7 @@ actor WhisperKitEngine: WhisperEngineProtocol {
     }
     private var nativeWork: NativeWork?
     var hasOutstandingDecode: Bool { nativeWork != nil }
+    var recordingLimitReached: Bool { audioBuffer.reachedLimit }
 
     init(
         runtimeFactory: @escaping WhisperRuntimeFactory = { try await WhisperKitRuntime.load($0) },

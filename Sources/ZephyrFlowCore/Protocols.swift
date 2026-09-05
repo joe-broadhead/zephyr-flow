@@ -8,6 +8,8 @@ public protocol WhisperEngineProtocol: Actor {
     /// Review R6: true when the engine instance is quarantined (a native
     /// decode was still busy at cleanup) and must be replaced before reuse.
     var isQuarantined: Bool { get }
+    /// A content-free sample-admission limit signal, not a native stop receipt.
+    var recordingLimitReached: Bool { get }
     /// Review B8: the verified artifact digest recorded at load (from the
     /// reviewed manifest). Carried into EngineIdentity so session evidence
     /// records which verified artifact was loaded.
@@ -41,6 +43,7 @@ public protocol WhisperEngineProtocol: Actor {
 }
 
 extension WhisperEngineProtocol {
+    public var recordingLimitReached: Bool { false }
     public func preflight(localOnly: Bool, language: SupportedLanguage) async throws {
         // The default witness is isolated to the conforming engine actor.
         let ready = isReady

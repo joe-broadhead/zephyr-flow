@@ -53,6 +53,8 @@ actor FakeSessionStages: DictationSessionStageProviding {
     /// (protected spans not preserved, original text returned).
     var flowRejected = false
     var flowOverride: FlowOutcome?
+    var immediateRecordingLimit = false
+    func setImmediateRecordingLimit() { immediateRecordingLimit = true }
     /// Round-6 B1 test hook: block recordHistory this long so a cancel can
     /// land deterministically during history persistence.
     var historyDelayNanos: UInt64 = 0
@@ -103,7 +105,11 @@ actor FakeSessionStages: DictationSessionStageProviding {
         let (levels, lcont) = AsyncStream.makeStream(of: Float.self)
         lcont.yield(0.4)
         lcont.finish()
-        return SessionCaptureHandle(interim: interim, levels: levels)
+        let recordingLimit = AsyncStream<Void> { continuation in
+            if immediateRecordingLimit { continuation.yield(()) }
+            continuation.finish()
+        }
+        return SessionCaptureHandle(interim: interim, levels: levels, recordingLimit: recordingLimit)
     }
 
     func stopCapture() async -> SessionAudioSummary {
@@ -1440,6 +1446,39 @@ struct CoreTests {
             check(
                 "B5 rejected Flow no insertion",
                 await provider.insertionCount == 0)
+        }
+
+        // Product-limit timer and sample-limit signal share the normal stop
+        // path. Short injected clock budgets do not stand in for device soak.
+        for fromSamples in [false, true] {
+            let provider = FakeSessionStages()
+            if fromSamples { await provider.setImmediateRecordingLimit() }
+            let session = DictationSession(
+                provider: provider, engineChoice: .whisper,
+                settings: .init(
+                    localOnly: true, language: .enUS, defaultFlowStyle: .raw,
+                    insertionMode: "automatic", saveHistory: false, copyOnlyOverrideBundleIDs: []),
+                recordingLimitNanos: fromSamples ? 600_000_000_000 : 50_000_000)
+            let states = await session.subscribe()
+            let run = Task { await session.run() }
+            let timeout = Task {
+                do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
+                await session.cancel()
+            }
+            var reachedLimit = false
+            var remainingWasPublished = false
+            var succeeded = false
+            for await state in states {
+                reachedLimit = reachedLimit || state.recordingLimitReached
+                remainingWasPublished = remainingWasPublished || (state.recordingSecondsRemaining != nil)
+                succeeded = succeeded || state.phase == .success
+            }
+            await run.value
+            timeout.cancel()
+            let inserted = await provider.insertionCount
+            check(
+                "2251 product limit stops and finalizes through normal path",
+                reachedLimit && remainingWasPublished && succeeded && inserted == 1)
         }
 
         // Typed Flow boundaries through the real session actor + fake stages.

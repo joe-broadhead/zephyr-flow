@@ -27,6 +27,8 @@ final class DictationController: ObservableObject {
     @Published var modelDownloadFraction: Double?
     @Published var activeFlowStyle: FlowStyle = .clean
     @Published var engineLabel: String = "—"
+    @Published private(set) var recordingSecondsRemaining: Int?
+    @Published private(set) var recordingLimitReached = false
 
     // JOE-2243: dependency-injected environment.
     private let environment: AppEnvironment
@@ -680,6 +682,8 @@ final class DictationController: ObservableObject {
     }
 
     private func apply(_ state: SessionUIState) {
+        recordingSecondsRemaining = state.recordingSecondsRemaining
+        recordingLimitReached = state.recordingLimitReached
         switch state.phase {
         case .listening:
             panelState = .listening
@@ -711,8 +715,14 @@ final class DictationController: ObservableObject {
                 panelState = .processing
             }
         case .warning:
-            panelState = .warning
-            statusMessage = "Transcript incomplete — discarded"
+            if !state.interimText.isEmpty {
+                presentSecureReview(state.interimText)
+                reviewTitle = AppStrings.key("panel.incompleteReview")
+                reviewDetail = AppStrings.key("panel.incompleteReviewDetail")
+            } else {
+                panelState = .warning
+                statusMessage = AppStrings.key("panel.incompleteNoText")
+            }
         case .review:
             if let insertion = state.outputs.insertion {
                 presentReview(outcome: insertion, text: state.interimText)
