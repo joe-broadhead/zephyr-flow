@@ -174,6 +174,14 @@ production release approval.
     reach explicit review with no automatic insertion/history or retry, rather
     than being replaced by a misleading discarded-text status. Real device,
     UI accessibility and ten-minute microphone runs remain unqualified.
+    Release tooling tests run with synthetic Mach-O headers and private
+    codesign/ditto/xcrun/spctl doubles. They cover every native-command failure,
+    invalid/missing notary responses, signature/runtime/identity checks, output
+    ownership, post-staple packaging and read-only manual workflow contracts.
+    They establish orchestration only: no real certificate, Keychain, Apple
+    submission, Gatekeeper or signing qualification. Release preflights remain
+    explicitly blocked with no automated tag/publish or ad-hoc fallback. See
+    `Scripts/release/README.md` for the separate operation/acceptance boundaries.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

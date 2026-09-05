@@ -1,13 +1,14 @@
-name: Release
+name: Release preflight (publication blocked)
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag (for example: v0.0.0)"
+        description: "Existing candidate tag; preflight will not publish"
+        required: true
+        type: string
+      expected_sha:
+        description: "Exact 40-character candidate source SHA"
         required: true
         type: string
 
@@ -16,173 +17,38 @@ permissions:
 
 jobs:
   validate:
-    name: Validate Release
+    name: Verify candidate identity and acceptance boundary
     runs-on: ubuntu-22.04
     timeout-minutes: 15
-    outputs:
-      release_tag: ${{ steps.resolve_tag.outputs.release_tag }}
-      release_version: ${{ steps.resolve_tag.outputs.release_version }}
     steps:
-      - name: Resolve tag
-        id: resolve_tag
-        shell: bash
+      - name: Validate input syntax
         env:
-          INPUT_TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
-          release_tag="${GITHUB_REF_NAME}"
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            release_tag="${INPUT_TAG}"
-          fi
-          if ! [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid release tag: ${release_tag}"
-            exit 1
-          fi
-          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
-          echo "release_version=${release_tag#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{40}$ ]]
+      - name: Checkout exact candidate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          ref: ${{ inputs.expected_sha }}
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Checkout release tag
+      - name: Verify tag source and version
         env:
-          RELEASE_TAG: ${{ steps.resolve_tag.outputs.release_tag }}
+          TAG: ${{ inputs.tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         run: |
           set -euo pipefail
-          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}" || true
-          git checkout --detach "${RELEASE_TAG}" 2>/dev/null || git checkout --detach "tags/${RELEASE_TAG}" 2>/dev/null || true
-          # On first push of the tag, GITHUB_REF already points at it
-          git rev-parse HEAD
-
-      - name: Ensure metadata matches tag
-        env:
-          RELEASE_VERSION: ${{ steps.resolve_tag.outputs.release_version }}
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          [[ "$(git rev-parse --verify "refs/tags/$TAG^{commit}")" == "$EXPECTED_SHA" ]]
+          [[ "$(tr -d '[:space:]' < VERSION)" == "${TAG#v}" ]]
+          git diff --exit-code
+          git diff --cached --exit-code
+          test -z "$(git ls-files --others --exclude-standard)"
+      - name: Block unqualified production operations
         run: |
-          set -euo pipefail
-          file_version="$(tr -d '[:space:]' < VERSION)"
-          if [ "${file_version}" != "${RELEASE_VERSION}" ]; then
-            echo "VERSION (${file_version}) != tag (${RELEASE_VERSION})"
-            exit 1
-          fi
-          grep -q "static let version = \"${RELEASE_VERSION}\"" Sources/ZephyrFlow/Utilities/Constants.swift
-          grep -q "<string>${RELEASE_VERSION}</string>" Resources/Info.plist
-          grep -q "^## \\[${RELEASE_VERSION}\\]" CHANGELOG.md
-
-  build-macos:
-    name: Build macOS arm64
-    # macos-15 ships Swift 6.x required by WhisperKit → swift-jinja 2.x
-    runs-on: macos-15
-    timeout-minutes: 60
-    needs: validate
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.validate.outputs.release_tag }}
-          persist-credentials: false
-
-      - name: Build release app
-        run: |
-          set -euo pipefail
-          chmod +x Scripts/build_app.sh
-          ./Scripts/build_app.sh release
-
-      - name: Optional Developer ID + notarize
-        env:
-          CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12_BASE64 }}
-          CERT_PASS: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASSWORD }}
-          API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          set -euo pipefail
-          if [ -z "${CERT_P12:-}" ] || [ -z "${API_KEY_ID:-}" ] || [ -z "${API_KEY_P8:-}" ]; then
-            echo "Signing secrets not fully configured — keeping ad-hoc signature from build_app.sh"
-            echo "signing_mode=adhoc" >> "$GITHUB_ENV"
-            exit 0
-          fi
-          echo "signing_mode=developer_id" >> "$GITHUB_ENV"
-          CERT_PATH="$RUNNER_TEMP/developer_id.p12"
-          KEYCHAIN="$RUNNER_TEMP/zephyr-signing.keychain-db"
-          KEYCHAIN_PASS="$(openssl rand -base64 32)"
-          echo "$CERT_P12" | base64 --decode > "$CERT_PATH"
-          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN"
-          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN"
-          security import "$CERT_PATH" -P "$CERT_PASS" -A -t cert -f pkcs12 -k "$KEYCHAIN"
-          security list-keychain -d user -s "$KEYCHAIN" $(security list-keychain -d user | tr -d '"')
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN"
-          CODESIGN_ID="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F'"' '/Developer ID Application/{print $2; exit}')"
-          echo "Using identity: $CODESIGN_ID"
-          codesign --force --deep --options runtime --sign "$CODESIGN_ID" \
-            --entitlements Resources/ZephyrFlow.entitlements \
-            Dist/ZephyrFlow.app
-          codesign --verify --deep --strict Dist/ZephyrFlow.app
-          AUTH_KEY="$RUNNER_TEMP/AuthKey.p8"
-          printf '%s\n' "$API_KEY_P8" > "$AUTH_KEY"
-          ditto -c -k --sequesterRsrc --keepParent Dist/ZephyrFlow.app "$RUNNER_TEMP/ZephyrFlow-notary.zip"
-          xcrun notarytool submit "$RUNNER_TEMP/ZephyrFlow-notary.zip" \
-            --key "$AUTH_KEY" --key-id "$API_KEY_ID" --issuer "$API_ISSUER" --wait
-          xcrun stapler staple Dist/ZephyrFlow.app
-          echo "Notarization + staple complete"
-
-      - name: Package
-        env:
-          RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist-release
-          ditto -c -k --sequesterRsrc --keepParent Dist/ZephyrFlow.app \
-            "dist-release/ZephyrFlow-macos-arm64.app.zip"
-          shasum -a 256 dist-release/*.zip > dist-release/SHA256SUMS
-          echo "signing_mode=${signing_mode:-adhoc}" >> dist-release/SIGNING_MODE.txt
-          cat dist-release/SHA256SUMS
-          # Extract changelog section
-          version="${RELEASE_TAG#v}"
-          awk -v ver="${version}" '
-            $0 ~ "^## \\[" ver "\\]" {p=1; print; next}
-            p && $0 ~ /^## \[/ {exit}
-            p {print}
-          ' CHANGELOG.md > dist-release/RELEASE_NOTES.md
-          cat dist-release/RELEASE_NOTES.md
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: release-macos-arm64
-          path: dist-release/
-          if-no-files-found: error
-
-  publish:
-    name: Publish GitHub Release
-    runs-on: ubuntu-22.04
-    timeout-minutes: 15
-    needs: [validate, build-macos]
-    permissions:
-      contents: write
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: release-macos-arm64
-          path: dist-release
-
-      - name: Create release
-        uses: softprops/action-gh-release@c12583777ecdfd3be55c69cf75464299dc01057e # v3
-        with:
-          tag_name: ${{ needs.validate.outputs.release_tag }}
-          name: ZephyrFlow ${{ needs.validate.outputs.release_tag }}
-          body_path: dist-release/RELEASE_NOTES.md
-          files: |
-            dist-release/ZephyrFlow-macos-arm64.app.zip
-            dist-release/SHA256SUMS
-          fail_on_unmatched_files: true
-          generate_release_notes: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          echo "RELEASE BLOCKED: exact-candidate acceptance verifier, device evidence, independent review and human GO required." >&2
+          echo "No signing, credentials, uploads, tags or publication occur in this workflow." >&2
+          exit 1
