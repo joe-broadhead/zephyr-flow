@@ -42,8 +42,9 @@ public protocol WhisperEngineProtocol: Actor {
 
 extension WhisperEngineProtocol {
     public func preflight(localOnly: Bool, language: SupportedLanguage) async throws {
-        let ready = await isReady
-        let quarantined = await isQuarantined
+        // The default witness is isolated to the conforming engine actor.
+        let ready = isReady
+        let quarantined = isQuarantined
         guard ready && !quarantined else { throw WhisperEngineError.notReady }
     }
 }
