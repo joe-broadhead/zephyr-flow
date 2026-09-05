@@ -2617,6 +2617,33 @@ struct CoreTests {
             check(
                 "2260 changed pasteboard not overwritten",
                 t3.attemptRestore(currentChangeCount: 99, currentIsOurMarker: false) == .notRestoredBecauseChanged)
+            var copiedMarker = PasteboardTransaction(sessionID: sid, original: plain)!
+            copiedMarker.applyTemporary(changeCount: 6)
+            check(
+                "2260 marker cannot authorize a newer clipboard generation",
+                copiedMarker.attemptRestore(currentChangeCount: 7, currentIsOurMarker: true)
+                    == .notRestoredBecauseChanged)
+            var missingMarker = PasteboardTransaction(sessionID: sid, original: plain)!
+            missingMarker.applyTemporary(changeCount: 6)
+            check(
+                "2260 count alone cannot authorize restoration",
+                missingMarker.attemptRestore(currentChangeCount: 6, currentIsOurMarker: false)
+                    == .notRestoredBecauseChanged)
+            var reads = 0
+            let missingData = PasteboardSnapshot.capture(itemTypes: [["one", "two"]], changeCount: 0) { _, _ in
+                reads += 1
+                return nil
+            }
+            check("2260 unreadable representation rejects entire snapshot", missingData == nil && reads == 1)
+            reads = 0
+            let metadataOverflow = PasteboardSnapshot.capture(
+                itemTypes: [["one", "two"]], changeCount: 0,
+                budget: .init(maxTypesPerItem: 1)
+            ) { _, _ in
+                reads += 1
+                return Data()
+            }
+            check("2260 metadata budget precedes payload materialization", metadataOverflow == nil && reads == 0)
             // Budget overflow => no transaction at all (no destructive mutation).
             let huge = PasteboardSnapshot(
                 items: [

@@ -711,25 +711,6 @@ actor InsertionService: InsertionServiceProtocol {
             DispatchTime.now().uptimeNanoseconds
         }
     ) async -> ClipboardPasteResult {
-        // JOE-2260: lossless bounded transaction. Snapshot EVERY item with
-        // every available type/data (no flattening); enforce the reviewed
-        // budget BEFORE any mutation; restore byte-for-byte unless the
-        // user/target changed the pasteboard meanwhile.
-        let pasteboard = NSPasteboard.general
-        let marker = PasteboardMarker()
-        let markerType = NSPasteboard.PasteboardType("io.zephyr-flow.transaction")
-
-        // Ordered snapshot of all items + all types.
-        let items: [PasteboardItemSnapshot] =
-            pasteboard.pasteboardItems?.map { pbItem in
-                let types = pbItem.types.compactMap { type -> PasteboardTypeRecord? in
-                    guard let data = pbItem.data(forType: type) else { return nil }
-                    return PasteboardTypeRecord(type: type.rawValue, data: data)
-                }
-                return PasteboardItemSnapshot(types: types)
-            } ?? []
-        let original = PasteboardSnapshot(items: items, changeCount: pasteboard.changeCount)
-
         guard let sessionID else {
             // Transaction is session-scoped; without a session we must not
             // mutate the pasteboard (fail closed).
@@ -740,14 +721,6 @@ actor InsertionService: InsertionServiceProtocol {
             ZFLog.info("paste transaction refused — non-normal sensitivity")
             return .failed
         }
-        guard var tx = PasteboardTransaction(sessionID: sessionID, original: original) else {
-            // Budget overflow: NO destructive clipboard mutation.
-            ZFLog.info(
-                "paste transaction refused — snapshot over budget bytes=\(original.byteCount) items=\(original.itemCount)"
-            )
-            return .failed
-        }
-
         // Review B4v2: validate the target BEFORE any clipboard mutation.
         // A changed/unknown/secure target must never see the transcript on the
         // global pasteboard (even transiently), so the checks run first.
@@ -781,115 +754,72 @@ actor InsertionService: InsertionServiceProtocol {
 
         // Apply temporary content (text + unique marker type) only after the
         // target checks passed.
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        pasteboard.setString(marker.value, forType: markerType)
-        let tempChange = pasteboard.changeCount
-        tx.applyTemporary(changeCount: tempChange)
+        guard !Task.isCancelled else { return .failed }
+        let pasteboard = NSPasteboard.general
+        guard let original = PasteboardTransactionAdapter.snapshot(from: pasteboard),
+            var tx = PasteboardTransaction(sessionID: sessionID, original: original)
+        else {
+            ZFLog.info("paste refused — exact snapshot unavailable or over budget")
+            return .failed
+        }
+        switch PasteboardTransactionAdapter.stage(text, transaction: &tx, on: pasteboard) {
+        case .applied: break
+        case .refused: return .failed
+        case .changed: return .notRestoredBecauseChanged
+        case .restoreFailed: return .restoreFailed
+        }
 
         try? await Task.sleep(nanoseconds: 50_000_000)
+        if Task.isCancelled { return finishClipboardTransaction(&tx, on: pasteboard, posted: false) }
 
         // Re-check immediately before the event too (focus can change during
         // the settle); if it did, restore the clipboard and fail closed.
         if let lease {
             guard await leaseStillMatches(lease: lease, nowNanos: nowNanos()) else {
                 ZFLog.info("paste event-time: lease mismatch — restore + blocked")
-                restoreSnapshot(original, markerType: markerType)
-                tx.cancel()
-                return .failed
+                return finishClipboardTransaction(&tx, on: pasteboard, posted: false)
             }
         } else if let expected = validatedTargetBundle {
             let current = await frontmostBundleID()
             guard let current, current == expected else {
                 ZFLog.info("paste event-time: frontmost bundle changed — restore + blocked")
-                restoreSnapshot(original, markerType: markerType)
-                tx.cancel()
-                return .failed
+                return finishClipboardTransaction(&tx, on: pasteboard, posted: false)
             }
         }
         guard AXIsProcessTrusted() else {
             ZFLog.info("paste event-time: Accessibility revoked — restore + blocked")
-            restoreSnapshot(original, markerType: markerType)
-            tx.cancel()
-            return .failed
+            return finishClipboardTransaction(&tx, on: pasteboard, posted: false)
         }
         let reSecure2 = await isSecureFieldFocused()
         if InsertionStrategyResolver.isSecureRole(await focusedRole()) || reSecure2 {
             ZFLog.info("paste event-time: secure field — restore + blocked")
-            restoreSnapshot(original, markerType: markerType)
-            tx.cancel()
-            return .failed
+            return finishClipboardTransaction(&tx, on: pasteboard, posted: false)
         }
-        guard postCommandV() else {
+        guard !Task.isCancelled, PasteboardTransactionAdapter.stillOwns(tx, on: pasteboard), postCommandV() else {
             // Failure before/during event posting: restore safely now.
-            restoreSnapshot(original, markerType: markerType)
-            tx.cancel()
-            return .failed
+            return finishClipboardTransaction(&tx, on: pasteboard, posted: false)
         }
         tx.markPosted()
 
         try? await Task.sleep(nanoseconds: 250_000_000)
 
-        // Equivalence: unchanged since our temp write, or our marker still
-        // present => safe to restore exactly.
-        let pb = NSPasteboard.general
-        let currentIsOurs =
-            pb.string(forType: markerType) == marker.value
-            || pb.changeCount == tempChange
-        let outcome = tx.attemptRestore(
-            currentChangeCount: pb.changeCount,
-            currentIsOurMarker: currentIsOurs)
+        return finishClipboardTransaction(&tx, on: pasteboard, posted: true)
+    }
+
+    private func finishClipboardTransaction(
+        _ tx: inout PasteboardTransaction, on pasteboard: NSPasteboard, posted: Bool
+    ) -> ClipboardPasteResult {
+        let outcome = PasteboardTransactionAdapter.finish(&tx, on: pasteboard)
         switch outcome {
         case .restored:
-            restoreSnapshot(original, markerType: markerType)
-            // Verify the restore write did not fail.
-            if !restoreVerified(original, markerType: markerType) {
-                tx.markRestoreFailed()
-                ZFLog.debug("Clipboard restore failed (prior changeCount=\(original.changeCount))")
-                return .restoreFailed
-            }
-            ZFLog.debug("Clipboard restored (prior changeCount=\(original.changeCount))")
-            return .pasted
+            ZFLog.debug("Clipboard restored (prior changeCount=\(tx.original.changeCount))")
+            return posted ? .pasted : .failed
         case .notRestoredBecauseChanged:
             ZFLog.debug("Clipboard left alone — user or app changed it")
             return .notRestoredBecauseChanged
         default:
-            tx.shutdown()
             return .restoreFailed
         }
-    }
-
-    /// Byte-for-byte restore of the original snapshot (or clear if empty).
-    private nonisolated func restoreSnapshot(_ snapshot: PasteboardSnapshot, markerType: NSPasteboard.PasteboardType) {
-        let pb = NSPasteboard.general
-        pb.clearContents()
-        if snapshot.isEmpty { return }
-        var pbItems: [NSPasteboardItem] = []
-        for item in snapshot.items {
-            let pbItem = NSPasteboardItem()
-            for record in item.types {
-                pbItem.setData(record.data, forType: NSPasteboard.PasteboardType(record.type))
-            }
-            pbItems.append(pbItem)
-        }
-        pb.writeObjects(pbItems)
-    }
-
-    /// Post-restore verification: original types/data present, marker gone.
-    private nonisolated func restoreVerified(_ snapshot: PasteboardSnapshot, markerType: NSPasteboard.PasteboardType)
-        -> Bool
-    {
-        let pb = NSPasteboard.general
-        if snapshot.isEmpty { return pb.string(forType: markerType) == nil }
-        guard let items = pb.pasteboardItems, items.count == snapshot.items.count else { return false }
-        for (idx, item) in snapshot.items.enumerated() {
-            for record in item.types {
-                guard items[idx].data(forType: NSPasteboard.PasteboardType(record.type)) == record.data else {
-                    return false
-                }
-            }
-        }
-        return pb.string(forType: markerType) == nil
     }
 
     private nonisolated func postCommandV() -> Bool {

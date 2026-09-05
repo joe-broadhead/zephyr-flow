@@ -47,6 +47,14 @@ production release approval.
     checks cancellation propagation, retained singleflight ownership, retry,
     consent on joining requests, and generation-bound progress. It does not
     exercise a real transport or qualify pinned model provenance.
+    `ProductionPasteboardTests` uses unique named AppKit pasteboards with
+    synthetic type/data representations (never the general pasteboard). It
+    exercises shared failure/success restoration, empty/multi-item round trips,
+    duplicate cleanup, ownership changes and snapshot rejection. Posting state
+    is simulated: no keyboard events or target-app writes occur. NSPasteboard
+    has no cross-process conditional-write primitive; these checks do not prove
+    atomic exclusion, provider IPC deadlines, provider allocation bounds, crash
+    recovery or six-app insertion qualification.
     These bounded checks do **not** establish
    full coordinator, live capture, insertion or device qualification.
 2. **Core runner** — `swift run ZephyrFlowCoreTests` supplies deterministic

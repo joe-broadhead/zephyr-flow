@@ -47,6 +47,31 @@ public struct PasteboardSnapshot: Sendable, Equatable {
 
     public var byteCount: Int { items.reduce(0) { $0 + $1.byteCount } }
     public var itemCount: Int { items.count }
+
+    /// Incremental, lossless capture. Metadata limits are checked before
+    /// asking a provider for data; unreadable representations reject the whole
+    /// snapshot rather than being silently dropped. A single provider's data
+    /// allocation/IPC still belongs to the native API, not this retained budget.
+    public static func capture(
+        itemTypes: [[String]], changeCount: Int, budget: PasteboardBudget = PasteboardBudget(),
+        readData: (Int, String) -> Data?
+    ) -> PasteboardSnapshot? {
+        guard budget.maxBytes >= 0, itemTypes.count <= budget.maxItems,
+            itemTypes.allSatisfy({ $0.count <= budget.maxTypesPerItem })
+        else { return nil }
+        var total = 0
+        var items: [PasteboardItemSnapshot] = []
+        for (index, types) in itemTypes.enumerated() {
+            var records: [PasteboardTypeRecord] = []
+            for type in types {
+                guard let data = readData(index, type), data.count <= budget.maxBytes - total else { return nil }
+                total += data.count
+                records.append(.init(type: type, data: data))
+            }
+            items.append(.init(types: records))
+        }
+        return PasteboardSnapshot(items: items, changeCount: changeCount)
+    }
 }
 
 // MARK: - Reviewed maximum budget
@@ -186,9 +211,10 @@ public struct PasteboardTransaction: Sendable, Equatable {
             return outcome!
         }
 
-        // Equivalence: unchanged since we wrote the temporary content, or the
-        // marker type is still present => safe to restore exactly.
-        if currentChangeCount == tempChangeCount || currentIsOurMarker {
+        // Both signals are required. A clipboard manager or target can copy
+        // our marker into a newer value; a surviving marker never authorizes
+        // overwriting a later pasteboard generation.
+        if currentChangeCount == tempChangeCount && currentIsOurMarker {
             state = .restored
             outcome = .restored
             return outcome!
